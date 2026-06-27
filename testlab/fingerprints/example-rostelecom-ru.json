@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "capturedAt": "2026-06-27T10:00:00Z",
+  "app": "dropo",
+  "appVersion": "2.0.2",
+  "country": "RU",
+  "services": [
+    { "tag": "youtube",  "name": "YouTube",   "host": "www.youtube.com",     "dns": "ok", "tcp": "ok",      "tls": "rst",  "verdict": "tls-rst" },
+    { "tag": "discord",  "name": "Discord",   "host": "discord.com",         "dns": "ok", "tcp": "ok",      "tls": "rst",  "verdict": "tls-rst" },
+    { "tag": "telegram", "name": "Telegram",  "host": "telegram.org",        "dns": "ok", "tcp": "timeout", "tls": "error","verdict": "ip-block" },
+    { "tag": "meta",     "name": "Instagram", "host": "www.instagram.com",   "dns": "ok", "tcp": "timeout", "tls": "error","verdict": "ip-block" },
+    { "tag": "twitter",  "name": "X",         "host": "x.com",               "dns": "ok", "tcp": "ok",      "tls": "drop", "verdict": "tls-drop" },
+    { "tag": "signal",   "name": "Signal",    "host": "signal.org",          "dns": "ok", "tcp": "ok",      "tls": "rst",  "verdict": "tls-rst" }
+  ]
+}
