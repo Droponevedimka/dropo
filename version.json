@@ -1,5 +1,5 @@
 {
-    "version": "2.0.6",
+    "version": "2.0.7",
     "name": "dropo",
     "productName": "dropo",
     "description": "dropo VPN client with sing-box, WireGuard, and smart routing",
@@ -7,7 +7,7 @@
     "license": "MIT",
     "homepage": "https://k-ampus.dev",
     "repository": "https://github.com/Droponevedimka/dropo",
-    "dependenciesReleaseTag": "v2.0.4",
+    "dependenciesReleaseTag": "v2.0.7",
     "dependenciesReleaseAsset": "dropo-Windows-Dependencies-x64.zip",
     "singbox": {
         "version": "1.13.0-alpha.27",

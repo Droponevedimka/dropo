@@ -12,7 +12,11 @@ param(
     # dependencies archive is hosted once and referenced via deps-lock.json /
     # the dependencies.json manifest. Used by .github/workflows/release.yml so a
     # clean runner can release the app without the dependencies/ cache.
-    [switch]$AppOnly
+    [switch]$AppOnly,
+    # Full-build mode: record the freshly built dependencies archive as hosted
+    # on the current app version, even when depsVersion did not change. Use this
+    # when re-baselining dependencies onto a new release tag.
+    [switch]$ForceDepsRelease
 )
 
 $ErrorActionPreference = "Stop"
@@ -759,7 +763,12 @@ function Build-Application {
     $lockPath = Join-Path $ScriptRoot "deps-lock.json"
     $prevLock = $null
     if (Test-Path $lockPath) { $prevLock = Get-Content $lockPath -Raw | ConvertFrom-Json }
-    if ($prevLock -and ([string]$prevLock.depsVersion -eq $DepsVersion) -and $prevLock.tag) {
+    if ($ForceDepsRelease) {
+        $depsTag  = "v$AppVersion"
+        $depsSha  = $depsZipSha
+        $depsSize = $depsZipSize
+        Write-Host "[Deps] FORCE -> host $DepsAsset on release $depsTag (sha $depsSha)" -ForegroundColor Yellow
+    } elseif ($prevLock -and ([string]$prevLock.depsVersion -eq $DepsVersion) -and $prevLock.tag) {
         $depsTag  = [string]$prevLock.tag
         $depsSha  = [string]$prevLock.sha256
         $depsSize = [long]$prevLock.size
