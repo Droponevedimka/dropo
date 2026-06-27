@@ -14,16 +14,19 @@ import (
 
 // GitHubRelease represents a GitHub release.
 type GitHubRelease struct {
-	TagName     string    `json:"tag_name"`
-	Name        string    `json:"name"`
-	Body        string    `json:"body"`
-	PublishedAt time.Time `json:"published_at"`
-	HTMLURL     string    `json:"html_url"`
-	Assets      []struct {
-		Name               string `json:"name"`
-		BrowserDownloadURL string `json:"browser_download_url"`
-		Size               int64  `json:"size"`
-	} `json:"assets"`
+	TagName     string               `json:"tag_name"`
+	Name        string               `json:"name"`
+	Body        string               `json:"body"`
+	PublishedAt time.Time            `json:"published_at"`
+	HTMLURL     string               `json:"html_url"`
+	Assets      []GitHubReleaseAsset `json:"assets"`
+}
+
+// GitHubReleaseAsset represents an asset attached to a GitHub release.
+type GitHubReleaseAsset struct {
+	Name               string `json:"name"`
+	BrowserDownloadURL string `json:"browser_download_url"`
+	Size               int64  `json:"size"`
 }
 
 // UpdateInfo contains information about available updates.
@@ -36,6 +39,7 @@ type UpdateInfo struct {
 	ReleaseURL     string `json:"release_url"`
 	PublishedAt    string `json:"published_at"`
 	FileSize       int64  `json:"file_size"`
+	AssetName      string `json:"asset_name"`
 }
 
 // CheckForUpdates checks for updates on GitHub.
@@ -87,16 +91,14 @@ func CheckForUpdates() (*UpdateInfo, error) {
 	// Compare versions
 	available := compareVersions(latestVersion, currentVersion) > 0
 
-	// Find suitable asset for download
+	asset, hasAsset := selectUpdateAsset(release.Assets)
 	var downloadURL string
 	var fileSize int64
-	for _, asset := range release.Assets {
-		name := strings.ToLower(asset.Name)
-		if strings.Contains(name, "windows") && strings.HasSuffix(name, ".exe") {
-			downloadURL = asset.BrowserDownloadURL
-			fileSize = asset.Size
-			break
-		}
+	var assetName string
+	if hasAsset {
+		downloadURL = asset.BrowserDownloadURL
+		fileSize = asset.Size
+		assetName = asset.Name
 	}
 
 	return &UpdateInfo{
@@ -108,7 +110,24 @@ func CheckForUpdates() (*UpdateInfo, error) {
 		ReleaseURL:     release.HTMLURL,
 		PublishedAt:    release.PublishedAt.Format("02.01.2006"),
 		FileSize:       fileSize,
+		AssetName:      assetName,
 	}, nil
+}
+
+func selectUpdateAsset(assets []GitHubReleaseAsset) (GitHubReleaseAsset, bool) {
+	for _, asset := range assets {
+		name := strings.ToLower(asset.Name)
+		if strings.Contains(name, "windows") && strings.Contains(name, "portable") && strings.HasSuffix(name, ".zip") {
+			return asset, true
+		}
+	}
+	for _, asset := range assets {
+		name := strings.ToLower(asset.Name)
+		if strings.Contains(name, "windows") && strings.HasSuffix(name, ".exe") {
+			return asset, true
+		}
+	}
+	return GitHubReleaseAsset{}, false
 }
 
 // DownloadUpdate downloads the update file to temp directory.
@@ -134,7 +153,7 @@ func DownloadUpdate(downloadURL string, progressCallback func(downloaded, total 
 
 	// Create temp file
 	tempDir := os.TempDir()
-	tempFile := filepath.Join(tempDir, AppName+"_update.exe")
+	tempFile := filepath.Join(tempDir, AppName+"_update"+updateFileExtension(downloadURL))
 
 	out, err := os.Create(tempFile)
 	if err != nil {
@@ -168,6 +187,15 @@ func DownloadUpdate(downloadURL string, progressCallback func(downloaded, total 
 	}
 
 	return tempFile, nil
+}
+
+func updateFileExtension(downloadURL string) string {
+	path := strings.Split(downloadURL, "?")[0]
+	ext := strings.ToLower(filepath.Ext(path))
+	if ext == ".zip" || ext == ".exe" {
+		return ext
+	}
+	return ".bin"
 }
 
 // compareVersions compares two version strings.

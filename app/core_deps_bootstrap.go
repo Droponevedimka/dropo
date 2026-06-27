@@ -157,6 +157,7 @@ func (a *App) DownloadDependencies() error {
 	if !a.binLooksComplete() {
 		return fmt.Errorf("архив зависимостей распакован, но ключевые файлы отсутствуют")
 	}
+	a.refreshSingBoxPath()
 	a.writeLog("[Deps] dependencies ready (depsVersion=" + m.DepsVersion + ")")
 	a.emitDepsProgress(m.Size, m.Size, "Готово")
 	return nil

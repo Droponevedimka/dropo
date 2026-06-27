@@ -364,12 +364,23 @@ func (a *App) findPaths() {
 
 	// Set base path
 	a.basePath = exeDir
+	a.refreshSingBoxPath()
+}
 
+// refreshSingBoxPath refreshes the sing-box executable path inside the current
+// basePath. Split portable builds download bin/ after startup, so this must be
+// callable without recalculating basePath from os.Executable().
+func (a *App) refreshSingBoxPath() {
+	if a.basePath == "" {
+		return
+	}
+	a.singboxPath = ""
 	// Determine sing-box binary name
 	singboxName := "sing-box"
 	if runtime.GOOS == "windows" {
 		singboxName = "sing-box.exe"
 	}
+	exeDir := a.basePath
 
 	// 1. Look in bin/ folder next to exe (portable distribution)
 	singboxPath := filepath.Join(exeDir, "bin", singboxName)

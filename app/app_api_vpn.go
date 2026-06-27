@@ -78,11 +78,14 @@ func (a *App) Start() map[string]interface{} {
 	a.updateBusy(busyID, "Проверяем состояние приложения...")
 	// Heavy binaries (bin/) ship as a separate release asset and are fetched on
 	// first run. Refuse to start until they are present (see docs/UPDATE.md).
-	if st := a.DependenciesStatus(); st.Managed && !st.Ready {
-		return map[string]interface{}{
-			"success": false,
-			"error":   "Компоненты ещё не загружены. Подключитесь к интернету и дождитесь первичной загрузки компонентов.",
+	if st := a.DependenciesStatus(); st.Managed {
+		if !st.Ready {
+			return map[string]interface{}{
+				"success": false,
+				"error":   "Компоненты ещё не загружены. Подключитесь к интернету и дождитесь первичной загрузки компонентов.",
+			}
 		}
+		a.refreshSingBoxPath()
 	}
 	a.mu.Lock()
 	if a.isRunning {

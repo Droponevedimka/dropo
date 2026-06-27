@@ -93,8 +93,8 @@ const (
 	DefaultHTTPTimeout = 30 * time.Second
 	// ShortHTTPTimeout is a shorter timeout for quick checks.
 	ShortHTTPTimeout = 10 * time.Second
-	// LongHTTPTimeout is a longer timeout for downloads.
-	LongHTTPTimeout = 60 * time.Second
+	// LongHTTPTimeout is a longer timeout for release asset downloads.
+	LongHTTPTimeout = 10 * time.Minute
 	// ClashAPITimeout is the timeout for Clash API requests.
 	ClashAPITimeout = 5 * time.Second
 )
