@@ -5,11 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
-	"runtime"
 	"time"
-
-	"golang.org/x/sys/windows/registry"
 )
 
 // AppConfig stores application preferences and settings.
@@ -95,80 +91,9 @@ func (c *AppConfig) Save(configPath string) error {
 	return os.WriteFile(configPath, data, 0644)
 }
 
-// SetAutoStart enables or disables system startup launch (standalone function).
-func SetAutoStart(enable bool) error {
-	if runtime.GOOS != "windows" {
-		// Not implemented for other OS yet
-		return nil
-	}
-	return setAutoStartWindows(enable)
-}
-
 // SetAutoStart enables or disables system startup launch (method on AppConfig).
 func (c *AppConfig) SetAutoStart(enable bool) error {
 	return SetAutoStart(enable)
-}
-
-// setAutoStartWindows manages Windows registry for auto-start.
-func setAutoStartWindows(enable bool) error {
-	key, _, err := registry.CreateKey(
-		registry.CURRENT_USER,
-		`Software\Microsoft\Windows\CurrentVersion\Run`,
-		registry.SET_VALUE|registry.QUERY_VALUE,
-	)
-	if err != nil {
-		return fmt.Errorf("failed to open registry: %w", err)
-	}
-	defer key.Close()
-
-	if enable {
-		exePath, err := os.Executable()
-		if err != nil {
-			return fmt.Errorf("failed to get executable path: %w", err)
-		}
-		exePath, _ = filepath.EvalSymlinks(exePath)
-
-		err = key.SetStringValue(AppName, exePath)
-		if err != nil {
-			return fmt.Errorf("failed to add to autostart: %w", err)
-		}
-		if LegacyAppDataDirName != AppName {
-			_ = key.DeleteValue(LegacyAppDataDirName)
-		}
-	} else {
-		err = key.DeleteValue(AppName)
-		if err != nil && err != registry.ErrNotExist {
-			return fmt.Errorf("failed to remove from autostart: %w", err)
-		}
-		if LegacyAppDataDirName != AppName {
-			err = key.DeleteValue(LegacyAppDataDirName)
-			if err != nil && err != registry.ErrNotExist {
-				return fmt.Errorf("failed to remove legacy autostart: %w", err)
-			}
-		}
-	}
-
-	return nil
-}
-
-// IsAutoStartEnabled checks if auto-start is currently enabled.
-func IsAutoStartEnabled() bool {
-	if runtime.GOOS != "windows" {
-		return false
-	}
-
-	key, err := registry.OpenKey(
-		registry.CURRENT_USER,
-		`Software\Microsoft\Windows\CurrentVersion\Run`,
-		registry.QUERY_VALUE,
-	)
-	if err != nil {
-		return false
-	}
-	defer key.Close()
-
-	_, _, err = key.GetStringValue(AppName)
-	return err == nil
 }
 
 // GetLogLevelString returns the log level as string for sing-box config.

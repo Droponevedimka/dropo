@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  windows-tests:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache-dependency-path: app/go.sum
+      - name: Go tests
+        working-directory: app
+        shell: pwsh
+        run: go test ./...
+
+  platform-compile:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            out: dropo-linux-test
+          - goos: darwin
+            goarch: arm64
+            out: dropo-darwin-test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache-dependency-path: app/go.sum
+      - name: Compile tests for ${{ matrix.goos }}/${{ matrix.goarch }}
+        working-directory: app
+        shell: pwsh
+        run: |
+          $env:GOOS = "${{ matrix.goos }}"
+          $env:GOARCH = "${{ matrix.goarch }}"
+          $out = Join-Path $env:RUNNER_TEMP "${{ matrix.out }}"
+          go test -c -o $out ./...

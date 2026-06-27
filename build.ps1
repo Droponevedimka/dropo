@@ -357,6 +357,11 @@ $SpoofDPIExe = Join-Path $SpoofDPIDir "spoofdpi.exe"
 $ZapretRoot = Join-Path $DepsDir "zapret-v$ZapretVersion\zapret-v$ZapretVersion"
 $ZapretWinDir = Join-Path $ZapretRoot "binaries\windows-x86_64"
 $InstallerDir = Join-Path $ScriptRoot "installer"
+$ReleasePlatform = "windows"
+$ReleaseArch = "x64"
+$RequiredDepFiles = @("sing-box.exe", "winws.exe", "WinDivert.dll")
+$WindowsPortableAsset = "dropo-Windows-Portable-x64.zip"
+$WindowsDepsAsset = "dropo-Windows-Dependencies-x64.zip"
 
 # Clean build
 if ($Clean) {
@@ -490,16 +495,19 @@ function Build-Application {
         if (-not $lockTag) { $lockTag = "v$AppVersion" }
         $manifest = [ordered]@{
             depsVersion = [string]$lock.depsVersion
+            platform    = if ($lock.platform) { [string]$lock.platform } else { $ReleasePlatform }
+            arch        = if ($lock.arch) { [string]$lock.arch } else { $ReleaseArch }
             asset       = [string]$lock.asset
             url         = "https://github.com/Droponevedimka/dropo/releases/download/$lockTag/$([string]$lock.asset)"
             sha256      = [string]$lock.sha256
             size        = [long]$lock.size
             appVersion  = $AppVersion
             repo        = "Droponevedimka/dropo"
+            requiredFiles = if ($lock.requiredFiles) { @($lock.requiredFiles) } else { $RequiredDepFiles }
         }
         [System.IO.File]::WriteAllText((Join-Path $AppFolder "dependencies.json"), ($manifest | ConvertTo-Json), (New-Object System.Text.UTF8Encoding($false)))
 
-        $AppAsset = "dropo-Windows-Portable-x64.zip"
+        $AppAsset = $WindowsPortableAsset
         $zipFile = Join-Path $VersionDir $AppAsset
         if (Test-Path $zipFile) { Remove-Item $zipFile -Force }
         Compress-Archive -Path (Get-ChildItem -Path $AppFolder).FullName -DestinationPath $zipFile -CompressionLevel Optimal
@@ -745,7 +753,8 @@ function Build-Application {
     # release TAG that hosts it (deps update => new tag => new url). depsVersion
     # stays as the internal change-detection key + extracted marker. The platform
     # tag keeps room for future dropo-<platform>-* assets (Android/macOS/Linux).
-    $DepsAsset = "dropo-Windows-Dependencies-x64.zip"
+    $DepsAsset = $WindowsDepsAsset
+    $depsArchiveForUpload = $false
     # Archives live INSIDE the version container (release/dropo-<v>-<hash>/), not
     # in release/ root. Names carry no version/hash (the container already does).
     $depsZip = Join-Path $VersionDir $DepsAsset
@@ -767,23 +776,27 @@ function Build-Application {
         $depsTag  = "v$AppVersion"
         $depsSha  = $depsZipSha
         $depsSize = $depsZipSize
+        $depsArchiveForUpload = $true
         Write-Host "[Deps] FORCE -> host $DepsAsset on release $depsTag (sha $depsSha)" -ForegroundColor Yellow
     } elseif ($prevLock -and ([string]$prevLock.depsVersion -eq $DepsVersion) -and $prevLock.tag) {
         $depsTag  = [string]$prevLock.tag
         $depsSha  = [string]$prevLock.sha256
         $depsSize = [long]$prevLock.size
+        if (Test-Path $depsZip) { Remove-Item $depsZip -Force }
         Write-Host "[Deps] Unchanged (depsVersion=$DepsVersion) - reusing archive hosted at $depsTag" -ForegroundColor Cyan
+        Write-Host "[Deps] Removed freshly-built local deps zip; upload/use the hosted archive recorded in deps-lock.json" -ForegroundColor Gray
     } else {
         $depsTag  = "v$AppVersion"
         $depsSha  = $depsZipSha
         $depsSize = $depsZipSize
+        $depsArchiveForUpload = $true
         Write-Host "[Deps] CHANGED -> host $DepsAsset on release $depsTag (sha $depsSha)" -ForegroundColor Yellow
     }
 
     # Record the dependencies-archive identity so CI (-AppOnly) writes the app
     # manifest without rebuilding bin/. Commit deps-lock.json when deps change,
     # and host the archive on the recorded tag's release once.
-    $lock = [ordered]@{ depsVersion = $DepsVersion; tag = $depsTag; asset = $DepsAsset; sha256 = $depsSha; size = $depsSize }
+    $lock = [ordered]@{ platform = $ReleasePlatform; arch = $ReleaseArch; depsVersion = $DepsVersion; tag = $depsTag; asset = $DepsAsset; sha256 = $depsSha; size = $depsSize; requiredFiles = $RequiredDepFiles }
     [System.IO.File]::WriteAllText($lockPath, ($lock | ConvertTo-Json), (New-Object System.Text.UTF8Encoding($false)))
 
     # dependencies.json manifest ships INSIDE the app folder next to dropo.exe.
@@ -792,12 +805,15 @@ function Build-Application {
     $depsUrl = "https://github.com/Droponevedimka/dropo/releases/download/$depsTag/$DepsAsset"
     $manifest = [ordered]@{
         depsVersion = $DepsVersion
+        platform    = $ReleasePlatform
+        arch        = $ReleaseArch
         asset       = $DepsAsset
         url         = $depsUrl
         sha256      = $depsSha
         size        = $depsSize
         appVersion  = $AppVersion
         repo        = "Droponevedimka/dropo"
+        requiredFiles = $RequiredDepFiles
     }
     # Write UTF-8 WITHOUT BOM (Set-Content -Encoding utf8 adds a BOM that Go's
     # json.Unmarshal rejects).
@@ -805,7 +821,7 @@ function Build-Application {
     Write-Host "[OK] Wrote dependencies.json (depsVersion=$DepsVersion, tag=$depsTag)" -ForegroundColor Green
 
     # app archive = the dropo/ app folder WITHOUT bin/ (small, ships every release)
-    $AppAsset = "dropo-Windows-Portable-x64.zip"
+    $AppAsset = $WindowsPortableAsset
     $zipFile = Join-Path $VersionDir $AppAsset
     if (Test-Path $zipFile) { Remove-Item $zipFile -Force }
     $appItems = Get-ChildItem -Path $AppFolder -Exclude 'bin'
@@ -816,7 +832,11 @@ function Build-Application {
     Write-Host ""
     Write-Host "[SUCCESS] Build completed: release/$BuildFolderName/" -ForegroundColor Green
     Write-Host "  app folder:  dropo/  (run dropo/dropo.exe)" -ForegroundColor Gray
-    Write-Host "  release zips: $AppAsset + $DepsAsset" -ForegroundColor Gray
+    if ($depsArchiveForUpload) {
+        Write-Host "  release zips: $AppAsset + $DepsAsset" -ForegroundColor Gray
+    } else {
+        Write-Host "  release zips: $AppAsset (deps reused from $depsTag)" -ForegroundColor Gray
+    }
 
     # Show files
     Write-Host ""
@@ -857,7 +877,7 @@ function Create-Portable {
     # App-only ZIP (exclude bin/ — heavy deps ship as the separate
     # dependencies archive). Written INSIDE the container, name without
     # version/hash. Idempotent with Build-Application's packaging.
-    $zipFile = Join-Path $sourceDir "dropo-Windows-Portable-x64.zip"
+    $zipFile = Join-Path $sourceDir $WindowsPortableAsset
     if (Test-Path $zipFile) {
         Remove-Item $zipFile
     }
@@ -865,7 +885,7 @@ function Create-Portable {
     Compress-Archive -Path $appItems.FullName -DestinationPath $zipFile -CompressionLevel Optimal
 
     $fileSize = (Get-Item $zipFile).Length / 1MB
-    Write-Host "[OK] Created: dropo-Windows-Portable-x64.zip ($([math]::Round($fileSize, 2)) MB, app only - bin/ ships separately)" -ForegroundColor Green
+    Write-Host "[OK] Created: $WindowsPortableAsset ($([math]::Round($fileSize, 2)) MB, app only - bin/ ships separately)" -ForegroundColor Green
 }
 
 # Create installer

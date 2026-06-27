@@ -27,7 +27,7 @@ func makeFakeBin(t *testing.T, base, marker string) {
 	if err := os.MkdirAll(bin, 0755); err != nil {
 		t.Fatal(err)
 	}
-	for _, n := range requiredDepBinaries {
+	for _, n := range requiredDependencyFiles() {
 		if err := os.WriteFile(filepath.Join(bin, n), []byte("x"), 0644); err != nil {
 			t.Fatal(err)
 		}
@@ -71,7 +71,7 @@ func TestDependenciesStatus(t *testing.T) {
 
 	// managed, marker matches but a key binary missing -> not ready
 	os.WriteFile(filepath.Join(base2, "bin", ".deps-version"), []byte("abc123"), 0644)
-	os.Remove(filepath.Join(base2, "bin", requiredDepBinaries[0]))
+	os.Remove(filepath.Join(base2, "bin", requiredDependencyFiles()[0]))
 	if app2.DependenciesStatus().Ready {
 		t.Fatal("missing key binary must report not ready")
 	}
@@ -131,7 +131,7 @@ func TestDownloadDependenciesFromManifest(t *testing.T) {
 		t.Fatal(err)
 	}
 	zw := zip.NewWriter(zf)
-	for _, name := range requiredDepBinaries {
+	for _, name := range requiredDependencyFiles() {
 		w, err := zw.Create(name)
 		if err != nil {
 			t.Fatal(err)
@@ -177,7 +177,7 @@ func TestDownloadDependenciesFromManifest(t *testing.T) {
 	if !st.Managed || !st.Ready || st.Installed != "abc123" {
 		t.Fatalf("unexpected status after download: %+v", st)
 	}
-	for _, name := range requiredDepBinaries {
+	for _, name := range requiredDependencyFiles() {
 		if !fileExists(filepath.Join(base, "bin", name)) {
 			t.Fatalf("missing extracted dependency %s", name)
 		}
@@ -218,7 +218,7 @@ func TestLiveDownloadDependenciesFromManifest(t *testing.T) {
 	if st := app.DependenciesStatus(); !st.Managed || !st.Ready {
 		t.Fatalf("expected managed/ready after download: %+v", st)
 	}
-	for _, name := range requiredDepBinaries {
+	for _, name := range requiredDependencyFiles() {
 		if !fileExists(filepath.Join(base, "bin", name)) {
 			t.Fatalf("missing extracted dependency %s", name)
 		}

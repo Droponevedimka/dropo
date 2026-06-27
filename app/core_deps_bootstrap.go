@@ -24,19 +24,18 @@ import (
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
-// requiredDepBinaries are the key files that must exist for bin/ to count as
-// complete (cheap integrity check before trusting the marker).
-var requiredDepBinaries = []string{"sing-box.exe", "winws.exe", "WinDivert.dll"}
-
 // DepsManifest mirrors dependencies.json written by build.ps1.
 type DepsManifest struct {
-	DepsVersion string `json:"depsVersion"`
-	Asset       string `json:"asset"`
-	SHA256      string `json:"sha256"`
-	Size        int64  `json:"size"`
-	AppVersion  string `json:"appVersion"`
-	Repo        string `json:"repo"`
-	URL         string `json:"url,omitempty"` // optional direct override
+	DepsVersion string   `json:"depsVersion"`
+	Platform    string   `json:"platform,omitempty"`
+	Arch        string   `json:"arch,omitempty"`
+	Asset       string   `json:"asset"`
+	SHA256      string   `json:"sha256"`
+	Size        int64    `json:"size"`
+	AppVersion  string   `json:"appVersion"`
+	Repo        string   `json:"repo"`
+	URL         string   `json:"url,omitempty"` // optional direct override
+	Required    []string `json:"requiredFiles,omitempty"`
 }
 
 // DepsStatus is reported to the frontend so it can gate first-run download.
@@ -74,7 +73,11 @@ func (a *App) installedDepsVersion() string {
 }
 
 func (a *App) binLooksComplete() bool {
-	for _, name := range requiredDepBinaries {
+	required := requiredDependencyFiles()
+	if m, ok := a.loadDepsManifest(); ok && len(m.Required) > 0 {
+		required = m.Required
+	}
+	for _, name := range required {
 		if !fileExists(filepath.Join(a.binDir(), name)) {
 			return false
 		}

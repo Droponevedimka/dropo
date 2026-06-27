@@ -375,11 +375,7 @@ func (a *App) refreshSingBoxPath() {
 		return
 	}
 	a.singboxPath = ""
-	// Determine sing-box binary name
-	singboxName := "sing-box"
-	if runtime.GOOS == "windows" {
-		singboxName = "sing-box.exe"
-	}
+	singboxName := singBoxBinaryName()
 	exeDir := a.basePath
 
 	// 1. Look in bin/ folder next to exe (portable distribution)

@@ -35,11 +35,20 @@ func (a *App) CheckForUpdates() map[string]interface{} {
 		"releaseURL":     updateInfo.ReleaseURL,
 		"fileSize":       updateInfo.FileSize,
 		"assetName":      updateInfo.AssetName,
+		"platform":       CurrentPlatformTarget().ReleaseOS,
+		"selfUpdate":     CurrentPlatformTarget().SelfUpdate,
 	}
 }
 
 // DownloadAndInstallUpdate загружает и устанавливает обновление
 func (a *App) DownloadAndInstallUpdate(downloadURL string) map[string]interface{} {
+	if !CurrentPlatformTarget().SelfUpdate {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "Self-update is not implemented for " + CurrentPlatformTarget().ReleaseOS,
+		}
+	}
+
 	// Остановить VPN если запущен
 	if a.isRunning {
 		a.Stop()

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -115,19 +116,94 @@ func CheckForUpdates() (*UpdateInfo, error) {
 }
 
 func selectUpdateAsset(assets []GitHubReleaseAsset) (GitHubReleaseAsset, bool) {
+	return selectUpdateAssetFor(assets, runtime.GOOS, runtime.GOARCH)
+}
+
+func selectUpdateAssetFor(assets []GitHubReleaseAsset, goos, goarch string) (GitHubReleaseAsset, bool) {
+	target := PlatformTargetFor(goos, goarch)
+	if target.AppAsset != "" {
+		for _, asset := range assets {
+			if strings.EqualFold(asset.Name, target.AppAsset) {
+				return asset, true
+			}
+		}
+	}
+
+	switch goos {
+	case "windows":
+		return selectWindowsUpdateAsset(assets)
+	case "linux":
+		return selectAssetByPredicates(assets,
+			func(name string) bool {
+				return containsAll(name, "dropo", "linux") && strings.HasSuffix(name, ".appimage")
+			},
+			func(name string) bool { return containsAll(name, "dropo", "linux") && strings.HasSuffix(name, ".deb") },
+			func(name string) bool {
+				return containsAll(name, "dropo", "linux") && strings.HasSuffix(name, ".tar.gz")
+			},
+		)
+	case "darwin":
+		return selectAssetByPredicates(assets,
+			func(name string) bool {
+				return (strings.Contains(name, "macos") || strings.Contains(name, "darwin")) && strings.HasSuffix(name, ".dmg")
+			},
+			func(name string) bool {
+				return (strings.Contains(name, "macos") || strings.Contains(name, "darwin")) && strings.HasSuffix(name, ".zip")
+			},
+		)
+	case "android":
+		return selectAssetByPredicates(assets,
+			func(name string) bool { return strings.Contains(name, "android") && strings.HasSuffix(name, ".apk") },
+		)
+	case "ios":
+		return selectAssetByPredicates(assets,
+			func(name string) bool {
+				return (strings.Contains(name, "ios") || strings.Contains(name, "iphone")) && strings.HasSuffix(name, ".ipa")
+			},
+		)
+	default:
+		return GitHubReleaseAsset{}, false
+	}
+}
+
+func selectWindowsUpdateAsset(assets []GitHubReleaseAsset) (GitHubReleaseAsset, bool) {
 	for _, asset := range assets {
 		name := strings.ToLower(asset.Name)
-		if strings.Contains(name, "windows") && strings.Contains(name, "portable") && strings.HasSuffix(name, ".zip") {
+		if strings.Contains(name, "windows") && strings.Contains(name, "portable") && strings.HasSuffix(name, ".zip") && !strings.Contains(name, "dependencies") {
 			return asset, true
 		}
 	}
 	for _, asset := range assets {
 		name := strings.ToLower(asset.Name)
-		if strings.Contains(name, "windows") && strings.HasSuffix(name, ".exe") {
+		if strings.Contains(name, "windows") && strings.HasSuffix(name, ".exe") && !strings.Contains(name, "dependencies") {
 			return asset, true
 		}
 	}
 	return GitHubReleaseAsset{}, false
+}
+
+func selectAssetByPredicates(assets []GitHubReleaseAsset, predicates ...func(string) bool) (GitHubReleaseAsset, bool) {
+	for _, predicate := range predicates {
+		for _, asset := range assets {
+			name := strings.ToLower(asset.Name)
+			if strings.Contains(name, "dependencies") {
+				continue
+			}
+			if predicate(name) {
+				return asset, true
+			}
+		}
+	}
+	return GitHubReleaseAsset{}, false
+}
+
+func containsAll(value string, parts ...string) bool {
+	for _, part := range parts {
+		if !strings.Contains(value, part) {
+			return false
+		}
+	}
+	return true
 }
 
 // DownloadUpdate downloads the update file to temp directory.
