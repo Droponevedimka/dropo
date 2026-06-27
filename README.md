@@ -1,9 +1,49 @@
 # dropo
 
+<p align="center">
+  <a href="https://github.com/Droponevedimka/dropo/releases/latest"><strong>Скачать последнюю версию dropo</strong></a>
+  ·
+  <a href="https://github.com/Droponevedimka/dropo">Официальный репозиторий</a>
+</p>
+
+<p style="color:#d1242f;">
+  <strong><font color="#d1242f">Внимание:</font></strong>
+  <font color="#d1242f">единственная оригинальная версия dropo публикуется только в репозитории</font>
+  <a href="https://github.com/Droponevedimka/dropo">Droponevedimka/dropo</a>
+  <font color="#d1242f">и в его разделе</font>
+  <a href="https://github.com/Droponevedimka/dropo/releases/latest">GitHub Releases</a>.
+  <font color="#d1242f">Будьте осторожны с копиями, сборками и архивами из других источников.</font>
+</p>
+
+> [!WARNING]
+> Единственный официальный источник dropo — https://github.com/Droponevedimka/dropo. Скачивайте релизы только из GitHub Releases этого репозитория.
+
 **dropo** — десктопный клиент для обхода блокировок и VPN на базе Wails (Go +
 WebView), sing-box, WireGuard и zapret/winws.
 
-Текущая версия: **2.0.2**.
+Текущая версия: **2.0.8**.
+
+## Официальные исходники upstream-проектов
+
+dropo собирает и использует несколько открытых компонентов. Ниже указаны оригинальные источники, откуда нужно сверять код,
+релизы и лицензии сторонних проектов:
+
+| Компонент | Назначение в dropo | Оригинальный источник |
+|---|---|---|
+| sing-box | VPN/TUN-движок и поддержка VLESS, VMess, Trojan, Shadowsocks, Hysteria2, TUIC | [SagerNet/sing-box](https://github.com/SagerNet/sing-box) |
+| WireGuard for Windows | Нативный WireGuard на Windows | [wireguard-windows](https://git.zx2c4.com/wireguard-windows) |
+| Wintun | TUN-драйвер WireGuard | [wintun](https://git.zx2c4.com/wintun) |
+| zapret/winws | DPI desync-движок | [bol-van/zapret](https://github.com/bol-van/zapret) |
+| WinDivert | Перехват и инъекция Windows-пакетов для winws | [basil00/Divert](https://github.com/basil00/Divert) |
+| ByeDPI | Альтернативный локальный DPI-обход | [hufrea/byedpi](https://github.com/hufrea/byedpi) |
+| SpoofDPI | Опциональный локальный DPI-обход | [xvzc/SpoofDPI](https://github.com/xvzc/SpoofDPI) |
+| Xray-core | Xray bridge для отдельных транспортов | [XTLS/Xray-core](https://github.com/XTLS/Xray-core) |
+| tg-ws-proxy | MTProto-over-WebSocket прокси для Telegram | [Flowseal/tg-ws-proxy](https://github.com/Flowseal/tg-ws-proxy) |
+| Re-filter-lists | Публичные rule-set списки для маршрутизации | [1andrevich/Re-filter-lists](https://github.com/1andrevich/Re-filter-lists) |
+| zapret-discord-youtube | Справочные zapret-стратегии для Discord/YouTube | [Flowseal/zapret-discord-youtube](https://github.com/Flowseal/zapret-discord-youtube) |
+| zapret-discord-youtube | Справочные zapret-стратегии для отдельных сервисов | [ankddev/zapret-discord-youtube](https://github.com/ankddev/zapret-discord-youtube) |
+| Wails | Desktop shell: Go + WebView | [wailsapp/wails](https://github.com/wailsapp/wails) |
+| Microsoft Edge WebView2 | WebView runtime для Windows | [Microsoft WebView2](https://developer.microsoft.com/microsoft-edge/webview2/) |
 
 ## Назначение
 
