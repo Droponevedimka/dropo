@@ -1,0 +1,22 @@
+<svg viewBox="0 0 320 360" xmlns="http://www.w3.org/2000/svg" font-family="Segoe UI, Arial, sans-serif">
+  <rect width="320" height="360" fill="#17212b"/>
+  <rect width="320" height="48" fill="#1f2c3a"/>
+  <text x="22" y="30" fill="#7d8b99" font-size="18">&#8592;</text>
+  <text x="44" y="31" fill="#ffffff" font-size="15">Продвинутые настройки</text>
+  <text x="298" y="30" fill="#7d8b99" font-size="16" text-anchor="end">&#10005;</text>
+  <text x="22" y="84" fill="#4ea1d3" font-size="13">Данные и память</text>
+  <text x="22" y="120" fill="#6e7d8c" font-size="15">&#8597;</text>
+  <text x="44" y="121" fill="#e7ecf0" font-size="14">Тип соединения</text>
+  <text x="298" y="121" fill="#4ea1d3" font-size="13" text-anchor="end">по умолчанию (TCP)</text>
+  <ellipse cx="232" cy="116" rx="80" ry="18" fill="none" stroke="#e23b3b" stroke-width="2.5"/>
+  <text x="22" y="160" fill="#6e7d8c" font-size="15">&#128193;</text>
+  <text x="44" y="161" fill="#e7ecf0" font-size="14">Путь для сохранения</text>
+  <text x="298" y="161" fill="#4ea1d3" font-size="13" text-anchor="end">папка по умолч…</text>
+  <text x="22" y="200" fill="#6e7d8c" font-size="15">&#128451;</text>
+  <text x="44" y="201" fill="#e7ecf0" font-size="14">Управление памятью устройства</text>
+  <text x="22" y="240" fill="#6e7d8c" font-size="15">&#8595;</text>
+  <text x="44" y="241" fill="#e7ecf0" font-size="14">Загрузки</text>
+  <text x="44" y="281" fill="#e7ecf0" font-size="14">Спрашивать путь для сохранения</text>
+  <rect x="270" y="271" width="34" height="16" rx="8" fill="#3a4a5a"/><circle cx="278" cy="279" r="6" fill="#8a98a6"/>
+  <text x="22" y="324" fill="#4ea1d3" font-size="13">Автозагрузка медиа</text>
+</svg>

@@ -1,0 +1,120 @@
+name: Auto Release
+
+# You only bump "version" in version.json and push to main. CI then:
+#   1. reads version.json -> v<version>;
+#   2. checks if a release for that tag already exists -> if yes, does nothing;
+#   3. otherwise builds from the current main, tags it v<version>, and publishes
+#      a GitHub release (Hiddify-style: per-OS app archives + the shared engine
+#      dependencies archive).
+# Versioning stays MANUAL (only version.json). Re-running on the same version is
+# a no-op until you bump it.
+
+on:
+  push:
+    branches: [main]
+    paths: ["version.json"]
+  workflow_dispatch: {} # manual trigger for the current version.json
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read version.json + check existing release
+        id: ver
+        shell: pwsh
+        run: |
+          $v = (Get-Content version.json -Raw | ConvertFrom-Json).version
+          $tag = "v$v"
+          "version=$v"  | Out-File $env:GITHUB_OUTPUT -Append
+          "tag=$tag"    | Out-File $env:GITHUB_OUTPUT -Append
+          gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "Release $tag already exists - nothing to do (bump version.json to release a new one)."
+            "exists=true" | Out-File $env:GITHUB_OUTPUT -Append
+          } else {
+            Write-Host "No release for $tag yet - will build and publish."
+            "exists=false" | Out-File $env:GITHUB_OUTPUT -Append
+          }
+
+      # ---- Windows build (the only implemented platform) -------------------
+      - uses: actions/setup-go@v5
+        if: steps.ver.outputs.exists == 'false'
+        with: { go-version: "1.22", cache-dependency-path: app/go.sum }
+      - uses: actions/setup-node@v4
+        if: steps.ver.outputs.exists == 'false'
+        with: { node-version: "20" }
+      - name: Install Wails
+        if: steps.ver.outputs.exists == 'false'
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.11.0
+
+      - name: Build Windows portable app
+        if: steps.ver.outputs.exists == 'false'
+        shell: pwsh
+        run: .\build.ps1 -AppOnly
+
+      # ---- Gather release assets (app + reused dependencies archive) -------
+      - name: Gather assets
+        id: assets
+        if: steps.ver.outputs.exists == 'false'
+        shell: pwsh
+        run: |
+          $v = "${{ steps.ver.outputs.version }}"
+          $dir = Get-ChildItem release -Directory |
+            Where-Object { $_.Name -like "dropo-$v-*" } |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (-not $dir) { throw "build output for $v not found" }
+
+          # The heavy engine archive rarely changes and is NOT built in CI. Reuse
+          # the one already hosted in a previous release (seeded once locally), so
+          # the release page is self-contained, like Hiddify.
+          $deps = (Get-Content deps-lock.json -Raw | ConvertFrom-Json).asset
+          $releases = gh api "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" | ConvertFrom-Json
+          $hostTag = ($releases | Where-Object { $_.assets.name -contains $deps } | Select-Object -First 1).tag_name
+          if ($hostTag) {
+            gh release download $hostTag --repo $env:GITHUB_REPOSITORY --pattern $deps --dir $dir.FullName
+            Write-Host "Reattached dependencies archive $deps (from $hostTag)."
+          } else {
+            Write-Host "::warning::Dependencies archive $deps is not hosted in any release yet. Releasing the app only; upload it once and clients will fetch it (or it will be reattached next release)."
+          }
+          "dir=$($dir.FullName)" | Out-File $env:GITHUB_OUTPUT -Append
+
+      # ---- Publish: create the tag from main + the release -----------------
+      - name: Publish release
+        if: steps.ver.outputs.exists == 'false'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: dropo ${{ steps.ver.outputs.tag }}
+          body: |
+            ## dropo ${{ steps.ver.outputs.tag }}
+
+            **Скачайте под вашу ОС / Download for your OS:**
+
+            | ОС | Загрузка |
+            | --- | --- |
+            | **Windows** | [![Portable x64](https://img.shields.io/badge/Portable-x64-0078D6?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/${{ github.repository }}/releases/download/${{ steps.ver.outputs.tag }}/dropo-Windows-Portable-x64.zip) |
+            | **Android** | ![soon](https://img.shields.io/badge/—-скоро-555?style=for-the-badge&logo=android&logoColor=white) |
+            | **macOS** | ![soon](https://img.shields.io/badge/—-скоро-555?style=for-the-badge&logo=apple&logoColor=white) |
+            | **Linux** | ![soon](https://img.shields.io/badge/—-скоро-555?style=for-the-badge&logo=linux&logoColor=white) |
+
+            **Windows (portable):** распакуйте `dropo-Windows-Portable-x64.zip` и запустите `dropo.exe`.
+            Движки обхода/VPN (`dropo-Windows-Dependencies-x64-*.zip`) загружаются автоматически один раз при первом запуске.
+          files: |
+            ${{ steps.assets.outputs.dir }}/dropo-Windows-Portable-x64.zip
+            ${{ steps.assets.outputs.dir }}/dropo-Windows-Dependencies-x64-*.zip
+          fail_on_unmatched_files: false
+
+  # ---- Future per-OS builds (add jobs, each uploads to the same tag) -------
+  #   android: runs-on: ubuntu-latest  -> dropo-Android-universal.apk
+  #   macos:   runs-on: macos-latest   -> dropo-MacOS-arm64.dmg
+  #   linux:   runs-on: ubuntu-latest  -> dropo-Linux-x64.AppImage
+  # They depend on `release` (tag already created) and use action-gh-release
+  # with the same tag_name to append their assets.

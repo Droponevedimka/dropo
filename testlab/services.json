@@ -1,0 +1,22 @@
+{
+  "_comment": "Catalog mapping each blocked service to the SNI substrings and IP CIDRs a censor matches on. Keep in sync with app/core_freeaccess.go (DomainSuffixes/IPCIDRs) and app/service_strategies.json (blockType).",
+  "services": {
+    "youtube":  { "blockType": "dpi",   "sni": ["youtube.com", "googlevideo.com", "ytimg.com", "ggpht.com", "youtu.be"], "ipcidr": [] },
+    "discord":  { "blockType": "dpi",   "sni": ["discord.com", "discord.gg", "discordapp.com", "discordapp.net", "discord.media"], "ipcidr": [] },
+    "twitter":  { "blockType": "dpi",   "sni": ["twitter.com", "x.com", "twimg.com", "t.co"], "ipcidr": [] },
+    "linkedin": { "blockType": "dpi",   "sni": ["linkedin.com", "licdn.com"], "ipcidr": [] },
+    "signal":   { "blockType": "dpi",   "sni": ["signal.org", "signal.me", "whispersystems.org"], "ipcidr": [] },
+    "snapchat": { "blockType": "dpi",   "sni": ["snapchat.com", "sc-cdn.net", "sc-gw.com"], "ipcidr": [] },
+    "twitch":   { "blockType": "dpi",   "sni": ["twitch.tv", "ttvnw.net", "jtvnw.net"], "ipcidr": [] },
+    "spotify":  { "blockType": "dpi",   "sni": ["spotify.com", "scdn.co", "spotifycdn.com"], "ipcidr": [] },
+    "tiktok":   { "blockType": "dpi",   "sni": ["tiktok.com", "tiktokcdn.com", "byteoversea.com", "ibyteimg.com"], "ipcidr": [] },
+    "facetime": { "blockType": "dpi",   "sni": ["facetime.apple.com", "apple-dns.net"], "ipcidr": [] },
+    "viber":    { "blockType": "dpi",   "sni": ["viber.com", "viber.akadns.net"], "ipcidr": [] },
+    "meta":     { "blockType": "vpn",   "sni": ["instagram.com", "facebook.com", "fbcdn.net", "cdninstagram.com", "fb.com"],
+                  "ipcidr": ["31.13.24.0/21", "31.13.64.0/18", "157.240.0.0/16", "129.134.0.0/16", "173.252.64.0/18"] },
+    "whatsapp": { "blockType": "vpn",   "sni": ["whatsapp.com", "whatsapp.net", "wa.me"],
+                  "ipcidr": ["157.240.0.0/16", "31.13.64.0/18", "179.60.192.0/22"] },
+    "telegram": { "blockType": "proxy", "sni": ["telegram.org", "t.me", "telegram.me", "telesco.pe"],
+                  "ipcidr": ["149.154.160.0/20", "91.105.192.0/23", "91.108.4.0/22", "91.108.8.0/22", "91.108.12.0/22", "91.108.16.0/22", "91.108.20.0/22", "91.108.56.0/22", "95.161.64.0/20", "185.76.151.0/24"] }
+  }
+}

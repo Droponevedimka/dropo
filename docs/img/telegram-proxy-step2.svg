@@ -1,0 +1,25 @@
+<svg viewBox="0 0 320 400" xmlns="http://www.w3.org/2000/svg" font-family="Segoe UI, Arial, sans-serif">
+  <rect width="320" height="400" fill="#17212b"/>
+  <text x="20" y="34" fill="#ffffff" font-size="16">Настройки прокси</text>
+  <text x="300" y="34" fill="#7d8b99" font-size="18" text-anchor="end">&#8942;</text>
+  <rect x="20" y="54" width="16" height="16" rx="3" fill="#4ea1d3"/><text x="25" y="67" fill="#fff" font-size="12">&#10003;</text>
+  <text x="44" y="67" fill="#e7ecf0" font-size="13">Через IPv6 (если возможно)</text>
+  <circle cx="28" cy="98" r="8" fill="none" stroke="#6e7d8c" stroke-width="2"/>
+  <text x="44" y="103" fill="#e7ecf0" font-size="13">Отключить прокси</text>
+  <circle cx="28" cy="130" r="8" fill="none" stroke="#6e7d8c" stroke-width="2"/>
+  <text x="44" y="135" fill="#e7ecf0" font-size="13">Использовать системные настройки</text>
+  <circle cx="28" cy="162" r="8" fill="none" stroke="#4ea1d3" stroke-width="2"/><circle cx="28" cy="162" r="4" fill="#4ea1d3"/>
+  <text x="44" y="167" fill="#e7ecf0" font-size="13">Использовать собственный прокси</text>
+  <rect x="14" y="192" width="292" height="58" rx="8" fill="#1f2c3a"/>
+  <text x="28" y="218" fill="#4ea1d3" font-size="12">MTPROTO</text>
+  <text x="92" y="218" fill="#e7ecf0" font-size="13">127.0.0.1:1443</text>
+  <text x="28" y="236" fill="#6e7d8c" font-size="11">соединение…</text>
+  <circle cx="285" cy="214" r="15" fill="none" stroke="#e23b3b" stroke-width="2.5"/>
+  <text x="285" y="219" fill="#9fb0bf" font-size="16" text-anchor="middle">&#8942;</text>
+  <rect x="150" y="252" width="150" height="120" rx="8" fill="#26333f"/>
+  <text x="166" y="280" fill="#e7ecf0" font-size="13">&#9998;  Изменить</text>
+  <text x="166" y="308" fill="#e7ecf0" font-size="13">&#10148;  Поделиться</text>
+  <text x="166" y="336" fill="#e7ecf0" font-size="13">&#9783;  Получить QR-код</text>
+  <text x="166" y="364" fill="#e98080" font-size="13">&#128465;  Удалить</text>
+  <ellipse cx="205" cy="359" rx="52" ry="15" fill="none" stroke="#e23b3b" stroke-width="2.5"/>
+</svg>
