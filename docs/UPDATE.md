@@ -145,7 +145,7 @@ git add version.json; git commit -m "v2.0.4"; git push origin main
 1. читает `version.json` → `v<version>`;
 2. **проверяет, есть ли уже релиз с этим тегом** — если есть, ничего не делает
    (нужно поднять версию);
-3. иначе ставит Go/Node/Wails, делает `build.ps1 -AppOnly` (только приложение,
+3. иначе ставит Go/Flutter, делает `build.ps1 -AppOnly` (только приложение,
    **без** `dependencies/` — clean-runner), создаёт тег `v<version>` из текущего
    `main` и публикует релиз с `dropo-Windows-Portable-x64.zip`.
 

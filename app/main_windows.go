@@ -11,8 +11,6 @@ import (
 	"unsafe"
 
 	"github.com/energye/systray"
-	"github.com/wailsapp/wails/v2/pkg/options"
-	wailsWindows "github.com/wailsapp/wails/v2/pkg/options/windows"
 )
 
 //go:embed assets/icons/icon_grey.ico
@@ -41,6 +39,7 @@ var (
 )
 
 const (
+	swHide         = 0
 	swRestore      = 9
 	wmSetIcon      = 0x0080
 	iconSmall      = 0
@@ -82,15 +81,31 @@ func startPlatformTray() {
 	select {
 	case <-systrayReady:
 	case <-time.After(1500 * time.Millisecond):
-		log.Println("systray initialization timeout, continuing Wails startup")
+		log.Println("systray initialization timeout, continuing core startup")
 	}
 }
 
-func applyPlatformWailsOptions(appOptions *options.App) {
-	appOptions.Windows = &wailsWindows.Options{
-		WebviewIsTransparent: false,
-		WindowIsTranslucent:  false,
-		DisableWindowIcon:    false,
+func ensurePlatformTray() {
+	if isSystrayReady() {
+		return
+	}
+	startPlatformTray()
+}
+
+func showPlatformWindow() {
+	windowName, _ := syscall.UTF16PtrFromString(AppDisplayName)
+	hwnd, _, _ := findWindow.Call(0, uintptr(unsafe.Pointer(windowName)))
+	if hwnd != 0 {
+		showWindow.Call(hwnd, swRestore)
+		setForeground.Call(hwnd)
+	}
+}
+
+func hidePlatformWindow() {
+	windowName, _ := syscall.UTF16PtrFromString(AppDisplayName)
+	hwnd, _, _ := findWindow.Call(0, uintptr(unsafe.Pointer(windowName)))
+	if hwnd != 0 {
+		showWindow.Call(hwnd, swHide)
 	}
 }
 

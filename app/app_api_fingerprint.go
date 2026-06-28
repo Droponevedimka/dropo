@@ -27,8 +27,6 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-
-	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 type FingerprintServiceResult struct {
@@ -117,10 +115,7 @@ func (a *App) OpenFingerprintFolder() {
 }
 
 func (a *App) emitFingerprintProgress(done, total int, name string) {
-	if a.ctx == nil {
-		return
-	}
-	wailsRuntime.EventsEmit(a.ctx, "fingerprint-progress", map[string]interface{}{
+	a.emitEvent("fingerprint-progress", map[string]interface{}{
 		"done": done, "total": total, "name": name,
 	})
 }

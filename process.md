@@ -11,7 +11,7 @@
 
 - Приложение переименовано из Kampus VPN в `dropo`.
 - Версия поднята до `2.0.0`.
-- Wails metadata, build script, installer metadata и package metadata переведены на `dropo`.
+- Desktop metadata, build script, installer metadata и package metadata переведены на `dropo`.
 - Основной знак заменён на `Dr` + поднятое `opo`.
 - Сгенерированы новые `appicon.png`, `icon.ico` и статусные tray-иконки.
 - Все бывшие модальные разделы визуально работают как левая drawer-панель до `90vw`.
@@ -25,12 +25,12 @@
 - Запуск без VPN-подписки разрешён: бесплатные методы работают по умолчанию, а Deep Windows запускает zapret/winws без sing-box TUN. sing-box поднимается только как local-only proxy endpoint, если маршрутному плану нужны подписка/VLESS, AI/VPN-only, except-RU, all-traffic, RU-proxy или forced proxy/VPN сервисы.
 - `mixed-in` получил безопасный дефолтный порт `2088` и runtime fallback на свободный порт.
 - Из `direct` outbound убраны `tcp_fast_open/tcp_multi_path`, потому что они ломали TLS через Windows TUN.
-- Добавлен релизный preflight: frontend build, Playwright visual/click E2E, Go tests, artifact validation, optional free-access/subscription/WireGuard runtime-smoke.
+- Добавлен релизный preflight: Go tests, Flutter analyze/test, artifact validation, optional free-access/subscription/WireGuard runtime-smoke.
 - Визуальный preflight выявил и исправил слой `confirmModal`: подтверждения теперь открываются поверх drawer-панелей, но ниже toast-уведомлений.
 
 ## Проверка UI
 
-Проверить через локальный frontend:
+Проверить через локальный Flutter UI:
 
 1. Открыть главный экран.
 2. Открыть `Настройки`, `Статистика`, `Логи`, `Профили`, `Рабочие сети`, `About`.

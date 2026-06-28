@@ -1,5 +1,5 @@
 # dropo release preflight.
-# Runs frontend, backend, visual, artifact and optional runtime checks before publishing a build.
+# Runs Flutter UI, Go, artifact and optional runtime checks before publishing a build.
 
 param(
     [switch]$WithVisual,
@@ -17,7 +17,7 @@ $ErrorActionPreference = "Stop"
 $ScriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot = Split-Path -Parent $ScriptRoot
 $AppDir = Join-Path $RepoRoot "app"
-$FrontendDir = Join-Path $AppDir "frontend"
+$FlutterDir = Join-Path $RepoRoot "flutter_app"
 $ReleaseRoot = Join-Path $RepoRoot "release"
 
 function Invoke-Step {
@@ -63,6 +63,64 @@ function Test-IsAdmin {
     return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
+function Get-MtCommand {
+    $mt = Get-Command mt.exe -ErrorAction SilentlyContinue
+    if ($mt) {
+        return $mt.Source
+    }
+
+    $kitsDir = "C:\Program Files (x86)\Windows Kits\10\bin"
+    if (Test-Path $kitsDir) {
+        $candidate = Get-ChildItem $kitsDir -Recurse -Filter mt.exe -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match "\\x64\\mt\.exe$" } |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+        if ($candidate) {
+            return $candidate.FullName
+        }
+    }
+
+    return $null
+}
+
+function Get-FlutterCommand {
+    $flutter = Get-Command flutter -ErrorAction SilentlyContinue
+    if ($flutter) {
+        return $flutter.Source
+    }
+
+    $localFlutter = "E:\flutter-sdk\flutter\bin\flutter.bat"
+    if (Test-Path $localFlutter) {
+        return $localFlutter
+    }
+
+    return $null
+}
+
+function Assert-EmbeddedAdminManifest {
+    param([string]$ExePath)
+
+    $mt = Get-MtCommand
+    if (-not $mt) {
+        throw "mt.exe not found. Install Windows SDK / Visual Studio Build Tools to validate the embedded manifest."
+    }
+
+    $tempManifest = Join-Path $env:TEMP ("dropo-manifest-" + [guid]::NewGuid().ToString("N") + ".xml")
+    try {
+        & $mt "-inputresource:$ExePath;#1" "-out:$tempManifest" | Out-Null
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path $tempManifest -PathType Leaf)) {
+            throw "Failed to extract embedded manifest from $ExePath"
+        }
+
+        $manifest = Get-Content $tempManifest -Raw
+        if ($manifest -notmatch 'requestedExecutionLevel\s+level="requireAdministrator"') {
+            throw "Built dropo.exe does not request administrator privileges"
+        }
+    } finally {
+        Remove-Item -Path $tempManifest -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Get-VersionInfo {
     return Get-Content (Join-Path $RepoRoot "version.json") -Raw | ConvertFrom-Json
 }
@@ -100,7 +158,15 @@ function Assert-NoRuntimeFiles {
         "resources\active_config.json",
         "resources\settings.json",
         "resources\cache.db",
-        "resources\xray_config.json"
+        "resources\xray_config.json",
+        "resources\resources\active_config.json",
+        "resources\resources\settings.json",
+        "resources\resources\cache.db",
+        "resources\resources\xray_config.json",
+        "resources\app\resources\active_config.json",
+        "resources\app\resources\settings.json",
+        "resources\app\resources\cache.db",
+        "resources\app\resources\xray_config.json"
     )
 
     foreach ($relative in $forbidden) {
@@ -121,61 +187,59 @@ function Invoke-ArtifactValidation {
         throw "Release folder name must include app, version and build hash: dropo-$version-<hash>. Got: $folderName"
     }
 
-    $zipPath = Join-Path $ReleaseRoot "$folderName.zip"
+    $appFolder = Join-Path $folder "dropo"
+    $runtimeFolder = Join-Path $appFolder "resources"
+    $zipPath = Join-Path $folder "dropo-Windows-Portable-x64.zip"
 
     Write-Host "Release folder: $folder" -ForegroundColor Gray
+    Write-Host "App folder:     $appFolder" -ForegroundColor Gray
     Write-Host "Release zip:    $zipPath" -ForegroundColor Gray
 
-    Assert-FileExists (Join-Path $folder "dropo.exe")
-    Assert-FileExists (Join-Path $folder "bin\sing-box.exe")
-    Assert-FileExists (Join-Path $folder "bin\xray.exe")
-    Assert-FileExists (Join-Path $folder "bin\ciadpi.exe")
-    Assert-FileExists (Join-Path $folder "bin\winws.exe")
-    Assert-FileExists (Join-Path $folder "bin\cygwin1.dll")
-    Assert-FileExists (Join-Path $folder "bin\WinDivert.dll")
-    Assert-FileExists (Join-Path $folder "bin\WinDivert64.sys")
-    Assert-FileExists (Join-Path $folder "bin\quic_initial_dbankcloud_ru.bin")
-    Assert-FileExists (Join-Path $folder "bin\discord-ip-discovery-without-port.bin")
-    Assert-FileExists (Join-Path $folder "bin\stun.bin")
-    Assert-FileExists (Join-Path $folder "bin\windivert_part.discord_media.txt")
-    Assert-FileExists (Join-Path $folder "bin\windivert_part.stun.txt")
-    Assert-FileExists (Join-Path $folder "bin\wireguard.exe")
-    Assert-FileExists (Join-Path $folder "bin\wg.exe")
-    Assert-FileExists (Join-Path $folder "bin\wintun.dll")
-    Assert-FileExists (Join-Path $folder "bin\filters\refilter_domains.srs")
-    Assert-FileExists (Join-Path $folder "bin\filters\refilter_ips.srs")
-    Assert-FileExists (Join-Path $folder "bin\filters\discord_ips.srs")
-    Assert-FileExists (Join-Path $folder "bin\filters\version.json")
-    Assert-FileExists (Join-Path $folder "resources\template.json")
-    Assert-FileExists (Join-Path $folder "licenses\sing-box-LICENSE.txt")
-    Assert-FileExists (Join-Path $folder "licenses\xray-LICENSE.txt")
-    Assert-FileExists (Join-Path $folder "licenses\wireguard-windows-LICENSE.txt")
-    Assert-FileExists (Join-Path $folder "licenses\byedpi-LICENSE.txt")
-    Assert-FileExists (Join-Path $folder "licenses\zapret-LICENSE.txt")
+    $dropoExe = Join-Path $appFolder "dropo.exe"
+    Assert-FileExists $dropoExe
+    Assert-FileExists (Join-Path $runtimeFolder "dropo-ui.exe")
+    Assert-FileExists (Join-Path $runtimeFolder "dropo-core.exe")
+    Assert-FileExists (Join-Path $runtimeFolder "flutter_windows.dll")
+    Assert-FileExists (Join-Path $runtimeFolder "data\flutter_assets\AssetManifest.bin")
+    Assert-FileExists (Join-Path $runtimeFolder "dependencies.json")
+    Assert-FileExists (Join-Path $runtimeFolder "bin\sing-box.exe")
+    Assert-FileExists (Join-Path $runtimeFolder "bin\xray.exe")
+    Assert-FileExists (Join-Path $runtimeFolder "bin\ciadpi.exe")
+    Assert-FileExists (Join-Path $runtimeFolder "bin\winws.exe")
+    Assert-FileExists (Join-Path $runtimeFolder "bin\cygwin1.dll")
+    Assert-FileExists (Join-Path $runtimeFolder "bin\WinDivert.dll")
+    Assert-FileExists (Join-Path $runtimeFolder "bin\WinDivert64.sys")
+    Assert-FileExists (Join-Path $runtimeFolder "bin\quic_initial_dbankcloud_ru.bin")
+    Assert-FileExists (Join-Path $runtimeFolder "bin\discord-ip-discovery-without-port.bin")
+    Assert-FileExists (Join-Path $runtimeFolder "bin\stun.bin")
+    Assert-FileExists (Join-Path $runtimeFolder "bin\windivert_part.discord_media.txt")
+    Assert-FileExists (Join-Path $runtimeFolder "bin\windivert_part.stun.txt")
+    Assert-FileExists (Join-Path $runtimeFolder "bin\wireguard.exe")
+    Assert-FileExists (Join-Path $runtimeFolder "bin\wg.exe")
+    Assert-FileExists (Join-Path $runtimeFolder "bin\wintun.dll")
+    Assert-FileExists (Join-Path $runtimeFolder "bin\filters\refilter_domains.srs")
+    Assert-FileExists (Join-Path $runtimeFolder "bin\filters\refilter_ips.srs")
+    Assert-FileExists (Join-Path $runtimeFolder "bin\filters\discord_ips.srs")
+    Assert-FileExists (Join-Path $runtimeFolder "bin\filters\version.json")
+    Assert-FileExists (Join-Path $runtimeFolder "resources\template.json")
+    Assert-FileExists (Join-Path $runtimeFolder "licenses\sing-box-LICENSE.txt")
+    Assert-FileExists (Join-Path $runtimeFolder "licenses\xray-LICENSE.txt")
+    Assert-FileExists (Join-Path $runtimeFolder "licenses\wireguard-windows-LICENSE.txt")
+    Assert-FileExists (Join-Path $runtimeFolder "licenses\byedpi-LICENSE.txt")
+    Assert-FileExists (Join-Path $runtimeFolder "licenses\zapret-LICENSE.txt")
     Assert-FileExists $zipPath
-    Assert-NoRuntimeFiles $folder
+    Assert-NoRuntimeFiles $appFolder
 
-    $manifestPath = Join-Path $AppDir "build\windows\wails.exe.manifest"
-    $manifest = Get-Content $manifestPath -Raw
-    if ($manifest -notmatch 'requestedExecutionLevel level="requireAdministrator"') {
-        throw "Windows manifest does not request administrator privileges"
+    Assert-EmbeddedAdminManifest $dropoExe
+
+    $rootItems = @(Get-ChildItem -Path $appFolder | ForEach-Object { $_.Name } | Sort-Object)
+    $expectedRoot = @("dropo.exe", "resources")
+    if (($rootItems -join "|") -ne ($expectedRoot -join "|")) {
+        throw "Portable app root must contain only dropo.exe and resources/. Got: $($rootItems -join ', ')"
     }
 
-    $wailsConfig = Get-Content (Join-Path $AppDir "wails.json") -Raw | ConvertFrom-Json
-    if ($wailsConfig.name -ne "dropo" -or $wailsConfig.outputfilename -ne "dropo" -or $wailsConfig.info.productName -ne "dropo") {
-        throw "Wails metadata is not branded as dropo"
-    }
-
-    $oldBrandHits = Select-String -Path @(
-        (Join-Path $AppDir "frontend\index.html"),
-        (Join-Path $AppDir "wails.json")
-    ) -Pattern "Kampus VPN","kampus vpn" -SimpleMatch -ErrorAction SilentlyContinue
-    if ($oldBrandHits) {
-        throw "Old visible brand text remains: $($oldBrandHits[0].Path):$($oldBrandHits[0].LineNumber)"
-    }
-
-    $singBox = Join-Path $folder "bin\sing-box.exe"
-    $xray = Join-Path $folder "bin\xray.exe"
+    $singBox = Join-Path $runtimeFolder "bin\sing-box.exe"
+    $xray = Join-Path $runtimeFolder "bin\xray.exe"
     $singBoxOutput = & $singBox version 2>&1
     if ($LASTEXITCODE -ne 0) {
         throw "sing-box version check failed: $singBoxOutput"
@@ -188,7 +252,7 @@ function Invoke-ArtifactValidation {
     }
     Write-Host ($xrayOutput | Select-Object -First 1) -ForegroundColor Gray
 
-    $winws = Join-Path $folder "bin\winws.exe"
+    $winws = Join-Path $runtimeFolder "bin\winws.exe"
     $winwsOutput = & $winws --version 2>&1
     if ($LASTEXITCODE -ne 0 -and $winwsOutput -notmatch "winws") {
         throw "winws version check failed: $winwsOutput"
@@ -200,14 +264,28 @@ function Invoke-ArtifactValidation {
     try {
         Expand-Archive -Path $zipPath -DestinationPath $tempDir -Force
         Assert-FileExists (Join-Path $tempDir "dropo.exe")
-        Assert-FileExists (Join-Path $tempDir "bin\xray.exe")
-        Assert-FileExists (Join-Path $tempDir "bin\winws.exe")
+        Assert-FileExists (Join-Path $tempDir "resources\dropo-ui.exe")
+        Assert-FileExists (Join-Path $tempDir "resources\dropo-core.exe")
+        Assert-FileExists (Join-Path $tempDir "resources\flutter_windows.dll")
+        Assert-FileExists (Join-Path $tempDir "resources\data\flutter_assets\AssetManifest.bin")
+        Assert-FileExists (Join-Path $tempDir "resources\dependencies.json")
+        if (Test-Path (Join-Path $tempDir "resources\bin")) {
+            throw "Portable app zip must not contain bundled resources\bin"
+        }
+        if (Test-Path (Join-Path $tempDir "resources\app")) {
+            throw "Portable app zip must not contain legacy resources\app"
+        }
+        $zipRootItems = @(Get-ChildItem -Path $tempDir | ForEach-Object { $_.Name } | Sort-Object)
+        $expectedZipRoot = @("dropo.exe", "resources")
+        if (($zipRootItems -join "|") -ne ($expectedZipRoot -join "|")) {
+            throw "Portable app zip root must contain only dropo.exe and resources/. Got: $($zipRootItems -join ', ')"
+        }
         Assert-NoRuntimeFiles $tempDir
     } finally {
         Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
     }
 
-    return $folder
+    return $appFolder
 }
 
 function Invoke-RuntimeSmoke {
@@ -672,6 +750,64 @@ function Invoke-TrayLifecycleSmoke {
     }
 }
 
+function Invoke-BridgeStartupSmoke {
+    param([string]$Folder)
+
+    $runtimeFolder = New-RuntimeReleaseCopy -Folder $Folder
+    $exePath = Join-Path $runtimeFolder "dropo.exe"
+    $corePath = Join-Path $runtimeFolder "resources\dropo-core.exe"
+    $process = $null
+
+    Get-NetTCPConnection -LocalPort 17890 -State Listen -ErrorAction SilentlyContinue | ForEach-Object {
+        $proc = Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue
+        if ($proc -and $proc.ProcessName -eq "dropo-core" -and $proc.Path -like "$runtimeFolder*") {
+            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    try {
+        $process = Start-Process -FilePath $exePath -WorkingDirectory $runtimeFolder -WindowStyle Hidden -PassThru
+        Assert-DropoProcessAlive -Process $process -ExpectedPath $exePath -Stage "after Start-Process"
+
+        $status = $null
+        $deadline = (Get-Date).AddSeconds(30)
+        do {
+            try {
+                $status = Invoke-RestMethod -Uri "http://127.0.0.1:17890/api/status" -TimeoutSec 2
+                break
+            } catch {
+                Start-Sleep -Milliseconds 500
+            }
+        } while ((Get-Date) -lt $deadline)
+
+        if (-not $status) {
+            throw "dropo core bridge did not answer /api/status"
+        }
+
+        $coreProcess = Get-Process -Name "dropo-core" -ErrorAction SilentlyContinue |
+            Where-Object { $_.Path -eq $corePath } |
+            Select-Object -First 1
+        if (-not $coreProcess) {
+            throw "Bundled dropo-core.exe was not started"
+        }
+
+        Write-Host "  bridge version: $($status.version.fullVersion)" -ForegroundColor DarkGray
+        Write-Host "  dependencies ready: $($status.dependencies.ready)" -ForegroundColor DarkGray
+    } finally {
+        if ($process -and -not $process.HasExited) {
+            Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+        }
+        Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+            Where-Object {
+                $_.ExecutablePath -and $_.ExecutablePath.ToLowerInvariant().StartsWith(($runtimeFolder.TrimEnd('\') + '\').ToLowerInvariant())
+            } |
+            ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+        Start-Sleep -Milliseconds 500
+        Assert-NoRuntimeProcesses -RuntimeFolder $runtimeFolder
+        Remove-Item -Path $runtimeFolder -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Invoke-WireGuardSmoke {
     if (-not $WireGuardConfigPath) {
         return
@@ -689,31 +825,23 @@ Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "   dropo Release Preflight" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
+$flutterCommand = Get-FlutterCommand
+if (-not $flutterCommand) {
+    throw "Flutter SDK was not found. Add flutter to PATH or install it at E:\flutter-sdk\flutter."
+}
+
 if (-not $SkipInstall) {
-    Invoke-Step "Install frontend dependencies" {
-        $packageLock = Join-Path $FrontendDir "package-lock.json"
-        if (Test-Path $packageLock -PathType Leaf) {
-            Invoke-External "npm" @("ci") $FrontendDir
-        } else {
-            Invoke-External "npm" @("install") $FrontendDir
-        }
+    Invoke-Step "Flutter pub get" {
+        Invoke-External $flutterCommand @("pub", "get") $FlutterDir
     }
 }
 
-Invoke-Step "Build frontend" {
-    Invoke-External "npm" @("run", "build") $FrontendDir
+Invoke-Step "Flutter analyze" {
+    Invoke-External $flutterCommand @("analyze") $FlutterDir
 }
 
-if ($WithVisual -and $InstallBrowsers) {
-    Invoke-Step "Install Playwright Chromium" {
-        Invoke-External "npx" @("playwright", "install", "chromium") $FrontendDir
-    }
-}
-
-if ($WithVisual) {
-    Invoke-Step "Run visual click tests" {
-        Invoke-External "npm" @("run", "test:e2e") $FrontendDir
-    }
+Invoke-Step "Flutter tests" {
+    Invoke-External $flutterCommand @("test") $FlutterDir
 }
 
 Invoke-Step "Run Go tests" {
@@ -761,8 +889,8 @@ Invoke-Step "Check administrator privileges for app lifecycle smoke" {
     }
 }
 
-Invoke-Step "Run app tray lifecycle smoke" {
-    Invoke-TrayLifecycleSmoke -Folder $releaseFolderForRuntime
+Invoke-Step "Run app bridge lifecycle smoke" {
+    Invoke-BridgeStartupSmoke -Folder $releaseFolderForRuntime
 }
 
 if ($WithNetwork) {

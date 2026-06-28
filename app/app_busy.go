@@ -3,8 +3,6 @@ package main
 import (
 	"fmt"
 	"sync/atomic"
-
-	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 func (a *App) beginBusy(message string) string {
@@ -39,15 +37,10 @@ func (a *App) emitBusy(id string, active bool, message string) {
 	if a.isShuttingDown() {
 		return
 	}
-	ctx := a.ctx
-	if ctx == nil {
-		return
-	}
-
 	payload := map[string]interface{}{
 		"id":      id,
 		"active":  active,
 		"message": message,
 	}
-	wailsRuntime.EventsEmit(ctx, "app-busy", payload)
+	a.emitEvent("app-busy", payload)
 }

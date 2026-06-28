@@ -15,8 +15,6 @@ import (
 	"strings"
 	"syscall"
 	"time"
-
-	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // getActiveConfigPath writes active config to file and returns the path.
@@ -114,6 +112,7 @@ func (a *App) Start() map[string]interface{} {
 	// Fresh VPN session: allow exactly one background strategy search per
 	// service again (see requestRouteStrategyMaintenance / the maintenance loop).
 	a.resetRouteStrategySession()
+	a.tgProxyPromptedSession.Store(false)
 
 	startupSucceeded := false
 	defer func() {
@@ -176,7 +175,7 @@ func (a *App) Start() map[string]interface{} {
 	networkMode := a.currentNetworkModeStatus()
 	a.writeLog(fmt.Sprintf("[NetworkMode] requested=%s active=%s fallback=%t reason=%s", networkMode.Requested, networkMode.Active, networkMode.Fallback, networkMode.FallbackReason))
 	if networkMode.Fallback && a.ctx != nil {
-		wailsRuntime.EventsEmit(a.ctx, "network-mode-fallback", networkModeStatusPayload(networkMode))
+		a.emitEvent("network-mode-fallback", networkModeStatusPayload(networkMode))
 	}
 
 	// Open log file
@@ -520,7 +519,7 @@ func (a *App) Start() map[string]interface{} {
 		a.mu.Unlock()
 		// Notify frontend about status change
 		if a.ctx != nil {
-			wailsRuntime.EventsEmit(a.ctx, "vpn-status-changed", false)
+			a.emitEvent("vpn-status-changed", false)
 		}
 	}(cmd, cmdDone)
 	startupSucceeded = true
@@ -837,7 +836,7 @@ func (a *App) monitorSingBoxProcess(cmd *exec.Cmd, done chan error) {
 	a.closeLogFile()
 	a.mu.Unlock()
 	if a.ctx != nil {
-		wailsRuntime.EventsEmit(a.ctx, "vpn-status-changed", false)
+		a.emitEvent("vpn-status-changed", false)
 	}
 }
 
@@ -1053,7 +1052,7 @@ func (a *App) Stop() map[string]interface{} {
 		a.closeLogFile()
 		UpdateTrayIcon("disconnected")
 		if a.ctx != nil {
-			wailsRuntime.EventsEmit(a.ctx, "vpn-status-changed", false)
+			a.emitEvent("vpn-status-changed", false)
 		}
 		return map[string]interface{}{
 			"success": true,
@@ -1112,7 +1111,7 @@ func (a *App) Stop() map[string]interface{} {
 	a.mu.Unlock()
 	UpdateTrayIcon("disconnected")
 	if !processExited && a.ctx != nil {
-		wailsRuntime.EventsEmit(a.ctx, "vpn-status-changed", false)
+		a.emitEvent("vpn-status-changed", false)
 	}
 
 	return map[string]interface{}{
@@ -1430,7 +1429,7 @@ func (a *App) startNativeWireGuardTunnels() {
 		a.writeLog(fmt.Sprintf("[WireGuard] Tunnel %d was restarted by health check", configID))
 		a.AddToLogBuffer(fmt.Sprintf("WireGuard туннель %d: переподключен", configID))
 		// Emit event to frontend
-		wailsRuntime.EventsEmit(a.ctx, "wireguard-tunnel-restarted", configID)
+		a.emitEvent("wireguard-tunnel-restarted", configID)
 	})
 
 	started := 0
@@ -1634,8 +1633,8 @@ func resolveTelegramTransport(settings GlobalAppSettings, hasVPN bool) string {
 //     bypass-telegram→VPN). Needs a non-RU exit to actually reach Telegram.
 //   - none: stop the sidecar.
 //
-// The tg://proxy link is (re-)opened by a presence watcher that checks whether
-// Telegram is actually connected to our local proxy, not by a one-time flag.
+// The tg://proxy link is offered at most once per VPN session. Telegram exposes
+// no API to inspect or remove saved proxies, so repeated prompts are intrusive.
 func (a *App) startTelegramProxyIfNeeded(activeConfig map[string]interface{}) {
 	if a.tgwsproxy == nil || !a.tgwsproxy.IsInstalled() {
 		return
@@ -1673,19 +1672,15 @@ func (a *App) startTelegramProxyIfNeeded(activeConfig map[string]interface{}) {
 		a.writeLog("[Telegram] MTProto sidecar active (free WS bypass primary)")
 	}
 
-	// Telegram exposes no API to read/remove its proxy config and tg:// can only
-	// ADD one, so instead of a one-time boolean we check whether Telegram is
-	// actually connected to our local proxy (127.0.0.1:1443) and (re-)open the
-	// tg://proxy link whenever it is not — covering "user removed it", a fresh
-	// portable extract, or a declined prompt.
-	a.markTelegramProxyInjected()
-	go a.telegramProxyInitialCheck() // deterministic check on every VPN start
-	a.ensureTelegramProxyWatcher()   // periodic mid-session check
+	// Give an already-saved proxy a short grace period to connect, then offer the
+	// tg://proxy link once if Telegram is running and not connected to the local
+	// sidecar. We do not keep re-opening Telegram mid-session.
+	go a.telegramProxyInitialPromptOnce()
 }
 
-// reAddTelegramProxyIfMissing re-opens the tg://proxy link when Telegram is
-// running but not currently connected to our local sidecar. Returns true if a
-// link was opened. Logged so the decision is visible in client logs.
+// reAddTelegramProxyIfMissing opens the tg://proxy link when Telegram is running
+// but not currently connected to our local sidecar. Returns true if a link was
+// opened. Logged so the decision is visible in client logs.
 func (a *App) reAddTelegramProxyIfMissing(reason string) bool {
 	if a.tgwsproxy == nil || !a.tgwsproxy.IsInstalled() || !a.tgwsproxy.IsRunning() {
 		return false
@@ -1700,23 +1695,36 @@ func (a *App) reAddTelegramProxyIfMissing(reason string) bool {
 		a.writeLog(fmt.Sprintf("[Telegram] presence check (%s): Telegram not running — skip", reason))
 		return false
 	}
-	if telegramProxyHasActiveConnection(uint16(TgWsProxyDefaultPort)) {
+	port := TgWsProxyDefaultPort
+	if cfg, ok := a.tgwsproxy.readConfig(); ok {
+		cfg = normalizeTgWsProxyConfig(cfg)
+		if cfg.Port > 0 && cfg.Port <= 65535 {
+			port = cfg.Port
+		}
+	}
+	if telegramProxyHasActiveConnection(uint16(port)) {
 		a.writeLog(fmt.Sprintf("[Telegram] presence check (%s): proxy already in use — nothing to do", reason))
 		return false
 	}
-	a.writeLog(fmt.Sprintf("[Telegram] presence check (%s): no active proxy connection — re-opening tg://proxy", reason))
+	a.writeLog(fmt.Sprintf("[Telegram] presence check (%s): no active proxy connection — opening tg://proxy once", reason))
 	a.tgwsproxy.AutoConnectTelegram()
 	return true
 }
 
-// telegramProxyInitialCheck runs once per VPN start: after a short grace period
-// (so an already-saved proxy has time to connect) it adds the proxy if missing.
-func (a *App) telegramProxyInitialCheck() {
-	time.Sleep(7 * time.Second)
+// telegramProxyInitialPromptOnce runs once per VPN start: after a short grace
+// period (so an already-saved proxy has time to connect) it offers the proxy if
+// missing. It never repeats within the same VPN session.
+func (a *App) telegramProxyInitialPromptOnce() {
+	time.Sleep(3 * time.Second)
 	if a.isShuttingDown() {
 		return
 	}
-	a.reAddTelegramProxyIfMissing("vpn-start")
+	if !a.tgProxyPromptedSession.CompareAndSwap(false, true) {
+		return
+	}
+	if a.reAddTelegramProxyIfMissing("vpn-start") {
+		a.markTelegramProxyInjected()
+	}
 }
 
 // markTelegramProxyInjected persists that dropo manages a Telegram proxy, so the
@@ -1735,50 +1743,14 @@ func (a *App) markTelegramProxyInjected() {
 	}
 }
 
-// ensureTelegramProxyWatcher starts (once) a background loop that keeps the
-// Telegram proxy present: if Telegram is running but not connected to our local
-// sidecar (proxy removed/disabled/never accepted), it re-opens the tg://proxy
-// link. Self-guarded so only one loop runs for the app's lifetime.
-func (a *App) ensureTelegramProxyWatcher() {
-	if a == nil || a.tgwsproxy == nil || !a.tgwsproxy.IsInstalled() {
-		return
-	}
-	if !a.tgProxyWatcher.CompareAndSwap(false, true) {
-		return
-	}
-	go a.telegramProxyWatchLoop()
-}
-
-func (a *App) telegramProxyWatchLoop() {
-	defer a.tgProxyWatcher.Store(false)
-
-	const (
-		interval      = 25 * time.Second
-		reAddCooldown = 90 * time.Second // don't re-prompt more often than this
-	)
-
-	var lastReAdd time.Time
-	for {
-		time.Sleep(interval)
-		if a.isShuttingDown() {
-			return
-		}
-		if time.Since(lastReAdd) < reAddCooldown {
-			continue
-		}
-		if a.reAddTelegramProxyIfMissing("watcher") {
-			lastReAdd = time.Now()
-		}
-	}
-}
-
 // TelegramProxyStatusInfo is returned to the frontend so it can show the cleanup
 // banner/button for the local MTProto proxy saved inside Telegram.
 type TelegramProxyStatusInfo struct {
-	Injected        bool   `json:"injected"`        // dropo opened the tg://proxy link at least once
-	RecommendRemove bool   `json:"recommendRemove"` // Telegram is now carried by the VPN, so the saved proxy should be removed
-	ProxyLink       string `json:"proxyLink"`       // the tg://proxy link (for re-adding / reference)
-	ShowNotice      bool   `json:"showNotice"`      // show the exit cleanup notice (the sidecar ran this session)
+	Injected         bool   `json:"injected"`         // dropo opened the tg://proxy link at least once
+	RecommendRemove  bool   `json:"recommendRemove"`  // Telegram is now carried by the VPN, so the saved proxy should be removed
+	ProxyLink        string `json:"proxyLink"`        // the tg://proxy link (for re-adding / reference)
+	ActiveConnection bool   `json:"activeConnection"` // Telegram is actively connected to the local proxy port
+	ShowNotice       bool   `json:"showNotice"`       // show the exit cleanup notice
 }
 
 // TelegramProxyStatus reports whether a local Telegram proxy was injected and
@@ -1792,10 +1764,16 @@ func (a *App) TelegramProxyStatus() TelegramProxyStatusInfo {
 		if link, ok := a.tgwsproxy.TelegramProxyLink(); ok {
 			info.ProxyLink = link
 		}
+		if cfg, ok := a.tgwsproxy.readConfig(); ok {
+			cfg = normalizeTgWsProxyConfig(cfg)
+			if cfg.Port > 0 && cfg.Port <= 65535 {
+				info.ActiveConnection = telegramProxyHasActiveConnection(uint16(cfg.Port))
+			}
+		}
 	}
 	// Recommend removal when a proxy is saved in Telegram but the sidecar is no
 	// longer the chosen transport (VPN carries Telegram, or free is disabled).
-	info.RecommendRemove = info.Injected && a.tgwsproxy != nil && !a.tgwsproxy.IsRunning()
+	info.RecommendRemove = info.Injected && (info.ActiveConnection || (a.tgwsproxy != nil && !a.tgwsproxy.IsRunning()))
 	return info
 }
 

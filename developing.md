@@ -1,194 +1,137 @@
-# dropo - заметки для разработки и агентов
+# dropo - Flutter + Go-core development plan
 
-> Канонические документы: пользовательское/архитектурное описание — `README.md`;
-> тестирование (все слои + лаба-цензор) — `docs/TESTING.md`; лаба — `testlab/`.
-> Этот файл — рабочие заметки; при расхождении приоритет у README/TESTING.
-> Платформа: реализован Windows; Android/macOS/Linux — тот же смысл, реализация позже.
+> Live engineering plan. User-facing docs live in `README.md`; release/update
+> details live in `docs/UPDATE.md`; test details live in `docs/TESTING.md`.
 
-## Что реализуем
+## Current State
 
-dropo - Windows-first VPN-клиент на Wails/Go с HTML/CSS/JS UI.
+- Windows production UI is Flutter (`flutter_app/`).
+- Windows runtime is the existing Go logic under `app/`, now running as a
+  headless `dropo-core.exe` with a local HTTP bridge.
+- The Flutter runner (`dropo.exe`) starts bundled `dropo-core.exe` on Windows.
+- The previous HTML desktop shell has been removed from the repository.
+- Windows dependency split is unchanged:
+  `dropo-Windows-Portable-x64.zip` plus
+  `dropo-Windows-Dependencies-x64.zip` referenced through `deps-lock.json`.
 
-Основные контуры:
+## Non-Negotiable Behavior
 
-- sing-box для подписок и маршрутизации.
-- Нативный WireGuard для рабочих сетей.
-- ByeDPI (`ciadpi.exe`), optional SpoofDPI and zapret/winws как бесплатный доступ без VPN-ключа.
-- Единое хранилище `resources/settings.json`.
-- UI 2.0: главный экран сохранён по структуре, разделы открываются как левая drawer-панель до `90vw`.
+- Version is still read from `version.json`.
+- Windows release artifact names stay stable.
+- Normal traffic stays direct by default.
+- RU services and Gosuslugi stay direct.
+- Generic Google traffic stays direct; YouTube is handled as its own service.
+- AI/dev services blocked by remote-side policy for Russian users are
+  VPN-forced: ChatGPT/OpenAI/Codex, Claude/Anthropic, Copilot, Cursor,
+  Perplexity, Gemini, xAI/Grok, Meta AI and similar tools.
+- DPI-blocked services try free bypass first, then VPN fallback where possible.
+- Android must use `VpnService`; no root-only path for the public APK.
 
-## Правила UI
+## Architecture
 
-- Настройки применяются сразу, кнопки `Сохранить` в настройках нет.
-- Сохранение подписки, WireGuard-конфига, шаблона и профиля остаётся явным, потому что там пользователь подтверждает вводимые данные.
-- Toast-уведомления показываются справа снизу и имеют `z-index` выше панелей.
-- Основной логотип: `Dr` + поднятое `opo`; favicon и bitmap/ico-ассеты должны соответствовать этому знаку.
-- Не возвращать центральные модалки для разделов приложения. Базовый слой `.modal-overlay/.modal` намеренно работает как drawer.
-- Отключение VPN не должно открывать глобальный loader/modal. Центральная кнопка остаётся inline-loader, а статусы остановки sing-box, WireGuard, free-access и cleanup показываются под кнопкой.
-- `Тест доступности сервисов` в приложении должен оставаться нативной Go-проверкой с событиями `client-check-*`: без запуска PowerShell, без мигающих окон и без записи результата в общий лог.
-- В UI сетевого режима всегда различайте requested и active mode. Bottom-pill показывает active mode, fallback banner показывает причину, если active отличается от требуемого режима.
-- Панель `Ping` не должна дублировать методы отдельным блоком. Во время активного VPN один список показывает сервис, текущий метод обхода и ping; `Показать все` открывает тот же набор полностью.
+```text
+flutter_app/
+  lib/                      # Flutter Windows/Android UI
+  test/                     # Flutter widget tests
 
-## Где менять
+app/
+  main.go                   # headless Go-core process
+  http_bridge.go            # local HTTP bridge for Flutter
+  app_api_*.go              # VPN, profiles, subscription, update APIs
+  core_*.go                 # routing, storage, filters, WireGuard, sidecars
+```
 
-- Основной UI: `app/frontend/index.html`.
-- Старые модульные файлы поддержки: `app/frontend/js/*`, `app/frontend/css/*`.
-- Backend API настроек: `app/app_api_settings.go`.
-- Storage и генерация active config: `app/core_storage.go`.
-- WireGuard: `app/core_wireguard.go`, `app/core_wireguard_native.go`.
-- Build/release: `version.json`, `app/wails.json`, `build.ps1`.
+Windows release layout:
 
-## Настройки
+```text
+release/dropo-<version>-<hash>/
+  dropo/
+    dropo.exe               # Flutter runner
+    dropo-core.exe          # Go-core bridge/runtime
+    data/                   # Flutter assets
+    dependencies.json       # deps manifest
+  dropo-Windows-Portable-x64.zip
+```
 
-Приложение требует elevation через Windows manifest (`requireAdministrator`), поэтому UAC появляется до инициализации Wails/Go.
+## Development Commands
 
-Общий autosave в UI:
+Hot reload:
 
-- `scheduleAutoSaveSettings()`
-- `autoSaveSettings()`
-- `saveSettings()` оставлен как совместимый alias
+```powershell
+# terminal 1
+cd app
+go run . --no-tray --listen 127.0.0.1:17890
 
-Отдельные backend-методы с немедленным применением:
+# terminal 2
+cd flutter_app
+flutter run -d windows --dart-define=DROPO_CORE_ENDPOINT=http://127.0.0.1:17890
+```
 
-- `SetRoutingMode`
-- `SetDisableFreeAccess`
-- `SetHideRuTraffic`
+Release build:
 
-RU proxy сохраняется с debounce, чтобы не валидировать незавершённый URL на каждый символ.
+```powershell
+.\build.ps1 -Build
+.\build.ps1 -AppOnly
+.\build.ps1 -Android
+```
 
-`Бесплатный доступ` должен работать без добавленной VPN-подписки. **Без подписки** dropo идёт в `Deep Windows`: native zapret/winws через WinDivert без sing-box TUN, чтобы не ломать поведение официального zapret-скрипта. **С подпиской** (или когда плану нужен proxy/VPN слой — VLESS, AI/VPN-only, except-RU, all-traffic, RU-proxy, forced VPN) dropo идёт в `Compatibility TUN`: маршрутизацией владеет sing-box TUN, а winws-движок desync запускается **рядом** (гибрид) — `bypass-<service>` становится `urltest[direct, VPN]`, где winws десинхронизирует `direct` (free), а недоступное уходит в VPN. Сервисы blockType `vpn`/`proxy` (Meta, WhatsApp, Telegram) идут в VPN, а не в «мёртвый» direct. `.srs` базы маршрутизации обновляются только на этапе сборки: `build.ps1` проверяет upstream Re-filter release, скачивает более свежие базы в `dependencies/filters`, пересобирает community/discord списки через bundled `sing-box` и копирует проверенный набор в релиз. На клиентской машине приложение только читает bundled `bin/filters` и не скачивает новые базы. Перед записью `active_config.json` storage выбирает доступный порт для `mixed-in`, удаляет risky `tcp_fast_open/tcp_multi_path` и stale `bind_interface`/bind-address поля из `direct` outbound, чтобы не ломать TLS и прямую маршрутизацию в fallback TUN.
-
-## Брендинг
-
-Новое имя: `dropo`.
-
-Новые пользовательские артефакты:
-
-- `dropo.exe`
-- `dropo-{version}-{hash}.zip`
-- `dropo-{version}-setup.exe`
-- `%LOCALAPPDATA%\dropo\logs\dropo-YYYYMMDD-HHMMSS.log`
-- `%TEMP%\dropo\dropo-YYYYMMDD-HHMMSS.log`
-
-Legacy-имена `KampusVPN` и `kampus-wg-` оставлены только для миграции/очистки старых данных.
-
-## Проверка без VPN-ключа
-
-1. Запустить приложение.
-2. Открыть настройки.
-3. Проверить, что панель выезжает слева.
-4. Убедиться, что тумблера `Включить бесплатный доступ` больше нет: бесплатные методы работают по умолчанию.
-5. Переключить `Не использовать бесплатные методы` и убедиться, что изменение применяется без кнопки сохранения.
-6. Вернуть `Не использовать бесплатные методы` в выключенное состояние.
-7. Нажать основную кнопку подключения без добавления VPN-подписки.
-8. Проверить `tools/check-services.ps1 -Phase2Only`.
-
-Runtime smoke без подписки:
+## Test Gate
 
 ```powershell
 cd app
-$env:DROPO_TEST_FREE_ACCESS_BASE = "<release-folder>"
-go test ./... -run TestManualFreeAccessRuntimeFromEnv -count=1 -v
-Remove-Item Env:\DROPO_TEST_FREE_ACCESS_BASE
+go test ./...
+
+cd ..\flutter_app
+flutter analyze
+flutter test
+
+cd ..
+.\build.ps1 -Build
 ```
 
-Runtime smoke with a subscription:
+Runtime smoke after build:
 
-```powershell
-cd app
-$env:DROPO_TEST_FREE_ACCESS_BASE = "<release-folder>"
-$env:DROPO_TEST_SUBSCRIPTION_URL = "<subscription-url>"
-go test ./... -run TestManualSubscriptionRuntimeFromEnv -count=1 -v
-Remove-Item Env:\DROPO_TEST_FREE_ACCESS_BASE, Env:\DROPO_TEST_SUBSCRIPTION_URL
-```
+1. Start `release/dropo-<version>-<hash>/dropo/dropo.exe`.
+2. Confirm it starts the bundled `dropo-core.exe`.
+3. Confirm `http://127.0.0.1:17890/api/status` responds with the same version.
+4. Confirm dependencies status is reported through the bridge.
 
-Routing diagnostic note: `smart-bypass` and every `bypass-<service>` group start as bypass/VPN-only groups. Startup uses saved/default free strategies for speed. The old home-screen `Test` route probe is removed; the user-facing checks now live in Settings: `🔍 Проверить` (native availability test, streamed `client-check-*` events) and `🩻 Снять отпечаток` (provider DPI fingerprint — see `docs/TESTING.md`). Failed blocked services enqueue a per-service maintenance job. With a subscription, only the failed service group is switched to `auto-select` as a temporary VPN fallback; without a subscription, the service goes straight to the maintenance queue. The listener processes one service at a time and keeps the first working free strategy it finds. Proxy-style free methods are ByeDPI (`byedpi`, `byedpi-sni`, `byedpi-oob`, `byedpi-fake`) plus optional SpoofDPI (`spoofdpi-socks`). Engine selection: **without a subscription** Deep Windows is primary (winws via WinDivert, no TUN); **with a subscription** dropo uses Compatibility TUN (sing-box owns routing) and runs winws desync **alongside** it (hybrid), so each `bypass-<service>` is `urltest[direct, VPN]` — winws desyncs the `direct` path (free), unreachable falls to VPN. Compatibility TUN **without** winws is only the emergency fallback if the Deep Windows engine cannot start. Services with blockType `vpn`/`proxy` (Meta, WhatsApp, Telegram) route to the VPN group, not a dead `direct` path. Subscription `auto-select` is a selector with the first stored proxy as default; the UI sorts proxies by measured ping for manual selection. Helper processes (`ciadpi.exe`, `spoofdpi.exe`, `winws.exe`, `winws2.exe`) are routed `direct` early when sing-box is active to avoid loops. Telegram is a blocked-service route: `Telegram.exe`, Telegram domains and Telegram DC IP ranges go through `bypass-telegram`, not direct. VK, Yandex, Ozon, Sber and Gosuslugi remain direct by default in `blocked_only`. The "Открывать все иностранные сайты через VPN/обход" toggle maps to `except_russia`: RU services stay direct, final foreign traffic is marked for local proxy routing. DNS uses `ipv4_only` plus reverse mapping so direct sites do not fail on clients without IPv6. Session logs include `[Diag]`, `[DeepWindowsPlan]`, `[RouteProbe]`, `[FreeAccess]`, `[Zapret]` and WinDivert service-status lines.
+## Completed Migration Work
 
-AI routing note: the `openai` service tag now covers OpenAI/ChatGPT/Codex, Claude/Anthropic, GitHub Copilot, Cursor, Perplexity, Gemini, xAI/Grok and Meta AI endpoints. This service is VPN-only because ByeDPI does not change the public hosting IP and cannot fix foreign-side geo/API restrictions. When a subscription/VLESS key exists, `bypass-openai` is created with `auto-select` as its only candidate. When no subscription exists, AI domains and IDE processes are routed direct/pass-through instead of trying ByeDPI.
+- [x] Added Flutter project for Windows and Android.
+- [x] Added Kotlin Android `DropoVpnService` stub and manifest wiring.
+- [x] Added local HTTP bridge in Go-core.
+- [x] Replaced legacy desktop event calls with an internal event hub.
+- [x] Moved file-dialog dependent profile import/export to path-based APIs.
+- [x] Replaced Windows build path with Flutter runner + `dropo-core.exe`.
+- [x] Updated GitHub release workflow to install Flutter instead of the removed
+  desktop shell toolchain.
+- [x] Removed old HTML desktop frontend, old shell config, and old build output.
+- [x] Removed obsolete shell dependencies from `app/go.mod`.
+- [x] Built Windows artifact successfully:
+  `release/dropo-2.0.8-6a4d675/dropo-Windows-Portable-x64.zip`.
+- [x] Verified clean-port Flutter auto-start:
+  `dropo.exe` started bundled `dropo-core.exe`, `/api/status` returned
+  `2.0.8-6a4d675`, dependencies were ready.
 
-Windows routing note: without a subscription, Deep Windows (native `winws.exe`/WinDivert, no TUN) is the traffic layer. With a subscription dropo runs Compatibility TUN (sing-box TUN) **plus** the winws desync engine in parallel (`startComposedTransparentEngine`), so free desync still applies on the `direct` path while the subscription handles per-service VPN fallback. Helper egress (`winws.exe`, `tg-ws-proxy.exe`, ByeDPI, Xray) is routed `direct` early to avoid TUN loops; `tg-ws-proxy.exe` is omitted from the direct rule only when Telegram is forced to VPN. Telegram presence is verified live via the OS TCP table (re-injects `tg://proxy` if missing), not a one-time flag.
+## Remaining Work
 
-## Проверка с подпиской
+- [ ] Expand Flutter UI beyond the production smoke dashboard:
+  profiles, WireGuard editor, detailed settings, import/export file pickers,
+  update install flow, fingerprint capture flow and richer route diagnostics.
+- [ ] Add Flutter integration tests for the local bridge.
+- [ ] Add release-smoke automation for launching portable `dropo.exe` and
+  verifying bundled core startup.
+- [ ] Implement Android VPN permission flow with `VpnService.prepare()`.
+- [ ] Implement Android foreground service notification.
+- [ ] Implement Android TUN via `VpnService.Builder.establish()`.
+- [ ] Protect outbound helper sockets with `VpnService.protect()`.
+- [ ] Add Android-supported user-space bypass path.
+- [ ] Add Android release publishing as an extra asset without changing Windows
+  dependency archive rules.
 
-1. Добавить URL подписки через `Добавить VPN`.
-2. Нажать `Проверить`, затем сохранить подписку.
-3. Подключиться.
-4. Проверить статус, ping-панель, список серверов, статистику и логи.
-5. Запустить `tools/check-services.ps1`.
+## Safety Rules
 
-Для быстрой проверки парсинга без записи секретов в проект можно использовать env-driven тест:
-
-```powershell
-cd app
-$env:DROPO_TEST_SUBSCRIPTION_URL = "<subscription-url>"
-go test ./... -run TestManualSubscriptionURLFromEnv -count=1
-Remove-Item Env:\DROPO_TEST_SUBSCRIPTION_URL
-```
-
-## Проверка WireGuard
-
-1. Открыть `Рабочие сети`.
-2. Добавить WireGuard-конфиг.
-3. Проверить парсинг, сохранить.
-4. Подключиться и проверить корпоративные домены, например `kampus.internal`, если тестовая сеть доступна.
-5. Запустить `tools/check-routes.ps1`.
-
-Парсинг WireGuard-конфига можно проверить без сохранения ключей:
-
-```powershell
-cd app
-$env:DROPO_TEST_WG_CONFIG = @"
-<wireguard-config>
-"@
-go test ./... -run TestManualWireGuardConfigFromEnv -count=1
-Remove-Item Env:\DROPO_TEST_WG_CONFIG
-```
-
-## Release
-
-Версия задаётся в `version.json`.
-
-Перед публичным билдом запускайте preflight. Минимальный gate:
-
-```powershell
-.\tools\preflight-release.ps1 -WithVisual -InstallBrowsers -Build
-```
-
-Полный gate с сетевыми runtime-smoke требует elevated PowerShell:
-
-```powershell
-$env:DROPO_TEST_SUBSCRIPTION_URL = "<subscription-url>"
-.\tools\preflight-release.ps1 -WithVisual -InstallBrowsers -WithNetwork -WithSubscription -Build
-Remove-Item Env:\DROPO_TEST_SUBSCRIPTION_URL
-```
-
-Для повторных прогонов на уже подготовленной машине можно добавить `-SkipInstall`, чтобы не переустанавливать npm-зависимости.
-
-Что проверяет preflight:
-
-- frontend build и Playwright visual/click E2E;
-- `go test ./...`;
-- наличие `dropo.exe`, `sing-box.exe`, `xray.exe`, WireGuard, ByeDPI, zapret/winws, `.srs` баз и license-файлов в релизе;
-- отсутствие runtime-файлов в ZIP;
-- `requireAdministrator` в Windows manifest;
-- отсутствие старого видимого бренда в пользовательском UI и metadata;
-- версии `sing-box` и `xray`;
-- optional free-access runtime smoke;
-- optional subscription/xHTTP runtime smoke;
-- optional WireGuard config parse smoke через `-WireGuardConfigPath`.
-
-```powershell
-.\build.ps1 -All
-```
-
-Ожидаемые артефакты:
-
-- `release/dropo-{version}-{hash}/dropo.exe`
-- `release/dropo-{version}-{hash}.zip`
-- `release/dropo-{version}-setup.exe`, если установлен NSIS
-
-## Осторожность
-
-- Не коммитить VPN private key, subscription URL или WireGuard secrets в документацию/fixtures.
-- Не удалять legacy-константы без отдельной миграционной задачи.
-- Не запускать destructive git-команды для очистки чужих изменений.
+- Never commit VPN subscription URLs, WireGuard private keys or user logs.
+- Keep Windows build passing before expanding Android/macOS/Linux work.
+- Do not route all traffic through VPN by default.

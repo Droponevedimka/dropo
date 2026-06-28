@@ -141,6 +141,39 @@ func TestTelegramProxyKeptAliveInVPNModeWhenInjected(t *testing.T) {
 	}
 }
 
+func TestPrepareQuitShowsTelegramNoticeWhenInjectedSidecarRanThisSession(t *testing.T) {
+	basePath := t.TempDir()
+	storage := NewStorage(basePath)
+	if err := storage.Init(); err != nil {
+		t.Fatalf("init storage failed: %v", err)
+	}
+	settings := storage.GetAppSettings()
+	settings.TelegramProxyInjected = true
+	if err := storage.UpdateAppSettings(settings); err != nil {
+		t.Fatalf("update settings failed: %v", err)
+	}
+
+	app := &App{
+		logBuffer: make([]string, 0, MaxLogBufferSize),
+		basePath:  basePath,
+		storage:   storage,
+		tgwsproxy: NewTgWsProxyManager(basePath, nil),
+	}
+	app.tgProxyStartedSession.Store(true)
+
+	status := app.PrepareQuit()
+
+	if !status.Injected {
+		t.Fatal("expected Telegram proxy injected flag to be reported")
+	}
+	if !status.ShowNotice {
+		t.Fatalf("expected exit cleanup notice when injected proxy exists and sidecar ran this session; status = %+v", status)
+	}
+	if !status.RecommendRemove {
+		t.Fatalf("expected Telegram cleanup recommendation; status = %+v", status)
+	}
+}
+
 func TestResolveTelegramTransport(t *testing.T) {
 	if serviceBlockType("telegram") != "proxy" {
 		t.Fatalf("precondition: telegram must be proxy-handled, got %q", serviceBlockType("telegram"))

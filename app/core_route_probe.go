@@ -16,7 +16,6 @@ import (
 	"sync"
 	"time"
 
-	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 	"golang.org/x/net/proxy"
 )
 
@@ -1216,8 +1215,8 @@ func (a *App) lastRouteProbeCatchAll() (routeProbeServiceResult, bool) {
 }
 
 func (a *App) emitRouteProbe(event string, payload interface{}) {
-	if a.ctx == nil || a.isShuttingDown() {
+	if a.isShuttingDown() {
 		return
 	}
-	wailsRuntime.EventsEmit(a.ctx, event, payload)
+	a.emitEvent(event, payload)
 }

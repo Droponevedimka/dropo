@@ -10,8 +10,6 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-
-	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // CheckForUpdates проверяет наличие обновлений (API для фронтенда)
@@ -61,7 +59,7 @@ func (a *App) DownloadAndInstallUpdate(downloadURL string) map[string]interface{
 		// Progress callback - can emit events if needed
 		if total > 0 {
 			progress := float64(downloaded) / float64(total) * 100
-			wailsRuntime.EventsEmit(a.ctx, "update-progress", progress)
+			a.emitEvent("update-progress", progress)
 		}
 	})
 
@@ -84,8 +82,9 @@ func (a *App) DownloadAndInstallUpdate(downloadURL string) map[string]interface{
 		}
 	}
 	execDir := filepath.Dir(execPath)
+	installDir, launchExe := resolvePortableInstallRoot(execDir)
 
-	updateScript, scriptContent, err := makeUpdateScript(tempFile, execPath, execDir)
+	updateScript, scriptContent, err := makeUpdateScript(tempFile, launchExe, installDir)
 	if err != nil {
 		return map[string]interface{}{
 			"success": false,
@@ -120,13 +119,27 @@ func (a *App) DownloadAndInstallUpdate(downloadURL string) map[string]interface{
 	// Quit the app
 	go func() {
 		time.Sleep(500 * time.Millisecond)
-		wailsRuntime.Quit(a.ctx)
+		a.FinalizeQuit()
 	}()
 
 	return map[string]interface{}{
 		"success": true,
 		"message": "Update downloaded, app will restart",
 	}
+}
+
+func resolvePortableInstallRoot(execDir string) (string, string) {
+	clean := filepath.Clean(execDir)
+	if strings.EqualFold(filepath.Base(clean), "resources") {
+		root := filepath.Dir(clean)
+		return root, filepath.Join(root, "dropo.exe")
+	}
+	if strings.EqualFold(filepath.Base(clean), "app") &&
+		strings.EqualFold(filepath.Base(filepath.Dir(clean)), "resources") {
+		root := filepath.Dir(filepath.Dir(clean))
+		return root, filepath.Join(root, "dropo.exe")
+	}
+	return clean, filepath.Join(clean, "dropo.exe")
 }
 
 func makeUpdateScript(tempFile, execPath, execDir string) (string, string, error) {

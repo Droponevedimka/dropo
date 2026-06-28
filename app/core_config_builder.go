@@ -189,6 +189,7 @@ func (b *ConfigBuilder) TestSubscription(subscriptionURL string) (*SubscriptionT
 	for _, p := range proxies {
 		result.Proxies = append(result.Proxies, ProxyInfo{
 			Type:   p.Type,
+			Raw:    p.Raw,
 			Name:   p.Name,
 			Server: p.Server,
 			Port:   p.ServerPort,
@@ -212,6 +213,7 @@ type SubscriptionTestResult struct {
 // ProxyInfo информация о прокси для UI
 type ProxyInfo struct {
 	Type   string `json:"type"`
+	Raw    string `json:"raw,omitempty"`
 	Name   string `json:"name"`
 	Server string `json:"server"`
 	Port   int    `json:"port"`

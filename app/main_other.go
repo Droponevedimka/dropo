@@ -2,8 +2,6 @@
 
 package main
 
-import "github.com/wailsapp/wails/v2/pkg/options"
-
 func acquireSingleInstance() (func(), bool) {
 	return nil, false
 }
@@ -13,7 +11,13 @@ func startPlatformTray() {
 	// adapter. Until then close-to-tray is disabled on non-Windows builds.
 }
 
-func applyPlatformWailsOptions(appOptions *options.App) {
+func ensurePlatformTray() {
+}
+
+func showPlatformWindow() {
+}
+
+func hidePlatformWindow() {
 }
 
 func UpdateTrayIcon(status string) {

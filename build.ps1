@@ -16,7 +16,11 @@ param(
     # Full-build mode: record the freshly built dependencies archive as hosted
     # on the current app version, even when depsVersion did not change. Use this
     # when re-baselining dependencies onto a new release tag.
-    [switch]$ForceDepsRelease
+    [switch]$ForceDepsRelease,
+    # Backward-compatible alias: Windows is now built with Flutter + Go core.
+    [switch]$Flutter,
+    # Opt-in Android artifact build for the Flutter migration path.
+    [switch]$Android
 )
 
 $ErrorActionPreference = "Stop"
@@ -375,15 +379,42 @@ if ($Clean) {
     }
 }
 
+function New-AppOnlyArchive {
+    param(
+        [string]$SourceAppFolder,
+        [string]$DestinationZip
+    )
+
+    $stageDir = Join-Path $env:TEMP ("dropo-appzip-" + [Guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $stageDir | Out-Null
+    try {
+        Copy-Item -Path (Join-Path $SourceAppFolder "*") -Destination $stageDir -Recurse -Force
+        foreach ($relativeBin in @("resources\bin", "resources\app\bin")) {
+            $nestedBin = Join-Path $stageDir $relativeBin
+            if (Test-Path $nestedBin) {
+                Remove-Item -LiteralPath $nestedBin -Recurse -Force
+            }
+        }
+        if (Test-Path $DestinationZip) { Remove-Item $DestinationZip -Force }
+        Compress-Archive -Path (Get-ChildItem -Path $stageDir).FullName -DestinationPath $DestinationZip -CompressionLevel Optimal
+    } finally {
+        Remove-Item -LiteralPath $stageDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 # Build application
 function Build-Application {
     Write-Host ""
     Write-Host "Building application..." -ForegroundColor Yellow
 
-    # Check wails
-    $wails = Get-Command wails -ErrorAction SilentlyContinue
-    if (-not $wails) {
-        Write-Host "[ERROR] Wails not found! Install it with: go install github.com/wailsapp/wails/v2/cmd/wails@latest" -ForegroundColor Red
+    $FlutterCmd = Get-FlutterCommand
+    if (-not $FlutterCmd) {
+        Write-Host "[ERROR] Flutter SDK not found. Install Flutter or use E:\flutter-sdk\flutter\bin\flutter.bat" -ForegroundColor Red
+        exit 1
+    }
+    $FlutterDir = Join-Path $ScriptRoot "flutter_app"
+    if (-not (Test-Path $FlutterDir)) {
+        Write-Host "[ERROR] flutter_app/ not found." -ForegroundColor Red
         exit 1
     }
 
@@ -425,57 +456,73 @@ function Build-Application {
         New-Item -ItemType Directory -Path $AppFolder | Out-Null
     }
 
-    # Create resources directory
-    $resourcesDir = Join-Path $AppFolder "resources"
+    # Root contains only the launcher and resources/. The actual Flutter UI,
+    # Go core, manifests and runtime files live directly under resources/.
+    $RuntimeFolder = Join-Path $AppFolder "resources"
+    if (-not (Test-Path $RuntimeFolder)) {
+        New-Item -ItemType Directory -Path $RuntimeFolder | Out-Null
+    }
+    $resourcesDir = Join-Path $RuntimeFolder "resources"
     if (-not (Test-Path $resourcesDir)) {
         New-Item -ItemType Directory -Path $resourcesDir | Out-Null
     }
 
-    # Update wails.json version
-    $wailsJson = Join-Path $AppDir "wails.json"
-    $wailsConfig = Get-Content $wailsJson | ConvertFrom-Json
-    $wailsConfig.info.productVersion = $AppVersion
-    $wailsConfig | ConvertTo-Json -Depth 10 | Set-Content $wailsJson
-
-    # Build with ldflags (include build hash for dev identification)
+    # Build Go core with ldflags (include build hash for dev identification)
     $ldflags = "-X 'main.Version=$AppVersion' -X 'main.BuildTime=$BuildTime' -X 'main.BuildHash=$BuildHash' -X 'main.SingBoxVersion=$SingBoxVersion' -X 'main.WireGuardVersion=$WireGuardVersion' -s -w -H=windowsgui"
-
-    # Temp build directory
-    $buildBin = Join-Path $AppDir "build\bin"
 
     Push-Location $AppDir
     try {
-        Write-Host "Building version $AppVersion (hash: $BuildHash)..." -ForegroundColor Gray
-        $wailsArgs = @("build", "-ldflags", $ldflags, "-clean")
-        if ($env:DROPO_SKIP_FRONTEND -eq "1") {
-            Write-Host "[BUILD] DROPO_SKIP_FRONTEND=1, using existing frontend/dist" -ForegroundColor Yellow
-            $wailsArgs += "-s"
-        }
-        & wails @wailsArgs
+        Write-Host "Building dropo-core.exe $AppVersion (hash: $BuildHash)..." -ForegroundColor Gray
+        & go build -ldflags $ldflags -o (Join-Path $RuntimeFolder "dropo-core.exe") .
 
         if ($LASTEXITCODE -ne 0) {
-            Write-Host "[ERROR] Build failed!" -ForegroundColor Red
+            Write-Host "[ERROR] Go core build failed!" -ForegroundColor Red
             exit 1
         }
-
-        # Move built exe to release folder
-        $appExe = Join-Path $buildBin "dropo.exe"
-        if (Test-Path $appExe) {
-            Move-Item $appExe $AppFolder -Force
-            Write-Host "[OK] Built dropo.exe" -ForegroundColor Green
-        } else {
-            Write-Host "[ERROR] dropo.exe not found after build!" -ForegroundColor Red
-            exit 1
-        }
-
-        # Clean build directory
-        if (Test-Path $buildBin) {
-            Remove-Item -Path $buildBin -Recurse -Force -ErrorAction SilentlyContinue
-        }
-
+        Write-Host "[OK] Built dropo-core.exe" -ForegroundColor Green
     } finally {
         Pop-Location
     }
+
+    Push-Location $FlutterDir
+    try {
+        Write-Host "Building Flutter Windows UI..." -ForegroundColor Gray
+        & $FlutterCmd build windows --release --build-name $AppVersion --build-number 1 --dart-define "DROPO_CORE_ENDPOINT=http://127.0.0.1:17890"
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "[ERROR] Flutter Windows build failed." -ForegroundColor Red
+            exit 1
+        }
+    } finally {
+        Pop-Location
+    }
+    $FlutterOutput = Join-Path $FlutterDir "build\windows\x64\runner\Release"
+    if (-not (Test-Path $FlutterOutput)) {
+        Write-Host "[ERROR] Flutter output not found: $FlutterOutput" -ForegroundColor Red
+        exit 1
+    }
+    Set-WindowsAdminManifest -ExePath (Join-Path $FlutterOutput "dropo.exe")
+    Copy-Item -Path (Join-Path $FlutterOutput "*") -Destination $RuntimeFolder -Recurse -Force
+    $uiExe = Join-Path $RuntimeFolder "dropo.exe"
+    if (-not (Test-Path $uiExe)) {
+        Write-Host "[ERROR] dropo.exe not found after Flutter build!" -ForegroundColor Red
+        exit 1
+    }
+    Rename-Item -LiteralPath $uiExe -NewName "dropo-ui.exe" -Force
+    Write-Host "[OK] Built Flutter dropo-ui.exe" -ForegroundColor Green
+
+    Push-Location (Join-Path $ScriptRoot "launcher")
+    try {
+        Write-Host "Building dropo launcher..." -ForegroundColor Gray
+        & go build -ldflags "-s -w -H=windowsgui" -o (Join-Path $AppFolder "dropo.exe") .
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "[ERROR] dropo launcher build failed!" -ForegroundColor Red
+            exit 1
+        }
+    } finally {
+        Pop-Location
+    }
+    Set-WindowsAdminManifest -ExePath (Join-Path $AppFolder "dropo.exe")
+    Write-Host "[OK] Built launcher dropo.exe" -ForegroundColor Green
 
     # ---- AppOnly (CI): package app without bundled bin/, deps from deps-lock ----
     if ($AppOnly) {
@@ -483,7 +530,7 @@ function Build-Application {
         $templateSrc = Join-Path $AppDir "config\template.json"
         if (Test-Path $templateSrc) { Copy-Item $templateSrc $resourcesDir -Force }
         $repair = Join-Path $ScriptRoot "tools\repair-browser-proxy.ps1"
-        if (Test-Path $repair) { Copy-Item $repair (Join-Path $AppFolder "repair-browser-proxy.ps1") -Force }
+        if (Test-Path $repair) { Copy-Item $repair (Join-Path $RuntimeFolder "repair-browser-proxy.ps1") -Force }
 
         $lockPath = Join-Path $ScriptRoot "deps-lock.json"
         if (-not (Test-Path $lockPath)) {
@@ -505,12 +552,11 @@ function Build-Application {
             repo        = "Droponevedimka/dropo"
             requiredFiles = if ($lock.requiredFiles) { @($lock.requiredFiles) } else { $RequiredDepFiles }
         }
-        [System.IO.File]::WriteAllText((Join-Path $AppFolder "dependencies.json"), ($manifest | ConvertTo-Json), (New-Object System.Text.UTF8Encoding($false)))
+        [System.IO.File]::WriteAllText((Join-Path $RuntimeFolder "dependencies.json"), ($manifest | ConvertTo-Json), (New-Object System.Text.UTF8Encoding($false)))
 
         $AppAsset = $WindowsPortableAsset
         $zipFile = Join-Path $VersionDir $AppAsset
-        if (Test-Path $zipFile) { Remove-Item $zipFile -Force }
-        Compress-Archive -Path (Get-ChildItem -Path $AppFolder).FullName -DestinationPath $zipFile -CompressionLevel Optimal
+        New-AppOnlyArchive -SourceAppFolder $AppFolder -DestinationZip $zipFile
         $zipMB = [math]::Round((Get-Item $zipFile).Length / 1MB, 2)
         Write-Host "[OK] Created $AppAsset ($zipMB MB, AppOnly; deps=$($lock.asset))" -ForegroundColor Green
         Write-Host "[SUCCESS] App-only build: release/$BuildFolderName/" -ForegroundColor Green
@@ -518,7 +564,7 @@ function Build-Application {
     }
 
     # Create bin directory for sing-box
-    $binDir = Join-Path $AppFolder "bin"
+    $binDir = Join-Path $RuntimeFolder "bin"
     if (-not (Test-Path $binDir)) {
         New-Item -ItemType Directory -Path $binDir | Out-Null
     }
@@ -656,11 +702,11 @@ function Build-Application {
         }
     }
     if (Test-Path $TgWsProxyLicense -PathType Leaf) {
-        Copy-LicenseFile $TgWsProxyLicense (Join-Path $AppFolder "licenses") "tg-ws-proxy-LICENSE.txt"
+        Copy-LicenseFile $TgWsProxyLicense (Join-Path $RuntimeFolder "licenses") "tg-ws-proxy-LICENSE.txt"
     }
 
     # Copy third-party license notices required by bundled sidecar binaries.
-    $licensesDir = Join-Path $AppFolder "licenses"
+    $licensesDir = Join-Path $RuntimeFolder "licenses"
     Copy-LicenseFile (Join-Path $SingBoxDir "windows-amd64\sing-box-$SingBoxVersion-windows-amd64\LICENSE") $licensesDir "sing-box-LICENSE.txt"
     Copy-LicenseFile (Join-Path $XrayDir "LICENSE") $licensesDir "xray-LICENSE.txt"
     Copy-LicenseFile (Join-Path $WireGuardDir "LICENSE") $licensesDir "wireguard-windows-LICENSE.txt"
@@ -706,7 +752,7 @@ function Build-Application {
     foreach ($scriptName in $supportScripts) {
         $scriptPath = Join-Path $ScriptRoot "tools\$scriptName"
         if (Test-Path $scriptPath -PathType Leaf) {
-            Copy-Item $scriptPath (Join-Path $AppFolder $scriptName) -Force
+            Copy-Item $scriptPath (Join-Path $RuntimeFolder $scriptName) -Force
             Write-Host "[OK] Copied $scriptName" -ForegroundColor Green
         }
     }
@@ -799,7 +845,8 @@ function Build-Application {
     $lock = [ordered]@{ platform = $ReleasePlatform; arch = $ReleaseArch; depsVersion = $DepsVersion; tag = $depsTag; asset = $DepsAsset; sha256 = $depsSha; size = $depsSize; requiredFiles = $RequiredDepFiles }
     [System.IO.File]::WriteAllText($lockPath, ($lock | ConvertTo-Json), (New-Object System.Text.UTF8Encoding($false)))
 
-    # dependencies.json manifest ships INSIDE the app folder next to dropo.exe.
+    # dependencies.json manifest ships inside resources/ next to dropo-ui.exe
+    # and dropo-core.exe.
     # url points straight at the hosting release tag (name-based search is the Go
     # fallback if the tag asset ever moves).
     $depsUrl = "https://github.com/Droponevedimka/dropo/releases/download/$depsTag/$DepsAsset"
@@ -817,15 +864,14 @@ function Build-Application {
     }
     # Write UTF-8 WITHOUT BOM (Set-Content -Encoding utf8 adds a BOM that Go's
     # json.Unmarshal rejects).
-    [System.IO.File]::WriteAllText((Join-Path $AppFolder "dependencies.json"), ($manifest | ConvertTo-Json), (New-Object System.Text.UTF8Encoding($false)))
+    [System.IO.File]::WriteAllText((Join-Path $RuntimeFolder "dependencies.json"), ($manifest | ConvertTo-Json), (New-Object System.Text.UTF8Encoding($false)))
     Write-Host "[OK] Wrote dependencies.json (depsVersion=$DepsVersion, tag=$depsTag)" -ForegroundColor Green
 
     # app archive = the dropo/ app folder WITHOUT bin/ (small, ships every release)
     $AppAsset = $WindowsPortableAsset
     $zipFile = Join-Path $VersionDir $AppAsset
     if (Test-Path $zipFile) { Remove-Item $zipFile -Force }
-    $appItems = Get-ChildItem -Path $AppFolder -Exclude 'bin'
-    Compress-Archive -Path $appItems.FullName -DestinationPath $zipFile -CompressionLevel Optimal
+    New-AppOnlyArchive -SourceAppFolder $AppFolder -DestinationZip $zipFile
     $zipSize = (Get-Item $zipFile).Length / 1MB
     Write-Host "[OK] Created $AppAsset ($([math]::Round($zipSize, 2)) MB, app only - bin/ ships as $DepsAsset)" -ForegroundColor Green
 
@@ -846,6 +892,118 @@ function Build-Application {
         $relativePath = $_.FullName.Replace($VersionDir, "").TrimStart("\")
         Write-Host "  $relativePath$size" -ForegroundColor White
     }
+}
+
+function Get-FlutterCommand {
+    $flutter = Get-Command flutter -ErrorAction SilentlyContinue
+    if ($flutter) {
+        return $flutter.Source
+    }
+
+    $localFlutter = "E:\flutter-sdk\flutter\bin\flutter.bat"
+    if (Test-Path $localFlutter) {
+        return $localFlutter
+    }
+
+    return $null
+}
+
+function Get-MtCommand {
+    $mt = Get-Command mt.exe -ErrorAction SilentlyContinue
+    if ($mt) {
+        return $mt.Source
+    }
+
+    $kitsDir = "C:\Program Files (x86)\Windows Kits\10\bin"
+    if (Test-Path $kitsDir) {
+        $candidate = Get-ChildItem $kitsDir -Recurse -Filter mt.exe -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match "\\x64\\mt\.exe$" } |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+        if ($candidate) {
+            return $candidate.FullName
+        }
+    }
+
+    return $null
+}
+
+function Set-WindowsAdminManifest {
+    param([string]$ExePath)
+
+    $manifestPath = Join-Path $ScriptRoot "flutter_app\windows\runner\dropo_admin.manifest"
+    if (-not (Test-Path $manifestPath)) {
+        Write-Host "[ERROR] Admin manifest not found: $manifestPath" -ForegroundColor Red
+        exit 1
+    }
+
+    $mt = Get-MtCommand
+    if (-not $mt) {
+        Write-Host "[ERROR] mt.exe not found. Install Windows SDK / Visual Studio Build Tools." -ForegroundColor Red
+        exit 1
+    }
+
+    & $mt -manifest $manifestPath "-outputresource:$ExePath;#1"
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "[ERROR] Failed to embed administrator manifest into $ExePath" -ForegroundColor Red
+        exit 1
+    }
+    Write-Host "[OK] Embedded administrator manifest" -ForegroundColor Green
+}
+
+function Get-AndroidBuildNumber {
+    $v = [version]$AppVersion
+    return ($v.Major * 10000) + ($v.Minor * 100) + $v.Build
+}
+
+function Build-AndroidApplication {
+    Write-Host ""
+    Write-Host "Building Android Flutter APK..." -ForegroundColor Yellow
+
+    $FlutterCmd = Get-FlutterCommand
+    if (-not $FlutterCmd) {
+        Write-Host "[ERROR] Flutter SDK not found. Install Flutter or use E:\flutter-sdk\flutter\bin\flutter.bat" -ForegroundColor Red
+        exit 1
+    }
+
+    $FlutterDir = Join-Path $ScriptRoot "flutter_app"
+    if (-not (Test-Path $FlutterDir)) {
+        Write-Host "[ERROR] flutter_app/ not found." -ForegroundColor Red
+        exit 1
+    }
+
+    if (-not (Test-Path $VersionDir)) {
+        New-Item -ItemType Directory -Path $VersionDir | Out-Null
+    }
+
+    $buildNumber = Get-AndroidBuildNumber
+    Push-Location $FlutterDir
+    try {
+        & $FlutterCmd build apk --release --build-name $AppVersion --build-number $buildNumber
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "[ERROR] Flutter Android build failed. Run 'flutter doctor -v' and check Android SDK/JDK." -ForegroundColor Red
+            exit 1
+        }
+    } finally {
+        Pop-Location
+    }
+
+    $sourceApk = Join-Path $FlutterDir "build\app\outputs\flutter-apk\app-release.apk"
+    if (-not (Test-Path $sourceApk)) {
+        Write-Host "[ERROR] Android APK output not found: $sourceApk" -ForegroundColor Red
+        exit 1
+    }
+
+    $assetName = "dropo-Android-universal.apk"
+    $destApk = Join-Path $VersionDir $assetName
+    Copy-Item $sourceApk $destApk -Force
+
+    $sha = (Get-FileHash -Algorithm SHA256 $destApk).Hash.ToLower()
+    [System.IO.File]::WriteAllText((Join-Path $VersionDir "$assetName.sha256"), "$sha  $assetName`n", (New-Object System.Text.UTF8Encoding($false)))
+    $apkMB = [math]::Round((Get-Item $destApk).Length / 1MB, 2)
+
+    Write-Host "[OK] Created Android APK: $assetName ($apkMB MB)" -ForegroundColor Green
+    Write-Host "[OK] SHA256: $sha" -ForegroundColor Green
 }
 
 # Create portable ZIP (standalone, for manual use)
@@ -881,8 +1039,7 @@ function Create-Portable {
     if (Test-Path $zipFile) {
         Remove-Item $zipFile
     }
-    $appItems = Get-ChildItem -Path $appFolder -Exclude 'bin'
-    Compress-Archive -Path $appItems.FullName -DestinationPath $zipFile -CompressionLevel Optimal
+    New-AppOnlyArchive -SourceAppFolder $appFolder -DestinationZip $zipFile
 
     $fileSize = (Get-Item $zipFile).Length / 1MB
     Write-Host "[OK] Created: $WindowsPortableAsset ($([math]::Round($fileSize, 2)) MB, app only - bin/ ships separately)" -ForegroundColor Green
@@ -935,6 +1092,12 @@ function Create-Installer {
 
     Write-Host "[OK] NSIS found: $nsisPath" -ForegroundColor Green
 
+    $appFolder = Join-Path $sourceDir "dropo"
+    if (-not (Test-Path (Join-Path $appFolder "dropo.exe") -PathType Leaf)) {
+        Write-Host "[ERROR] dropo.exe not found in $appFolder" -ForegroundColor Red
+        exit 1
+    }
+
     $sourceName = Split-Path $sourceDir -Leaf
     if ($sourceName -notmatch '^dropo-') {
         $sourceName = "dropo-$sourceName"
@@ -945,7 +1108,7 @@ function Create-Installer {
     $nsiScript = @"
 ; dropo NSIS Installer (Auto-generated)
 !define PRODUCT_VERSION "$AppVersion"
-!define SOURCE_DIR "$sourceDir"
+!define SOURCE_DIR "$appFolder"
 !define OUTPUT_DIR "$ReleaseDir"
 
 !include "MUI2.nsh"
@@ -973,22 +1136,7 @@ RequestExecutionLevel admin
 
 Section "Install"
     SetOutPath "`$INSTDIR"
-
-    File "`${SOURCE_DIR}\dropo.exe"
-
-    CreateDirectory "`$INSTDIR\bin"
-    SetOutPath "`$INSTDIR\bin"
-    File /r "`${SOURCE_DIR}\bin\*.*"
-
-    CreateDirectory "`$INSTDIR\resources"
-    SetOutPath "`$INSTDIR\resources"
-    File /nonfatal "`${SOURCE_DIR}\resources\template.json"
-
-    CreateDirectory "`$INSTDIR\licenses"
-    SetOutPath "`$INSTDIR\licenses"
-    File /nonfatal /r "`${SOURCE_DIR}\licenses\*.*"
-
-    SetOutPath "`$INSTDIR"
+    File /r "`${SOURCE_DIR}\*.*"
 
     CreateDirectory "`$SMPROGRAMS\dropo"
     CreateShortCut "`$SMPROGRAMS\dropo\dropo.lnk" "`$INSTDIR\dropo.exe"
@@ -1006,6 +1154,8 @@ SectionEnd
 
 Section "Uninstall"
     nsExec::ExecToLog 'taskkill /F /IM dropo.exe'
+    nsExec::ExecToLog 'taskkill /F /IM dropo-ui.exe'
+    nsExec::ExecToLog 'taskkill /F /IM dropo-core.exe'
     nsExec::ExecToLog 'taskkill /F /IM sing-box.exe'
     nsExec::ExecToLog 'taskkill /F /IM xray.exe'
     nsExec::ExecToLog 'taskkill /F /IM ciadpi.exe'
@@ -1013,13 +1163,7 @@ Section "Uninstall"
     nsExec::ExecToLog 'taskkill /F /IM winws.exe'
     nsExec::ExecToLog 'taskkill /F /IM winws2.exe'
 
-    Delete "`$INSTDIR\dropo.exe"
-    RMDir /r "`$INSTDIR\bin"
-    RMDir /r "`$INSTDIR\licenses"
-    Delete "`$INSTDIR\uninst.exe"
-    Delete "`$INSTDIR\resources\*.*"
-    RMDir "`$INSTDIR\resources"
-    RMDir "`$INSTDIR"
+    RMDir /r "`$INSTDIR"
 
     Delete "`$SMPROGRAMS\dropo\*.lnk"
     RMDir "`$SMPROGRAMS\dropo"
@@ -1049,7 +1193,16 @@ SectionEnd
 }
 
 # Main execution
-if ($AppOnly) {
+if ($Flutter -or $Android) {
+    if ($Build -or $All -or $Flutter) {
+        Build-Application
+        if ($All) {
+            Create-Portable
+            Create-Installer
+        }
+    }
+    if ($Android) { Build-AndroidApplication }
+} elseif ($AppOnly) {
     Build-Application
 } elseif ($All -or (-not $Build -and -not $Installer -and -not $Portable)) {
     Build-Application

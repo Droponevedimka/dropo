@@ -13,8 +13,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 const (
@@ -457,8 +455,8 @@ func formatClientQuickCheckOutput(results []clientQuickCheckResult, proxyURL str
 }
 
 func (a *App) emitClientQuickCheck(event string, payload interface{}) {
-	if a == nil || a.ctx == nil || a.isShuttingDown() {
+	if a == nil || a.isShuttingDown() {
 		return
 	}
-	wailsRuntime.EventsEmit(a.ctx, event, payload)
+	a.emitEvent(event, payload)
 }

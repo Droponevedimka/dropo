@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"os"
 	"time"
-
-	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // GetAppConfig возвращает текущие настройки приложения (API для фронтенда)
@@ -35,10 +33,14 @@ func (a *App) GetAppConfig() map[string]interface{} {
 		"theme":             settings.Theme,
 		"language":          settings.Language,
 		"logLevel":          settings.LogLevel,
+		"routingMode":       string(settings.RoutingMode),
 		"networkMode":       string(settings.NetworkMode),
 		"autoUpdateSub":     settings.AutoUpdateSub,
 		"subUpdateInterval": settings.SubUpdateInterval,
 		"lastSubUpdate":     settings.LastSubUpdate.Format(time.RFC3339),
+		"hideRuTraffic":     settings.HideRuTraffic,
+		"ruProxyAddress":    settings.RuProxyAddress,
+		"disableFreeAccess": settings.DisableFreeAccess,
 		"wireGuardVersion":  settings.WireGuardVersion,
 		"appVersion":        versionInfo["version"],
 		"appFullVersion":    versionInfo["fullVersion"],
@@ -137,59 +139,32 @@ func (a *App) GetAutoStartStatus() map[string]interface{} {
 
 // ExportProfilesToFile opens save dialog and exports all profiles to JSON file.
 func (a *App) ExportProfilesToFile() map[string]interface{} {
-	a.waitForInit()
+	return map[string]interface{}{
+		"success": false,
+		"error":   "file dialog moved to Flutter; call ExportProfilesToPath with a selected path",
+	}
+}
 
-	// Get export data first
+func (a *App) ExportProfilesToPath(filename string) map[string]interface{} {
+	a.waitForInit()
+	if filename == "" {
+		return map[string]interface{}{"success": false, "error": "empty export path"}
+	}
+
 	exportResult := a.ExportAllProfiles()
-	if !exportResult["success"].(bool) {
+	if ok, _ := exportResult["success"].(bool); !ok {
 		return exportResult
 	}
 
-	jsonData := exportResult["data"].(string)
-
-	// Open save dialog
-	filename, err := wailsRuntime.SaveFileDialog(a.ctx, wailsRuntime.SaveDialogOptions{
-		Title:           "Экспорт профилей",
-		DefaultFilename: fmt.Sprintf("dropo-profiles-%s.json", time.Now().Format("2006-01-02")),
-		Filters: []wailsRuntime.FileFilter{
-			{
-				DisplayName: "JSON файлы (*.json)",
-				Pattern:     "*.json",
-			},
-		},
-	})
-
-	if err != nil {
-		return map[string]interface{}{
-			"success": false,
-			"error":   fmt.Sprintf("Ошибка диалога сохранения: %v", err),
-		}
-	}
-
-	if filename == "" {
-		// User cancelled
-		return map[string]interface{}{
-			"success": false,
-			"error":   "Отменено пользователем",
-		}
-	}
-
-	// Write to file
+	jsonData, _ := exportResult["data"].(string)
 	if err := os.WriteFile(filename, []byte(jsonData), 0644); err != nil {
-		return map[string]interface{}{
-			"success": false,
-			"error":   fmt.Sprintf("Ошибка записи файла: %v", err),
-		}
+		return map[string]interface{}{"success": false, "error": fmt.Sprintf("failed to write export file: %v", err)}
 	}
 
-	profilesCount := exportResult["profiles_count"].(int)
-
+	profilesCount, _ := exportResult["profiles_count"].(int)
 	a.writeLog(fmt.Sprintf("Exported %d profiles to %s", profilesCount, filename))
-	a.AddToLogBuffer(fmt.Sprintf("Экспортировано %d профилей", profilesCount))
-
 	return map[string]interface{}{
 		"success":        true,
-		"message":        fmt.Sprintf("Экспортировано %d профилей", profilesCount),
 		"filename":       filename,
 		"profiles_count": profilesCount,
 	}
@@ -197,65 +172,37 @@ func (a *App) ExportProfilesToFile() map[string]interface{} {
 
 // ImportProfilesFromFile opens file dialog and imports profiles from JSON file.
 func (a *App) ImportProfilesFromFile() map[string]interface{} {
-	a.waitForInit()
+	return map[string]interface{}{
+		"success": false,
+		"error":   "file dialog moved to Flutter; call ImportProfilesFromPath with a selected path",
+	}
+}
 
-	// Check VPN is not running
+func (a *App) ImportProfilesFromPath(filename string) map[string]interface{} {
+	a.waitForInit()
+	if filename == "" {
+		return map[string]interface{}{"success": false, "error": "empty import path"}
+	}
+
 	a.mu.Lock()
 	if a.isRunning {
 		a.mu.Unlock()
-		return map[string]interface{}{
-			"success": false,
-			"error":   "Нельзя импортировать пока VPN активен. Сначала отключите VPN.",
-		}
+		return map[string]interface{}{"success": false, "error": "VPN must be stopped before importing profiles"}
 	}
 	a.mu.Unlock()
 
-	// Open file dialog
-	filename, err := wailsRuntime.OpenFileDialog(a.ctx, wailsRuntime.OpenDialogOptions{
-		Title: "Импорт профилей",
-		Filters: []wailsRuntime.FileFilter{
-			{
-				DisplayName: "JSON файлы (*.json)",
-				Pattern:     "*.json",
-			},
-		},
-	})
-
-	if err != nil {
-		return map[string]interface{}{
-			"success": false,
-			"error":   fmt.Sprintf("Ошибка диалога открытия: %v", err),
-		}
-	}
-
-	if filename == "" {
-		// User cancelled
-		return map[string]interface{}{
-			"success": false,
-			"error":   "Отменено пользователем",
-		}
-	}
-
-	// Read file
 	data, err := os.ReadFile(filename)
 	if err != nil {
-		return map[string]interface{}{
-			"success": false,
-			"error":   fmt.Sprintf("Ошибка чтения файла: %v", err),
-		}
+		return map[string]interface{}{"success": false, "error": fmt.Sprintf("failed to read import file: %v", err)}
 	}
 
-	// Validate first
 	validationResult := a.ValidateImportData(string(data))
-	if !validationResult["success"].(bool) {
+	if ok, _ := validationResult["success"].(bool); !ok {
 		return validationResult
 	}
-
-	// Return validation info for user confirmation
 	validationResult["filename"] = filename
 	validationResult["file_data"] = string(data)
 	validationResult["needs_confirmation"] = true
-
 	return validationResult
 }
 

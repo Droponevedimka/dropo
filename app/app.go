@@ -58,8 +58,8 @@ type App struct {
 	routeStrategyQueued        map[string]bool
 	transparentReselectionDone bool
 	serviceStrategyCacheMu     sync.Mutex
-	tgProxyWatcher             atomic.Bool // guards a single Telegram-proxy presence watcher
 	tgProxyStartedSession      atomic.Bool // tg-ws-proxy sidecar was started this session (gates the exit notice)
+	tgProxyPromptedSession     atomic.Bool // tg://proxy was opened at most once per VPN session
 	busySeq                    uint64
 	vpnStopping                atomic.Bool
 	initializedReady           atomic.Bool
@@ -67,6 +67,7 @@ type App struct {
 	windowVisibleFlag          atomic.Bool
 	logBuffer                  []string // Log buffer for UI
 	logBufferMu                sync.RWMutex
+	events                     *EventHub
 }
 
 // NewApp creates a new App application struct.
@@ -75,6 +76,7 @@ func NewApp() *App {
 		logBuffer:         make([]string, 0, MaxLogBufferSize),
 		windowVisible:     true,
 		routeStrategyJobs: make(chan string, 64),
+		events:            NewEventHub(512),
 	}
 	a.windowVisibleFlag.Store(true)
 	a.setupLogPath()

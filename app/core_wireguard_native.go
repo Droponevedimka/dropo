@@ -6,7 +6,7 @@
 // This separates WireGuard from sing-box for better stability and performance.
 //
 // Bundled binaries are stored in app/dependencies/wireguard-windows-v{version}/
-// and copied to build/bin/ during wails build.
+// and copied to build/bin/ during the Windows build.
 package main
 
 import (

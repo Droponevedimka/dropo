@@ -94,3 +94,31 @@ func TestMakeUpdateScriptForZip(t *testing.T) {
 		}
 	}
 }
+
+func TestResolvePortableInstallRootFromResourcesRuntime(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "dropo")
+	runtime := filepath.Join(root, "resources")
+
+	installDir, launchExe := resolvePortableInstallRoot(runtime)
+
+	if installDir != root {
+		t.Fatalf("installDir = %q, want %q", installDir, root)
+	}
+	if launchExe != filepath.Join(root, "dropo.exe") {
+		t.Fatalf("launchExe = %q, want root launcher", launchExe)
+	}
+}
+
+func TestResolvePortableInstallRootFromLegacyNestedRuntime(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "dropo")
+	nestedRuntime := filepath.Join(root, "resources", "app")
+
+	installDir, launchExe := resolvePortableInstallRoot(nestedRuntime)
+
+	if installDir != root {
+		t.Fatalf("installDir = %q, want %q", installDir, root)
+	}
+	if launchExe != filepath.Join(root, "dropo.exe") {
+		t.Fatalf("launchExe = %q, want root launcher", launchExe)
+	}
+}

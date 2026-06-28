@@ -14,6 +14,7 @@ import (
 // ProxyConfig represents a parsed proxy configuration.
 type ProxyConfig struct {
 	Type        string `json:"type"`
+	Raw         string `json:"raw,omitempty"`
 	Tag         string `json:"tag"`
 	Server      string `json:"server"`
 	ServerPort  int    `json:"server_port"`
@@ -120,6 +121,7 @@ func (f *SubscriptionFetcher) ParseSubscription(content string) ([]ProxyConfig, 
 			fmt.Printf("Warning: failed to parse line %d: %v\n", i, parseErr)
 			continue
 		}
+		cfg.Raw = line
 
 		// Generate tag if not set
 		if cfg.Tag == "" {
@@ -135,23 +137,30 @@ func (f *SubscriptionFetcher) ParseSubscription(content string) ([]ProxyConfig, 
 // ParseSingleLink parses a single proxy link
 func (f *SubscriptionFetcher) ParseSingleLink(link string) (ProxyConfig, error) {
 	link = strings.TrimSpace(link)
+	var cfg ProxyConfig
+	var err error
 
 	switch {
 	case strings.HasPrefix(link, "vless://"):
-		return parseVLESS(link)
+		cfg, err = parseVLESS(link)
 	case strings.HasPrefix(link, "trojan://"):
-		return parseTrojan(link)
+		cfg, err = parseTrojan(link)
 	case strings.HasPrefix(link, "ss://"):
-		return parseShadowsocks(link)
+		cfg, err = parseShadowsocks(link)
 	case strings.HasPrefix(link, "vmess://"):
-		return parseVMess(link)
+		cfg, err = parseVMess(link)
 	case strings.HasPrefix(link, "hysteria2://"), strings.HasPrefix(link, "hy2://"):
-		return parseHysteria2(link)
+		cfg, err = parseHysteria2(link)
 	case strings.HasPrefix(link, "tuic://"):
-		return parseTUIC(link)
+		cfg, err = parseTUIC(link)
 	default:
 		return ProxyConfig{}, fmt.Errorf("unknown protocol: %s", link[:min(20, len(link))])
 	}
+	if err != nil {
+		return cfg, err
+	}
+	cfg.Raw = link
+	return cfg, nil
 }
 
 // parseVLESS parses vless:// link

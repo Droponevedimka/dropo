@@ -4,14 +4,12 @@ package main
 // This file contains window management and UI operations
 
 import (
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
-
-	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // Quit closes the application (called from UI)
@@ -45,10 +43,7 @@ func (a *App) PrepareQuit() TelegramProxyStatusInfo {
 	}
 	a.writeLog("Application quit requested")
 	a.emitBusy(quitBusyID, true, "Останавливаем VPN и дочерние процессы dropo...")
-	injected := false
-	if a.storage != nil {
-		injected = a.storage.GetAppSettings().TelegramProxyInjected
-	}
+	telegramStatus := a.TelegramProxyStatus()
 	a.requestShutdown()
 
 	done := make(chan struct{})
@@ -79,11 +74,15 @@ func (a *App) PrepareQuit() TelegramProxyStatusInfo {
 	}
 
 	a.emitBusy(quitBusyID, false, "")
-	// Only show the cleanup notice if the Telegram sidecar actually ran this
-	// session (a proxy may be saved in Telegram). If the user just opened and
-	// closed the app without starting the VPN, there is nothing to clean up.
-	show := a.tgProxyStartedSession.Load()
-	return TelegramProxyStatusInfo{Injected: injected, RecommendRemove: injected, ShowNotice: show}
+	// Show the cleanup notice when this VPN session started the Telegram sidecar
+	// and dropo either opened the tg://proxy link before or Telegram is actively
+	// connected to the local port. ActiveConnection can be false by the time the
+	// app is closing, so the persisted injected flag is intentionally enough.
+	telegramStatus.ShowNotice = a.tgProxyStartedSession.Load() && (telegramStatus.ActiveConnection || telegramStatus.Injected)
+	if telegramStatus.ShowNotice {
+		telegramStatus.RecommendRemove = true
+	}
+	return telegramStatus
 }
 
 // QuitWithTelegramNotice is the tray "Выход" path: stop all background processes,
@@ -94,12 +93,12 @@ func (a *App) QuitWithTelegramNotice() {
 		os.Exit(0)
 	}
 	status := a.PrepareQuit()
-	if status.ShowNotice && a.ctx != nil {
+	if status.ShowNotice {
 		a.ShowWindow()
-		// Give the (possibly hidden) webview a moment to come up before the event,
+		// Give the (possibly hidden) window a moment to come up before the event,
 		// otherwise the notice can be missed.
 		time.Sleep(350 * time.Millisecond)
-		wailsRuntime.EventsEmit(a.ctx, "show-telegram-exit-notice", status)
+		a.emitEvent("show-telegram-exit-notice", status)
 		return
 	}
 	a.FinalizeQuit()
@@ -113,48 +112,56 @@ func (a *App) FinalizeQuit() {
 		time.Sleep(500 * time.Millisecond)
 		os.Exit(0)
 	}()
-	if a.ctx != nil {
-		wailsRuntime.Quit(a.ctx)
-	}
 	os.Exit(0)
 }
 
 // ShowWindow shows the application window
 func (a *App) ShowWindow() {
-	if a.ctx != nil {
-		wailsRuntime.WindowShow(a.ctx)
-		a.SetWindowVisible(true)
-	}
+	showPlatformWindow()
+	a.SetWindowVisible(true)
 }
 
 // ShowAbout shows about dialog
 func (a *App) ShowAbout() {
-	if a.ctx != nil {
-		info := GetVersionInfo()
-		wailsRuntime.MessageDialog(a.ctx, wailsRuntime.MessageDialogOptions{
-			Type:  wailsRuntime.InfoDialog,
-			Title: "О программе dropo",
-			Message: fmt.Sprintf(
-				"Версия: %s\nsing-box: %s\nGitHub: %s\nTelegram: %s",
-				info["fullVersion"],
-				info["singboxVersion"],
-				info["githubURL"],
-				info["telegramName"],
-			),
-		})
+	a.emitEvent("show-about", GetVersionInfo())
+}
+
+// OpenExternalLink opens a trusted http(s)/tg link with the OS default handler.
+func (a *App) OpenExternalLink(link string) map[string]interface{} {
+	if link == "" {
+		return map[string]interface{}{"success": false, "error": "empty link"}
 	}
+	if !(strings.HasPrefix(link, "https://") || strings.HasPrefix(link, "http://") || strings.HasPrefix(link, "tg://")) {
+		return map[string]interface{}{"success": false, "error": "unsupported link scheme"}
+	}
+	if err := openExternalURL(link); err != nil {
+		return map[string]interface{}{"success": false, "error": err.Error()}
+	}
+	return map[string]interface{}{"success": true}
 }
 
 // HideWindow hides the application window
 func (a *App) HideWindow() {
-	if a.ctx != nil {
-		if !isSystrayReady() {
-			a.writeLog("HideWindow skipped: systray is unavailable")
-			return
-		}
-		wailsRuntime.WindowHide(a.ctx)
-		a.SetWindowVisible(false)
-		a.refreshTrayIconForCurrentState()
+	if !isSystrayReady() {
+		a.writeLog("HideWindow skipped: systray is unavailable")
+		return
+	}
+	hidePlatformWindow()
+	a.SetWindowVisible(false)
+	a.refreshTrayIconForCurrentState()
+}
+
+// EnsureTray starts tray integration when the Flutter shell attaches to an
+// already-running core that was started without the tray (for example by a
+// smoke test or a previous broken UI run).
+func (a *App) EnsureTray() map[string]interface{} {
+	if !isSystrayReady() {
+		ensurePlatformTray()
+	}
+	a.refreshTrayIconForCurrentState()
+	return map[string]interface{}{
+		"success": true,
+		"ready":   isSystrayReady(),
 	}
 }
 
@@ -196,8 +203,9 @@ func (a *App) OpenConfigFolder() {
 	openFolder(configDir)
 }
 
-// OpenLogs opens the logs folder in file explorer
-func (a *App) OpenLogs() {
+// OpenLogs opens the logs folder in file explorer and selects the active log
+// file on Windows.
+func (a *App) OpenLogs() map[string]interface{} {
 	var logDir string
 	switch runtime.GOOS {
 	case "windows":
@@ -213,7 +221,45 @@ func (a *App) OpenLogs() {
 	// Create logs folder if it doesn't exist
 	os.MkdirAll(logDir, 0755)
 
+	selected := a.logPath
+	if selected == "" || !fileExists(selected) {
+		selected = latestLogFile(logDir)
+	}
+	if runtime.GOOS == "windows" && selected != "" && fileExists(selected) {
+		cmd := exec.Command("explorer", "/select,"+selected)
+		if err := cmd.Start(); err != nil {
+			a.writeLog("[Logs] could not open selected log: " + err.Error())
+			openFolder(logDir)
+			return map[string]interface{}{"success": false, "error": err.Error(), "path": logDir}
+		}
+		return map[string]interface{}{"success": true, "path": selected}
+	}
+
 	openFolder(logDir)
+	return map[string]interface{}{"success": true, "path": logDir}
+}
+
+func latestLogFile(logDir string) string {
+	entries, err := os.ReadDir(logDir)
+	if err != nil {
+		return ""
+	}
+	var latest string
+	var latestTime time.Time
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(strings.ToLower(entry.Name()), ".log") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		if latest == "" || info.ModTime().After(latestTime) {
+			latest = filepath.Join(logDir, entry.Name())
+			latestTime = info.ModTime()
+		}
+	}
+	return latest
 }
 
 // openFolder opens a folder in the system file manager

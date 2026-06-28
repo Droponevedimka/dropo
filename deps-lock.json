@@ -2,9 +2,9 @@
     "platform":  "windows",
     "arch":  "x64",
     "depsVersion":  "958ceafbc487",
-    "tag":  "v2.0.7",
+    "tag":  "v2.1.0",
     "asset":  "dropo-Windows-Dependencies-x64.zip",
-    "sha256":  "fc5a396b3e54c22433f44924ca1b94abff02cc231709a1146a43d5e2b9085104",
+    "sha256":  "687d903d03f5dcbda1dbd0f66231fa32ecfd67a9dc0e451aa34a669e49db1f89",
     "size":  67063090,
     "requiredFiles":  [
                           "sing-box.exe",

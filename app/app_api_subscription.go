@@ -29,6 +29,7 @@ func (a *App) TestSubscription(url string) map[string]interface{} {
 	for _, p := range filteredProxies {
 		proxyList = append(proxyList, map[string]interface{}{
 			"type":   p.Type,
+			"raw":    p.Raw,
 			"name":   p.Name,
 			"server": p.Server,
 			"port":   p.ServerPort,

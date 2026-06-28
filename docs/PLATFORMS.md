@@ -8,7 +8,7 @@ OS-specific runtime, updater, and dependency bundles into the Windows path.
 
 | Target | Status | App asset | Dependencies asset | Notes |
 | --- | --- | --- | --- | --- |
-| Windows x64 | Production | `dropo-Windows-Portable-x64.zip` | `dropo-Windows-Dependencies-x64.zip` | Full runtime: Wails, sing-box, WireGuard, winws/WinDivert, Xray, tg-ws-proxy. |
+| Windows x64 | Production | `dropo-Windows-Portable-x64.zip` | `dropo-Windows-Dependencies-x64.zip` | Full runtime: Flutter UI, Go-core bridge, sing-box, WireGuard, winws/WinDivert, Xray, tg-ws-proxy. |
 | Linux x64 | Prepared | `dropo-Linux-x64.AppImage` | `dropo-Linux-Dependencies-x64.zip` | Compile contract exists; runtime/network engine still needs implementation and privilege model. |
 | macOS arm64 | Prepared | `dropo-macOS-arm64.dmg` | `dropo-macOS-Dependencies-arm64.zip` | Compile contract exists; signing/notarization and network permissions still need implementation. |
 | Android | Future mobile shell | `dropo-Android-universal.apk` | bundled/native | Requires Android `VpnService` or a dedicated mobile shell. |
@@ -18,10 +18,9 @@ OS-specific runtime, updater, and dependency bundles into the Windows path.
 
 - Common app logic stays in the root `app` package: profiles, subscriptions,
   config building, update metadata, storage, traffic stats, dependency
-  bootstrap, and frontend API contracts.
+  bootstrap, and Flutter bridge API contracts.
 - Platform-specific code uses build tags:
-  - `*_windows.go` for Windows registry, single-instance mutex, tray, Wails
-    Windows options, process job objects, and WinDivert cleanup.
+  - `*_windows.go` for Windows registry, single-instance mutex, tray, process job objects, window activation, and WinDivert cleanup.
   - `*_other.go` for safe no-op placeholders until Linux/macOS adapters are
     implemented.
 - Dependency readiness is platform-driven via `PlatformTarget`:
@@ -50,10 +49,9 @@ OS-specific runtime, updater, and dependency bundles into the Windows path.
 
 ## Next Implementation Order
 
-1. Linux desktop MVP: Wails build, `sing-box` dependency archive, AppImage or
+1. Linux desktop MVP: Flutter desktop build, Go-core bridge, `sing-box` dependency archive, AppImage or
    `.deb`, privilege/capability strategy for TUN.
-2. macOS desktop MVP: Wails build, `.dmg`, signing/notarization, app support
+2. macOS desktop MVP: Flutter desktop build, `.dmg`, signing/notarization, app support
    directory, network permission model.
 3. Mobile feasibility prototype: shared config/subscription core plus native
-   VPN shell for Android/iOS. Treat this as a new app shell, not a Wails v2
-   packaging variant.
+   VPN shell for Android/iOS. Treat this as a native mobile bridge, not a desktop packaging variant.

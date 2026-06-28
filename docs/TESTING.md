@@ -14,8 +14,8 @@ DPI-блокировок РФ вне РФ. Документ формализов
 | Слой | Что проверяет | Среда | Скорость | Где |
 |---|---|---|---|---|
 | L1 | Логика Go (маршрутизация, стратегии, конфиг, telegram-политика) | host | секунды | `go test ./...` |
-| L2 | UI (панели, тосты, профили, настройки) | host + Playwright | минуты | `npm run test:e2e` |
-| L3 | Релизный gate (frontend+go+visual+сборка+валидация ZIP) | host | минуты | `tools/preflight-release.ps1` |
+| L2 | UI (Flutter dashboard, bridge calls, layout smoke) | host | minutes | `cd flutter_app; flutter analyze; flutter test` |
+| L3 | Release gate (Go+Flutter+build+ZIP validation) | host | minutes | `tools/preflight-release.ps1` |
 | L4 | Runtime собранного релиза (free / подписка / WireGuard) | Windows, admin | минуты | `go test -run TestManual…` |
 | L5 | Снятие отпечатка блокировки у конечного клиента | клиент в РФ | секунды | кнопка в приложении |
 | L6 | Эмуляция DPI/ТСПУ вне РФ и проверка обхода | Docker | минуты | `testlab/` |
@@ -45,16 +45,15 @@ go test -run TestResolveTelegramTransport -v
 
 Детектор не флейкует: чистые таблицы/функции, без сети.
 
-## L2. Визуальные E2E (Playwright)
+## L2. Flutter UI smoke
 
 ```powershell
-cd app/frontend
-npm install
-npm run test:e2e
+cd flutter_app
+flutter analyze
+flutter test
 ```
 
-Кликает основные разделы (настройки, профили, VPN, WireGuard, логи, статистика,
-обновления), проверяет слои drawer/toast. Это smoke UI, не сетевые проверки.
+Checks that the Flutter Windows shell renders production controls and that bridge-facing widgets stay buildable. Network/runtime checks remain in L4.
 
 ## L3. Релизный gate — `preflight-release.ps1`
 

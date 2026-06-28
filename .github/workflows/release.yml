@@ -56,12 +56,11 @@ jobs:
       - uses: actions/setup-go@v5
         if: steps.ver.outputs.exists == 'false'
         with: { go-version: "1.22", cache-dependency-path: app/go.sum }
-      - uses: actions/setup-node@v4
+      - uses: subosito/flutter-action@v2
         if: steps.ver.outputs.exists == 'false'
-        with: { node-version: "20" }
-      - name: Install Wails
-        if: steps.ver.outputs.exists == 'false'
-        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.11.0
+        with:
+          channel: stable
+          cache: true
 
       - name: Build Windows portable app
         if: steps.ver.outputs.exists == 'false'

@@ -3,19 +3,20 @@ package main
 import (
 	"context"
 	"embed"
+	"flag"
 	"log"
+	"net/http"
 	"os"
-
-	"github.com/wailsapp/wails/v2"
-	"github.com/wailsapp/wails/v2/pkg/options"
-	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
+	"os/signal"
+	"syscall"
+	"time"
 )
-
-//go:embed all:frontend/dist
-var assets embed.FS
 
 //go:embed config/template.json
 var embeddedTemplate []byte
+
+// Keep embed imported for the directive above.
+var _ embed.FS
 
 var appInstance *App
 
@@ -24,9 +25,13 @@ func copyEmbeddedTemplate(destPath string) error {
 }
 
 func main() {
+	listen := flag.String("listen", "127.0.0.1:17890", "HTTP bridge listen address")
+	noTray := flag.Bool("no-tray", false, "disable Windows tray integration")
+	flag.Parse()
+
 	releaseSingleInstance, alreadyRunning := acquireSingleInstance()
 	if alreadyRunning {
-		log.Println("Application already running, activating existing window")
+		log.Println("Application core already running, activating existing window")
 		return
 	}
 	if releaseSingleInstance != nil {
@@ -38,44 +43,35 @@ func main() {
 		log.Printf("failed to open session log: %v", err)
 	}
 
-	startPlatformTray()
-	runWails()
-}
-
-func runWails() {
-	appOptions := &options.App{
-		Title:     AppDisplayName,
-		Width:     WindowWidth,
-		Height:    WindowHeight,
-		MinWidth:  MinWindowWidth,
-		MinHeight: MinWindowHeight,
-		AssetServer: &assetserver.Options{
-			Assets: assets,
-		},
-		BackgroundColour: &options.RGBA{R: 27, G: 38, B: 54, A: 1},
-		OnStartup:        appInstance.startup,
-		OnBeforeClose: func(ctx context.Context) bool {
-			if appInstance != nil && !appInstance.isShuttingDown() {
-				if shouldHideToTrayOnClose(appInstance) {
-					appInstance.writeLog("Window close requested; hiding to tray")
-					appInstance.HideWindow()
-					return true
-				}
-				appInstance.writeLog("Window close requested while systray is unavailable; closing application to avoid hidden background process")
-				appInstance.requestShutdown()
-			}
-			return false
-		},
-		OnShutdown: appInstance.shutdown,
-		Bind: []interface{}{
-			appInstance,
-		},
-		Frameless:         false,
-		HideWindowOnClose: false,
+	if !*noTray {
+		startPlatformTray()
 	}
-	applyPlatformWailsOptions(appOptions)
 
-	if err := wails.Run(appOptions); err != nil {
-		log.Fatal(err)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	appInstance.startup(ctx)
+
+	server := &http.Server{
+		Addr:              *listen,
+		Handler:           newBridgeMux(appInstance),
+		ReadHeaderTimeout: 5 * time.Second,
 	}
+
+	go func() {
+		log.Printf("dropo core bridge listening on http://%s", *listen)
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Printf("bridge server failed: %v", err)
+			appInstance.requestShutdown()
+		}
+	}()
+
+	sig := make(chan os.Signal, 2)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+	<-sig
+	appInstance.requestShutdown()
+	cancel()
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+	_ = server.Shutdown(shutdownCtx)
+	appInstance.shutdown(shutdownCtx)
 }

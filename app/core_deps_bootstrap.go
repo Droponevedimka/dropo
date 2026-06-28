@@ -20,8 +20,6 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-
-	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // DepsManifest mirrors dependencies.json written by build.ps1.
@@ -106,14 +104,11 @@ func (a *App) DependenciesStatus() DepsStatus {
 }
 
 func (a *App) emitDepsProgress(done, total int64, phase string) {
-	if a.ctx == nil {
-		return
-	}
 	pct := 0
 	if total > 0 {
 		pct = int(done * 100 / total)
 	}
-	wailsRuntime.EventsEmit(a.ctx, "deps-progress", map[string]interface{}{
+	a.emitEvent("deps-progress", map[string]interface{}{
 		"done": done, "total": total, "percent": pct, "phase": phase,
 	})
 }

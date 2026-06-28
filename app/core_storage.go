@@ -1289,6 +1289,7 @@ func (b *ConfigBuilderForStorage) TestSubscription(subscriptionURL string) (*Sub
 	for _, p := range proxies {
 		result.Proxies = append(result.Proxies, ProxyInfo{
 			Type:   p.Type,
+			Raw:    p.Raw,
 			Name:   p.Name,
 			Server: p.Server,
 			Port:   p.ServerPort,
