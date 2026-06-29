@@ -106,6 +106,19 @@ var clientQuickCheckServices = []clientQuickCheckService{
 	{Index: 36, Name: "Claude API", URL: "https://api.anthropic.com", Category: "AI-VPNOnly"},
 	{Index: 37, Name: "Copilot proxy", URL: "https://copilot-proxy.githubusercontent.com", Category: "AI-VPNOnly"},
 	{Index: 38, Name: "Cursor API", URL: "https://api2.cursor.sh", Category: "AI-VPNOnly"},
+	{Index: 39, Name: "Canva", URL: "https://www.canva.com", Category: "VPNOnly"},
+	{Index: 40, Name: "Notion", URL: "https://www.notion.com", Category: "VPNOnly"},
+	{Index: 41, Name: "Slack", URL: "https://slack.com", Category: "VPNOnly"},
+	{Index: 42, Name: "Miro", URL: "https://miro.com", Category: "VPNOnly"},
+	{Index: 43, Name: "Wix", URL: "https://www.wix.com", Category: "VPNOnly"},
+	{Index: 44, Name: "Coda", URL: "https://coda.io", Category: "VPNOnly"},
+	{Index: 45, Name: "Grammarly", URL: "https://www.grammarly.com", Category: "VPNOnly"},
+	{Index: 46, Name: "Docker Hub", URL: "https://registry-1.docker.io/v2/", Category: "VPNOnly"},
+	{Index: 47, Name: "ClickUp", URL: "https://app.clickup.com", Category: "VPNOnly"},
+	{Index: 48, Name: "Manychat", URL: "https://app.manychat.com", Category: "VPNOnly"},
+	{Index: 49, Name: "Help Scout", URL: "https://secure.helpscout.net", Category: "VPNOnly"},
+	{Index: 50, Name: "Trello", URL: "https://trello.com", Category: "VPNOnly"},
+	{Index: 51, Name: "Bitbucket", URL: "https://bitbucket.org", Category: "VPNOnly"},
 }
 
 // RunClientQuickCheck performs the in-app service availability check. It is
@@ -291,7 +304,7 @@ func runSingleClientQuickCheck(ctx context.Context, svc clientQuickCheckService,
 		statusText = "REGION_LIMIT"
 		success = true
 	} else if proxyChecked && proxy.Success {
-		if svc.Category == "AI-VPNOnly" {
+		if strings.Contains(svc.Category, "VPNOnly") {
 			statusText = "VPN_PROXY_OK"
 		} else {
 			statusText = "TUN_FAIL_PROXY_OK"

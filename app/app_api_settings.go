@@ -415,6 +415,8 @@ func (a *App) GetFreeAccessConfig() map[string]interface{} {
 		services = append(services, map[string]interface{}{
 			"tag":                  svc.Tag,
 			"name":                 svc.DisplayName,
+			"domainSuffixes":       append([]string(nil), svc.DomainSuffixes...),
+			"ipCidrs":              append([]string(nil), svc.IPCIDRs...),
 			"enabled":              true,
 			"requiresVpn":          svc.RequiresVPN,
 			"selectedMethod":       selectedMethod,

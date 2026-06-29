@@ -224,6 +224,141 @@ var DefaultFreeAccessServices = []FreeAccessService{
 		},
 	},
 	{
+		Tag:         "canva",
+		DisplayName: "Canva",
+		DomainSuffixes: []string{
+			"canva.com", "canva.site", "canva.design", "canva.me", "canva-apps.com",
+		},
+		HealthURL:   "https://www.canva.com",
+		RequiresVPN: true,
+	},
+	{
+		Tag:         "notion",
+		DisplayName: "Notion",
+		DomainSuffixes: []string{
+			"notion.com", "notion.so", "notion.site", "notion-static.com", "notionusercontent.com",
+			"app.notion.com", "api.notion.com", "img.notionusercontent.com", "secure.notion-static.com",
+		},
+		IPCIDRs: []string{
+			"131.149.232.0/21",
+			"208.103.161.0/24",
+			"2602:F79A::/36",
+		},
+		ProcessNames: []string{"Notion.exe"},
+		HealthURL:    "https://www.notion.com",
+		RequiresVPN:  true,
+	},
+	{
+		Tag:         "slack",
+		DisplayName: "Slack",
+		DomainSuffixes: []string{
+			"slack.com", "slackb.com", "slack-edge.com", "slack-files.com", "slack-imgs.com",
+			"slack-msgs.com", "slack-core.com", "slack-redir.net",
+		},
+		ProcessNames: []string{"Slack.exe"},
+		HealthURL:    "https://slack.com",
+		RequiresVPN:  true,
+	},
+	{
+		Tag:         "miro",
+		DisplayName: "Miro",
+		DomainSuffixes: []string{
+			"miro.com", "miro-apps.com", "mirostatic.com", "realtimeboard.com",
+			"onlinewhiteboard.com", "webwhiteboard.com",
+		},
+		HealthURL:   "https://miro.com",
+		RequiresVPN: true,
+	},
+	{
+		Tag:         "wix",
+		DisplayName: "Wix",
+		DomainSuffixes: []string{
+			"wix.com", "wixsite.com", "wixstatic.com", "wixmp.com", "wixapps.net",
+			"editorx.com", "parastorage.com",
+		},
+		HealthURL:   "https://www.wix.com",
+		RequiresVPN: true,
+	},
+	{
+		Tag:         "coda",
+		DisplayName: "Coda",
+		DomainSuffixes: []string{
+			"coda.io", "codahosted.io", "codacontent.io",
+		},
+		HealthURL:   "https://coda.io",
+		RequiresVPN: true,
+	},
+	{
+		Tag:         "grammarly",
+		DisplayName: "Grammarly",
+		DomainSuffixes: []string{
+			"grammarly.com", "grammarly.io", "grammarly.net", "grammarlyaws.com",
+		},
+		ProcessNames: []string{"Grammarly.exe", "Grammarly Desktop.exe", "Grammarly for Windows.exe"},
+		HealthURL:    "https://www.grammarly.com",
+		RequiresVPN:  true,
+	},
+	{
+		Tag:         "docker",
+		DisplayName: "Docker Hub",
+		DomainSuffixes: []string{
+			"docker.com", "docker.io", "dockerhub.com", "login.docker.com", "auth.docker.com",
+			"registry-1.docker.io", "auth.docker.io", "desktop.docker.com", "hub.docker.com",
+			"production.cloudfront.docker.com", "production.cloudflare.docker.com",
+			"docker-pinata-support.s3.amazonaws.com", "api.docker.com", "api.dso.docker.com",
+			"dhi.io", "registry.scout.docker.com",
+		},
+		ProcessNames: []string{"Docker Desktop.exe", "com.docker.backend.exe", "docker.exe"},
+		HealthURL:    "https://hub.docker.com",
+		ProbeURLs:    []string{"https://registry-1.docker.io", "https://auth.docker.io"},
+		RequiresVPN:  true,
+	},
+	{
+		Tag:         "clickup",
+		DisplayName: "ClickUp",
+		DomainSuffixes: []string{
+			"clickup.com", "clickup-au.com", "clickup-attachments.com", "clickup-prod.com",
+			"clickup-eu.com", "clickup-sg.com", "clickup.ada.support", "codox.io",
+		},
+		ProcessNames: []string{"ClickUp.exe"},
+		HealthURL:    "https://app.clickup.com",
+		ProbeURLs:    []string{"https://api.clickup.com", "https://attachments.clickup.com"},
+		RequiresVPN:  true,
+	},
+	{
+		Tag:         "manychat",
+		DisplayName: "Manychat",
+		DomainSuffixes: []string{
+			"manychat.com",
+		},
+		HealthURL:   "https://app.manychat.com",
+		ProbeURLs:   []string{"https://api.manychat.com"},
+		RequiresVPN: true,
+	},
+	{
+		Tag:         "helpscout",
+		DisplayName: "Help Scout",
+		DomainSuffixes: []string{
+			"helpscout.com", "helpscout.net", "helpscoutdocs.com",
+		},
+		HealthURL:   "https://secure.helpscout.net",
+		RequiresVPN: true,
+	},
+	{
+		Tag:         "atlassian",
+		DisplayName: "Atlassian / Trello",
+		DomainSuffixes: []string{
+			"atlassian.com", "atlassian.net", "atlassian.io", "atlassianstatus.com",
+			"atlassianusercontent.com", "jira.com", "trello.com", "trello.services",
+			"trellocdn.com", "bitbucket.org", "bitbucket.io", "bitbucketusercontent.com",
+			"statuspage.io", "opsgenie.com",
+		},
+		ProcessNames: []string{"Trello.exe"},
+		HealthURL:    "https://trello.com",
+		ProbeURLs:    []string{"https://id.atlassian.com", "https://bitbucket.org"},
+		RequiresVPN:  true,
+	},
+	{
 		Tag:         "openai",
 		DisplayName: "AI services",
 		DomainSuffixes: []string{

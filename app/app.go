@@ -105,6 +105,7 @@ func (a *App) startup(ctx context.Context) {
 		// Initialize unified storage (replaces appConfig, profileManager, configBuilder)
 		a.updateBusy(busyID, "Загрузка настроек...")
 		a.initStorage()
+		a.ensureAutoStartRegistration()
 		if a.isShuttingDown() {
 			return
 		}
@@ -152,7 +153,11 @@ func (a *App) startup(ctx context.Context) {
 		}
 
 		a.updateBusy(busyID, "Готово")
+		shouldRestoreVPN := a.shouldRestoreVPNOnStartup()
 		a.writeLog(fmt.Sprintf("Application initialized in %s", time.Since(startedAt).Round(time.Millisecond)))
+		if shouldRestoreVPN && !a.isShuttingDown() {
+			go a.restoreVPNOnStartup()
+		}
 	}()
 }
 
@@ -193,6 +198,53 @@ func (a *App) requestShutdown() {
 
 func (a *App) isShuttingDown() bool {
 	return a.shutdownRequested.Load()
+}
+
+func (a *App) ensureAutoStartRegistration() {
+	if a.storage == nil {
+		return
+	}
+	settings := a.storage.GetAppSettings()
+	if err := SetAutoStart(settings.AutoStart); err != nil {
+		a.writeLog(fmt.Sprintf("Failed to sync autostart setting: %v", err))
+		return
+	}
+	a.writeLog(fmt.Sprintf("Autostart synchronized: %v", settings.AutoStart))
+}
+
+func (a *App) shouldRestoreVPNOnStartup() bool {
+	if a.storage == nil {
+		return false
+	}
+	settings := a.storage.GetAppSettings()
+	return settings.RestoreVPNOnStartup
+}
+
+func (a *App) setRestoreVPNOnStartup(enabled bool) {
+	if a.storage == nil {
+		return
+	}
+	settings := a.storage.GetAppSettings()
+	if settings.RestoreVPNOnStartup == enabled {
+		return
+	}
+	settings.RestoreVPNOnStartup = enabled
+	if err := a.storage.UpdateAppSettings(settings); err != nil {
+		a.writeLog(fmt.Sprintf("Failed to save VPN restore state: %v", err))
+		return
+	}
+	a.writeLog(fmt.Sprintf("VPN restore on startup: %v", enabled))
+}
+
+func (a *App) restoreVPNOnStartup() {
+	if a.isShuttingDown() {
+		return
+	}
+	a.writeLog("Restoring VPN state from previous session")
+	result := a.Start()
+	if ok, _ := result["success"].(bool); !ok {
+		a.writeLog(fmt.Sprintf("Failed to restore VPN on startup: %v", result["error"]))
+	}
 }
 
 // shutdown is called when the app is closing

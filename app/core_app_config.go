@@ -38,7 +38,7 @@ type AppConfig struct {
 // DefaultAppConfig returns default application configuration.
 func DefaultAppConfig() *AppConfig {
 	return &AppConfig{
-		AutoStart:         false,
+		AutoStart:         true,
 		Notifications:     true,
 		CheckUpdates:      true,
 		EnableLogging:     true,

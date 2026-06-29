@@ -87,6 +87,41 @@ jobs:
           "deps_tag=$hostTag" | Out-File $env:GITHUB_OUTPUT -Append
           "deps_asset=$depsAsset" | Out-File $env:GITHUB_OUTPUT -Append
 
+      - name: Prepare release notes
+        if: steps.ver.outputs.exists == 'false'
+        shell: pwsh
+        run: |
+          $tag = "${{ steps.ver.outputs.tag }}"
+          $repo = "${{ github.repository }}"
+          $depsTag = "${{ steps.assets.outputs.deps_tag }}"
+          $depsAsset = "${{ steps.assets.outputs.deps_asset }}"
+          $notes = @"
+          ## dropo $tag
+
+          Коротко: обновлён Windows UI, добавлен запрос нового сервиса из каталога маршрутов, улучшен выход из приложения и расширен список VPN-only сервисов.
+
+          ### Скачать
+
+          | Версия | Файл | Ссылка | Примечание |
+          | --- | --- | --- | --- |
+          | Windows Portable x64 | ``dropo-Windows-Portable-x64.zip`` | [Скачать](https://github.com/$repo/releases/download/$tag/dropo-Windows-Portable-x64.zip) | Распакуйте и запустите ``dropo.exe`` |
+          | Windows Dependencies x64 | ``$depsAsset`` | [Скачать](https://github.com/$repo/releases/download/$depsTag/$depsAsset) | Движки VPN/обхода, приложение скачает их само при первом запуске |
+          | Android | ``dropo-Android-universal.apk`` | Скоро | В разработке |
+          | macOS | ``dropo-MacOS-arm64.dmg`` | Скоро | В разработке |
+          | Linux | ``dropo-Linux-x64.AppImage`` | Скоро | В разработке |
+
+          ### Изменения
+
+          - Добавлена кнопка ``Добавить ещё сервис`` в настройках ``Сервисы и маршруты``.
+          - Добавлено модальное окно с подсказкой и ссылкой на Telegram: ``t.me/droponevedimka555``.
+          - При выходе из приложения теперь показывается окно прогресса остановки фоновых процессов.
+          - Автозапуск включён по умолчанию, состояние VPN восстанавливается после запуска Windows.
+          - Расширен каталог VPN-only сервисов и быстрых проверок доступности.
+          - Настройки сервисов и маршрутов загружаются через защищённый bridge-token с повторной попыткой.
+          "@
+          $notes = ($notes -split "`r?`n" | ForEach-Object { $_ -replace '^          ', '' }) -join "`n"
+          [System.IO.File]::WriteAllText("release-notes.md", $notes, [System.Text.UTF8Encoding]::new($false))
+
       # ---- Publish: create the tag from main + the release -----------------
       - name: Publish release
         if: steps.ver.outputs.exists == 'false'
@@ -121,6 +156,11 @@ jobs:
           files: |
             ${{ steps.assets.outputs.dir }}/dropo-Windows-Portable-x64.zip
           fail_on_unmatched_files: false
+
+      - name: Update release notes
+        if: steps.ver.outputs.exists == 'false'
+        shell: pwsh
+        run: gh release edit "${{ steps.ver.outputs.tag }}" --repo "$env:GITHUB_REPOSITORY" --notes-file release-notes.md
 
   # ---- Future per-OS builds (add jobs, each uploads to the same tag) -------
   #   android: runs-on: ubuntu-latest  -> dropo-Android-universal.apk

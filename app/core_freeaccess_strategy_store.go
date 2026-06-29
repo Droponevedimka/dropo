@@ -191,14 +191,14 @@ func (a *App) selectFreeAccessStrategyForService(settings GlobalAppSettings, svc
 		return makeFreeAccessStrategySelection(svc, cached.MethodTag, "service-cache-"+cached.Source, 0)
 	}
 	if svc.RequiresVPN {
-		if selected, ok := stored[svc.Tag]; ok && strategyMethodAvailable(selected.MethodTag, activeProxyTags, transparentTags, hasVPNProxy) {
+		if !hasVPNProxy {
+			return freeAccessStrategySelection{}
+		}
+		if selected, ok := stored[svc.Tag]; ok && selected.MethodTag == FreeAccessMethodVPN && strategyMethodAvailable(selected.MethodTag, activeProxyTags, transparentTags, hasVPNProxy) {
 			selected.Source = "stored"
 			return selected
 		}
-		if hasVPNProxy {
-			return makeFreeAccessStrategySelection(svc, FreeAccessMethodVPN, "default-vpn", 0)
-		}
-		return makeFreeAccessStrategySelection(svc, FreeAccessMethodDirect, "default-direct", 0)
+		return makeFreeAccessStrategySelection(svc, FreeAccessMethodVPN, "default-vpn", 0)
 	}
 	// Only services that actually have a free desync/proxy method (blockType
 	// "dpi") may use winws/ByeDPI here. blockType "vpn"/"proxy" services (meta,

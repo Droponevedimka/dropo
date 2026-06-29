@@ -483,15 +483,30 @@ class CoreBridge {
   }) async {
     final client = HttpClient()..connectionTimeout = const Duration(seconds: 2);
     try {
-      await _ensureToken();
-      final request = await client.postUrl(baseUri.replace(path: path));
-      request.headers.contentType = ContentType.json;
-      if (_token != null) {
-        request.headers.set('X-Dropo-Token', _token!);
+      for (var attempt = 0; attempt < 2; attempt++) {
+        await _ensureToken();
+        final request = await client.postUrl(baseUri.replace(path: path));
+        request.headers.contentType = ContentType.json;
+        if (_token != null) {
+          request.headers.set('X-Dropo-Token', _token!);
+        }
+        request.write(jsonEncode(body));
+        try {
+          final response = await request.close().timeout(timeout);
+          return await _decodeResponse(response);
+        } on HttpException catch (error) {
+          final tokenRejected =
+              error.message.contains('X-Dropo-Token') ||
+              error.message.contains('missing or invalid');
+          if (attempt == 0 && tokenRejected) {
+            _token = null;
+            await Future<void>.delayed(const Duration(milliseconds: 150));
+            continue;
+          }
+          rethrow;
+        }
       }
-      request.write(jsonEncode(body));
-      final response = await request.close().timeout(timeout);
-      return _decodeResponse(response);
+      throw const HttpException('dropo-core bridge request failed');
     } finally {
       client.close(force: true);
     }
@@ -765,7 +780,7 @@ class AppConfig {
   final String telegramUrl;
 
   static const defaults = AppConfig(
-    autoStart: false,
+    autoStart: true,
     enableLogging: true,
     checkUpdates: true,
     notifications: true,
@@ -788,7 +803,7 @@ class AppConfig {
   factory AppConfig.fromJson(Map<String, dynamic> json) {
     final networkStatus = _asMap(json['networkModeStatus']);
     return AppConfig(
-      autoStart: json['autoStart'] == true,
+      autoStart: json['autoStart'] != false,
       enableLogging: json['enableLogging'] != false,
       checkUpdates: json['checkUpdates'] != false,
       notifications: json['notifications'] != false,
@@ -864,6 +879,8 @@ class RouteService {
     required this.method,
     required this.requiresVpn,
     required this.delayMs,
+    this.domainSuffixes = const [],
+    this.ipCidrs = const [],
   });
 
   final String tag;
@@ -871,6 +888,8 @@ class RouteService {
   final String method;
   final bool requiresVpn;
   final int delayMs;
+  final List<String> domainSuffixes;
+  final List<String> ipCidrs;
 
   factory RouteService.fromFreeAccessJson(Map<String, dynamic> json) {
     return RouteService(
@@ -882,6 +901,10 @@ class RouteService {
           json['selectedMethod']?.toString() ??
           'Auto',
       requiresVpn: json['requiresVpn'] == true,
+      domainSuffixes: _asStringList(
+        json['domainSuffixes'] ?? json['domain_suffixes'],
+      ),
+      ipCidrs: _asStringList(json['ipCidrs'] ?? json['ip_cidrs']),
       delayMs: _asInt(json['delay']) == 0
           ? _asInt(json['latencyMs'] ?? json['latencyMS'] ?? json['ping'])
           : _asInt(json['delay']),
@@ -901,6 +924,10 @@ class RouteService {
           json['requiresVpn'] == true ||
           json['method']?.toString().toLowerCase().contains('vpn') == true ||
           json['outbound']?.toString() == 'auto-select',
+      domainSuffixes: _asStringList(
+        json['domainSuffixes'] ?? json['domain_suffixes'],
+      ),
+      ipCidrs: _asStringList(json['ipCidrs'] ?? json['ip_cidrs']),
       delayMs: _asInt(json['delay']) == 0
           ? _asInt(json['latencyMs'] ?? json['latencyMS'] ?? json['ping'])
           : _asInt(json['delay']),
@@ -1211,6 +1238,7 @@ class _DropoHomePageState extends State<DropoHomePage>
   bool online = false;
   bool uiBusy = false;
   bool quitting = false;
+  String quitProgressMessage = '';
   bool sideMenuExpanded = false;
   int lastEventId = 0;
   int refreshFailureCount = 0;
@@ -1504,6 +1532,9 @@ class _DropoHomePageState extends State<DropoHomePage>
         final message = event.payload['message']?.toString() ?? '';
         if (active) {
           busyTasks[id] = message;
+          if (id == 'app-exit' && message.trim().isNotEmpty) {
+            quitProgressMessage = message;
+          }
           if (id == 'vpn-connect' || id == 'vpn-disconnect') {
             connectionHintDanger = false;
             connectionHint = id == 'vpn-disconnect'
@@ -1515,6 +1546,9 @@ class _DropoHomePageState extends State<DropoHomePage>
           }
         } else {
           busyTasks.remove(id);
+          if (id == 'app-exit' && quitting) {
+            quitProgressMessage = 'Завершаем работу приложения...';
+          }
           if (!status.hasError &&
               !connectionBusy &&
               !uiBusy &&
@@ -1962,6 +1996,8 @@ class _DropoHomePageState extends State<DropoHomePage>
     }
     setState(() {
       quitting = true;
+      quitProgressMessage =
+          'Останавливаем VPN, WinDivert и фоновые процессы...';
       statusMessage = 'Закрываем dropo';
       connectionHint = 'Останавливаем VPN, WinDivert и фоновые процессы...';
     });
@@ -1972,7 +2008,12 @@ class _DropoHomePageState extends State<DropoHomePage>
       }
       if (info.showNotice) {
         await widget.bridge.showWindow().catchError((_) {});
+        if (!mounted) {
+          return;
+        }
         setState(() {
+          quitProgressMessage =
+              'Показываем уведомление Telegram перед выходом...';
           connectionHint = 'Перед выходом проверьте proxy в Telegram.';
         });
         await _showTelegramExitNotice(info);
@@ -1985,6 +2026,7 @@ class _DropoHomePageState extends State<DropoHomePage>
       }
       setState(() {
         quitting = false;
+        quitProgressMessage = '';
         statusMessage = 'Не удалось закрыть приложение';
         connectionHint = _cleanError(error);
       });
@@ -1995,8 +2037,12 @@ class _DropoHomePageState extends State<DropoHomePage>
     if (quitting) {
       return;
     }
+    final quitMessage = info.showNotice
+        ? 'Показываем уведомление Telegram перед выходом...'
+        : 'Завершаем работу приложения...';
     setState(() {
       quitting = true;
+      quitProgressMessage = quitMessage;
       statusMessage = 'Закрываем dropo';
       connectionHint = info.showNotice
           ? 'Перед выходом проверьте proxy в Telegram.'
@@ -2363,6 +2409,10 @@ class _DropoHomePageState extends State<DropoHomePage>
               onExit: quitting ? null : _quitApp,
             ),
           ),
+          if (quitting)
+            Positioned.fill(
+              child: _QuitProgressOverlay(message: quitProgressMessage),
+            ),
         ],
       ),
     );
@@ -4103,6 +4153,94 @@ class _SideMenu extends StatelessWidget {
   }
 }
 
+class _QuitProgressOverlay extends StatelessWidget {
+  const _QuitProgressOverlay({required this.message});
+
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    final body = message.trim().isEmpty
+        ? 'Останавливаем VPN, WinDivert и фоновые процессы...'
+        : message.trim();
+    return ColoredBox(
+      color: Colors.black.withValues(alpha: 0.58),
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 430),
+          child: Container(
+            margin: const EdgeInsets.all(18),
+            padding: const EdgeInsets.fromLTRB(20, 18, 20, 18),
+            decoration: BoxDecoration(
+              color: const Color(0xFF111B1D).withValues(alpha: 0.98),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.12)),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.42),
+                  blurRadius: 34,
+                  offset: const Offset(0, 18),
+                ),
+              ],
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  children: [
+                    const SizedBox(
+                      width: 24,
+                      height: 24,
+                      child: CircularProgressIndicator(strokeWidth: 2.8),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        'Завершение работы',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: Color(0xFFE5EEF8),
+                          fontSize: 16,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 14),
+                Text(
+                  body,
+                  style: const TextStyle(
+                    color: Color(0xFFBDD0CB),
+                    fontSize: 13,
+                    height: 1.35,
+                  ),
+                ),
+                const SizedBox(height: 14),
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(999),
+                  child: LinearProgressIndicator(
+                    minHeight: 5,
+                    backgroundColor: Colors.white.withValues(alpha: 0.08),
+                    color: const Color(0xFF36D399),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                const Text(
+                  'Окно закроется автоматически после остановки фоновых процессов.',
+                  style: TextStyle(color: Color(0xFF7F918C), fontSize: 11),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _MenuToggleButton extends StatelessWidget {
   const _MenuToggleButton({required this.expanded, required this.onPressed});
 
@@ -5385,6 +5523,38 @@ class _SettingsDialogState extends State<_SettingsDialog> {
   late AppConfig config = widget.initialConfig;
   String statusText = '';
   bool saving = false;
+  List<RouteService> serviceCatalog = const [];
+  bool serviceCatalogLoading = false;
+  String serviceCatalogError = '';
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_loadServiceCatalog());
+  }
+
+  Future<void> _loadServiceCatalog() async {
+    setState(() {
+      serviceCatalogLoading = true;
+      serviceCatalogError = '';
+    });
+    List<RouteService> services = const [];
+    String errorText = '';
+    try {
+      services = await widget.bridge.routes(live: false);
+    } catch (error) {
+      services = fallbackRoutes;
+      errorText = _cleanError(error);
+    }
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      serviceCatalog = services;
+      serviceCatalogLoading = false;
+      serviceCatalogError = errorText;
+    });
+  }
 
   Future<void> _saveGeneral(AppConfig updated) async {
     setState(() {
@@ -5722,6 +5892,12 @@ class _SettingsDialogState extends State<_SettingsDialog> {
                     )
                   : null,
             ),
+            _ServiceCatalogTable(
+              bridge: widget.bridge,
+              services: serviceCatalog,
+              loading: serviceCatalogLoading,
+              error: serviceCatalogError,
+            ),
           ],
         ),
         _SettingsGroup(
@@ -5799,6 +5975,305 @@ class _SettingsDialogState extends State<_SettingsDialog> {
       width: 612,
       child: content,
     );
+  }
+}
+
+class _ServiceCatalogTable extends StatelessWidget {
+  const _ServiceCatalogTable({
+    required this.bridge,
+    required this.services,
+    required this.loading,
+    required this.error,
+  });
+
+  final CoreBridge bridge;
+  final List<RouteService> services;
+  final bool loading;
+  final String error;
+
+  @override
+  Widget build(BuildContext context) {
+    final rows = services
+        .where((service) => service.name.trim().isNotEmpty)
+        .toList(growable: false);
+    return Container(
+      margin: const EdgeInsets.only(bottom: 7),
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.055),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              const Icon(
+                Icons.dns_outlined,
+                size: 16,
+                color: Color(0xFFBAF7D0),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'Сервисы и маршруты',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ),
+              if (loading)
+                const SizedBox(
+                  width: 14,
+                  height: 14,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+            ],
+          ),
+          if (error.isNotEmpty) ...[
+            const SizedBox(height: 7),
+            Text(
+              'Каталог не загрузился: $error',
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: Color(0xFFFCA5A5),
+                fontSize: 10.5,
+                height: 1.25,
+              ),
+            ),
+          ],
+          const SizedBox(height: 8),
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxHeight: 260),
+            child: Scrollbar(
+              child: SingleChildScrollView(
+                child: Column(
+                  children: rows.isEmpty
+                      ? const [_ServiceCatalogEmptyRow()]
+                      : rows
+                            .map(
+                              (service) => _ServiceCatalogRow(service: service),
+                            )
+                            .toList(growable: false),
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 8),
+          _ActionButton(
+            label: 'Добавить ещё сервис',
+            icon: Icons.add_link,
+            compact: true,
+            secondary: true,
+            onPressed: () => _showRequestServiceDialog(context),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _showRequestServiceDialog(BuildContext context) {
+    return showDialog<void>(
+      context: context,
+      builder: (context) => _RequestServiceDialog(bridge: bridge),
+    );
+  }
+}
+
+class _RequestServiceDialog extends StatelessWidget {
+  const _RequestServiceDialog({required this.bridge});
+
+  static const telegramUrl = 'https://t.me/droponevedimka555';
+
+  final CoreBridge bridge;
+
+  @override
+  Widget build(BuildContext context) {
+    return _AppDialog(
+      title: 'Добавить сервис',
+      icon: Icons.add_link,
+      centered: true,
+      width: 520,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const Text(
+            'Если нужного сервиса нет в списке, напишите админу группы и в форме обратной связи укажите, какой сервис требуется добавить.',
+            style: TextStyle(color: Color(0xFFD8E4E0), height: 1.35),
+          ),
+          const SizedBox(height: 12),
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: Colors.black.withValues(alpha: 0.22),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.07)),
+            ),
+            child: const Row(
+              children: [
+                Icon(Icons.telegram, size: 18, color: Color(0xFF93C5FD)),
+                SizedBox(width: 9),
+                Expanded(
+                  child: SelectableText(
+                    't.me/droponevedimka555',
+                    style: TextStyle(
+                      color: Color(0xFFBBD7FF),
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 14),
+          Row(
+            children: [
+              Expanded(
+                child: _ActionButton(
+                  label: 'Открыть Telegram',
+                  icon: Icons.open_in_new,
+                  onPressed: () async {
+                    await bridge.openExternal(telegramUrl);
+                  },
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: _ActionButton(
+                  label: 'Закрыть',
+                  icon: Icons.close,
+                  secondary: true,
+                  onPressed: () => Navigator.of(context).pop(),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ServiceCatalogEmptyRow extends StatelessWidget {
+  const _ServiceCatalogEmptyRow();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Padding(
+      padding: EdgeInsets.symmetric(vertical: 10),
+      child: Text(
+        'Загрузка каталога...',
+        style: TextStyle(color: Color(0xFF7F918C), fontSize: 11),
+      ),
+    );
+  }
+}
+
+class _ServiceCatalogRow extends StatelessWidget {
+  const _ServiceCatalogRow({required this.service});
+
+  final RouteService service;
+
+  @override
+  Widget build(BuildContext context) {
+    final domains = _compactTargets(service.domainSuffixes);
+    final ipText = service.ipCidrs.isEmpty
+        ? 'IP: CDN/динамические'
+        : 'IP: ${_compactTargets(service.ipCidrs)}';
+    return Container(
+      margin: const EdgeInsets.only(bottom: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.18),
+        borderRadius: BorderRadius.circular(7),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.05)),
+      ),
+      child: Row(
+        children: [
+          Icon(
+            service.requiresVpn ? Icons.vpn_lock : Icons.route,
+            size: 16,
+            color: service.requiresVpn
+                ? const Color(0xFF93C5FD)
+                : const Color(0xFFBAF7D0),
+          ),
+          const SizedBox(width: 9),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        service.name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 11.5,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      service.requiresVpn ? 'VPN' : 'AUTO',
+                      style: TextStyle(
+                        color: service.requiresVpn
+                            ? const Color(0xFF93C5FD)
+                            : const Color(0xFFBAF7D0),
+                        fontSize: 10,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  domains.isEmpty ? 'Домены: -' : 'Домены: $domains',
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: Color(0xFF8EA19D),
+                    fontSize: 10,
+                    height: 1.25,
+                  ),
+                ),
+                Text(
+                  ipText,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: Color(0xFF71837F),
+                    fontSize: 10,
+                    height: 1.25,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  static String _compactTargets(List<String> values) {
+    if (values.isEmpty) {
+      return '';
+    }
+    const visibleCount = 4;
+    final visible = values.take(visibleCount).join(', ');
+    final extra = values.length - visibleCount;
+    if (extra <= 0) {
+      return visible;
+    }
+    return '$visible +$extra';
   }
 }
 

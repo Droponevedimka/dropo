@@ -255,7 +255,7 @@ flutter_app/
   test/                      # Flutter widget tests
 dependencies/                # sing-box, wireguard, byedpi, zapret, xray, filters
 testlab/                     # censor lab (blocking emulation) - docs/TESTING.md L6
-docs/                        # TESTING.md, UPDATE.md, platform notes
+docs/                        # TESTING.md, UPDATE.md, RELEASES.md, platform notes
 tools/                       # preflight-release.ps1, check-*.ps1, client-quick-check.ps1
 ```
 

@@ -345,6 +345,7 @@ func (a *App) Start() map[string]interface{} {
 		a.stoppedManually = false
 		a.mu.Unlock()
 		UpdateTrayIcon("connected")
+		a.setRestoreVPNOnStartup(true)
 		if proxyFallbackStarted {
 			a.writeLog("VPN started successfully in Deep Windows mode with local proxy endpoint")
 			a.AddToLogBuffer("VPN запущен: Deep Windows + proxy endpoint")
@@ -438,6 +439,7 @@ func (a *App) Start() map[string]interface{} {
 	a.hasError = false
 	a.mu.Unlock()
 	UpdateTrayIcon("connected")
+	a.setRestoreVPNOnStartup(true)
 	a.writeLog("VPN started successfully")
 	a.AddToLogBuffer("VPN запущен")
 
@@ -1027,6 +1029,10 @@ func (a *App) Stop() map[string]interface{} {
 	defer a.vpnStopping.Store(false)
 
 	a.writeLog("VPN stop requested")
+	manualStop := !a.isShuttingDown()
+	if manualStop {
+		a.setRestoreVPNOnStartup(false)
+	}
 
 	a.mu.Lock()
 	cmd := a.cmd

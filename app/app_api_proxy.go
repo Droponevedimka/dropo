@@ -499,12 +499,15 @@ func (a *App) GetBypassRouteSummary() map[string]interface{} {
 				}
 			}
 			services = append(services, map[string]interface{}{
-				"tag":      svc.Tag,
-				"name":     svc.DisplayName,
-				"group":    groupTag,
-				"method":   method,
-				"outbound": outbound,
-				"delay":    0,
+				"tag":            svc.Tag,
+				"name":           svc.DisplayName,
+				"domainSuffixes": append([]string(nil), svc.DomainSuffixes...),
+				"ipCidrs":        append([]string(nil), svc.IPCIDRs...),
+				"requiresVpn":    svc.RequiresVPN,
+				"group":          groupTag,
+				"method":         method,
+				"outbound":       outbound,
+				"delay":          0,
 			})
 			continue
 		}
@@ -520,12 +523,15 @@ func (a *App) GetBypassRouteSummary() map[string]interface{} {
 		}
 
 		services = append(services, map[string]interface{}{
-			"tag":      svc.Tag,
-			"name":     svc.DisplayName,
-			"group":    groupTag,
-			"method":   method,
-			"outbound": outbound,
-			"delay":    delay,
+			"tag":            svc.Tag,
+			"name":           svc.DisplayName,
+			"domainSuffixes": append([]string(nil), svc.DomainSuffixes...),
+			"ipCidrs":        append([]string(nil), svc.IPCIDRs...),
+			"requiresVpn":    svc.RequiresVPN,
+			"group":          groupTag,
+			"method":         method,
+			"outbound":       outbound,
+			"delay":          delay,
 		})
 	}
 
@@ -591,12 +597,15 @@ func (a *App) transparentBypassRouteSummary(settings GlobalAppSettings, mode Rou
 		}
 
 		services = append(services, map[string]interface{}{
-			"tag":      svc.Tag,
-			"name":     svc.DisplayName,
-			"group":    ServiceBypassGroupTag(svc.Tag),
-			"method":   method,
-			"outbound": outbound,
-			"delay":    delay,
+			"tag":            svc.Tag,
+			"name":           svc.DisplayName,
+			"domainSuffixes": append([]string(nil), svc.DomainSuffixes...),
+			"ipCidrs":        append([]string(nil), svc.IPCIDRs...),
+			"requiresVpn":    svc.RequiresVPN,
+			"group":          ServiceBypassGroupTag(svc.Tag),
+			"method":         method,
+			"outbound":       outbound,
+			"delay":          delay,
 		})
 	}
 

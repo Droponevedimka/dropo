@@ -37,9 +37,10 @@ type ProfileData struct {
 // GlobalAppSettings contains global application settings (stored in settings.json).
 type GlobalAppSettings struct {
 	// General settings
-	AutoStart     bool `json:"auto_start"`
-	Notifications bool `json:"notifications"`
-	CheckUpdates  bool `json:"check_updates"`
+	AutoStart           bool `json:"auto_start"`
+	RestoreVPNOnStartup bool `json:"restore_vpn_on_startup"`
+	Notifications       bool `json:"notifications"`
+	CheckUpdates        bool `json:"check_updates"`
 
 	// Logging settings
 	EnableLogging bool     `json:"enable_logging"`
@@ -212,25 +213,26 @@ func (s *Storage) createDefaultSettings() *SettingsFile {
 	return &SettingsFile{
 		Version: SettingsVersion,
 		App: GlobalAppSettings{
-			AutoStart:          false,
-			Notifications:      true,
-			CheckUpdates:       true,
-			EnableLogging:      true,
-			LogLevel:           LogLevelTrace, // Maximum detail while the project is in active development
-			Theme:              ThemeDark,
-			Language:           LangRussian,
-			RoutingMode:        DefaultRoutingMode, // blocked_only by default
-			NetworkMode:        DefaultNetworkMode,
-			AutoUpdateSub:      true,
-			SubUpdateInterval:  24,
-			ActiveProfileID:    DefaultProfileID,
-			FreeAccessEnabled:  true, // on by default per developing.md §4
-			FreeAccessReverse:  false,
-			FreeAccessServices: DefaultFreeAccessServiceState(), // every service enabled by default
-			FreeAccessMethods:  DefaultFreeAccessServiceMethodState(),
-			DisableFreeAccess:  false,
-			HideRuTraffic:      false, // RU traffic stays direct by default
-			RuProxyAddress:     "",
+			AutoStart:           true,
+			RestoreVPNOnStartup: false,
+			Notifications:       true,
+			CheckUpdates:        true,
+			EnableLogging:       true,
+			LogLevel:            LogLevelTrace, // Maximum detail while the project is in active development
+			Theme:               ThemeDark,
+			Language:            LangRussian,
+			RoutingMode:         DefaultRoutingMode, // blocked_only by default
+			NetworkMode:         DefaultNetworkMode,
+			AutoUpdateSub:       true,
+			SubUpdateInterval:   24,
+			ActiveProfileID:     DefaultProfileID,
+			FreeAccessEnabled:   true, // on by default per developing.md §4
+			FreeAccessReverse:   false,
+			FreeAccessServices:  DefaultFreeAccessServiceState(), // every service enabled by default
+			FreeAccessMethods:   DefaultFreeAccessServiceMethodState(),
+			DisableFreeAccess:   false,
+			HideRuTraffic:       false, // RU traffic stays direct by default
+			RuProxyAddress:      "",
 		},
 		Profiles: []ProfileData{s.createDefaultProfile()},
 	}

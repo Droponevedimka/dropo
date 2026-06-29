@@ -214,9 +214,11 @@ func routeProbeServiceSummaries(services []FreeAccessService) []map[string]inter
 	summaries := make([]map[string]interface{}, 0, len(services))
 	for _, svc := range services {
 		summaries = append(summaries, map[string]interface{}{
-			"tag":         svc.Tag,
-			"name":        svc.DisplayName,
-			"requiresVpn": svc.RequiresVPN,
+			"tag":            svc.Tag,
+			"name":           svc.DisplayName,
+			"domainSuffixes": append([]string(nil), svc.DomainSuffixes...),
+			"ipCidrs":        append([]string(nil), svc.IPCIDRs...),
+			"requiresVpn":    svc.RequiresVPN,
 		})
 	}
 	return summaries
