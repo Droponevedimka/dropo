@@ -14,13 +14,24 @@ type bridgeCallRequest struct {
 	Args   []json.RawMessage `json:"args"`
 }
 
-func newBridgeMux(app *App) http.Handler {
+func newBridgeMux(app *App, token string) http.Handler {
 	mux := http.NewServeMux()
 	handle := func(path string, fn http.HandlerFunc) {
 		mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
 			setBridgeHeaders(w)
 			if r.Method == http.MethodOptions {
 				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			fn(w, r)
+		})
+	}
+	// guarded wraps handlers for state-changing endpoints behind the bridge
+	// token. Read-only endpoints registered via handle() stay unauthenticated.
+	guarded := func(path string, fn http.HandlerFunc) {
+		handle(path, func(w http.ResponseWriter, r *http.Request) {
+			if !bridgeTokenAuthorized(r, token) {
+				writeBridgeError(w, http.StatusUnauthorized, "missing or invalid "+bridgeAuthHeader)
 				return
 			}
 			fn(w, r)
@@ -44,13 +55,13 @@ func newBridgeMux(app *App) http.Handler {
 		writeBridgeJSON(w, status)
 	})
 
-	handle("/api/connect", func(w http.ResponseWriter, r *http.Request) {
+	guarded("/api/connect", func(w http.ResponseWriter, r *http.Request) {
 		if requireMethod(w, r, http.MethodPost) {
 			writeBridgeJSON(w, app.Start())
 		}
 	})
 
-	handle("/api/disconnect", func(w http.ResponseWriter, r *http.Request) {
+	guarded("/api/disconnect", func(w http.ResponseWriter, r *http.Request) {
 		if requireMethod(w, r, http.MethodPost) {
 			writeBridgeJSON(w, app.Stop())
 		}
@@ -60,7 +71,7 @@ func newBridgeMux(app *App) http.Handler {
 		writeBridgeJSON(w, app.DependenciesStatus())
 	})
 
-	handle("/api/dependencies/download", func(w http.ResponseWriter, r *http.Request) {
+	guarded("/api/dependencies/download", func(w http.ResponseWriter, r *http.Request) {
 		if !requireMethod(w, r, http.MethodPost) {
 			return
 		}
@@ -87,13 +98,13 @@ func newBridgeMux(app *App) http.Handler {
 		writeBridgeJSON(w, app.GetLogs(lastN))
 	})
 
-	handle("/api/tray/ensure", func(w http.ResponseWriter, r *http.Request) {
+	guarded("/api/tray/ensure", func(w http.ResponseWriter, r *http.Request) {
 		if requireMethod(w, r, http.MethodPost) {
 			writeBridgeJSON(w, app.EnsureTray())
 		}
 	})
 
-	handle("/api/call", func(w http.ResponseWriter, r *http.Request) {
+	guarded("/api/call", func(w http.ResponseWriter, r *http.Request) {
 		if !requireMethod(w, r, http.MethodPost) {
 			return
 		}
@@ -110,14 +121,14 @@ func newBridgeMux(app *App) http.Handler {
 		writeBridgeJSON(w, result)
 	})
 
-	handle("/api/quit", func(w http.ResponseWriter, r *http.Request) {
+	guarded("/api/quit", func(w http.ResponseWriter, r *http.Request) {
 		if !requireMethod(w, r, http.MethodPost) {
 			return
 		}
 		writeBridgeJSON(w, app.PrepareQuit())
 	})
 
-	handle("/api/quit/finalize", func(w http.ResponseWriter, r *http.Request) {
+	guarded("/api/quit/finalize", func(w http.ResponseWriter, r *http.Request) {
 		if !requireMethod(w, r, http.MethodPost) {
 			return
 		}

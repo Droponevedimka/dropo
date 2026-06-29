@@ -11,6 +11,8 @@ import (
 	"time"
 )
 
+const trafficStatsPollInterval = 2 * time.Second
+
 // initTrafficStats инициализирует статистику трафика
 func (a *App) initTrafficStats() {
 	statsPath := a.getTrafficStatsPath()
@@ -36,9 +38,16 @@ func (a *App) GetTrafficStats() map[string]interface{} {
 		}
 	}
 
+	a.refreshTrafficStatsFromClash()
 	current := a.trafficStats.GetCurrentSession()
 	last := a.trafficStats.GetLastSession()
 	total := a.trafficStats.GetTotalStats()
+	liveTotal := total
+	if a.trafficStats.IsSessionActive() {
+		liveTotal.Uploaded += current.Uploaded
+		liveTotal.Downloaded += current.Downloaded
+		liveTotal.Duration += current.Duration
+	}
 
 	return map[string]interface{}{
 		"success": true,
@@ -59,13 +68,13 @@ func (a *App) GetTrafficStats() map[string]interface{} {
 			"durationStr":   FormatDuration(last.Duration),
 		},
 		"total": map[string]interface{}{
-			"uploaded":      total.Uploaded,
-			"downloaded":    total.Downloaded,
-			"duration":      int64(total.Duration.Seconds()),
-			"sessions":      total.Sessions,
-			"uploadedStr":   FormatBytes(total.Uploaded),
-			"downloadedStr": FormatBytes(total.Downloaded),
-			"durationStr":   FormatDuration(total.Duration),
+			"uploaded":      liveTotal.Uploaded,
+			"downloaded":    liveTotal.Downloaded,
+			"duration":      int64(liveTotal.Duration.Seconds()),
+			"sessions":      liveTotal.Sessions,
+			"uploadedStr":   FormatBytes(liveTotal.Uploaded),
+			"downloadedStr": FormatBytes(liveTotal.Downloaded),
+			"durationStr":   FormatDuration(liveTotal.Duration),
 		},
 	}
 }
@@ -92,6 +101,48 @@ func (a *App) ResetTrafficStats() map[string]interface{} {
 		"success": true,
 		"message": "Статистика сброшена",
 	}
+}
+
+func (a *App) vpnRunningForStats() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.isRunning
+}
+
+func (a *App) refreshTrafficStatsFromClash() bool {
+	if a == nil || a.trafficStats == nil || !a.vpnRunningForStats() || !a.trafficStats.IsSessionActive() {
+		return false
+	}
+	upload, download := a.fetchClashTraffic()
+	if !a.vpnRunningForStats() || !a.trafficStats.IsSessionActive() {
+		return false
+	}
+	a.trafficStats.UpdateTraffic(upload, download)
+	return true
+}
+
+func (a *App) startTrafficStatsPolling() {
+	if a == nil || a.trafficStats == nil {
+		return
+	}
+	var done <-chan struct{}
+	if a.ctx != nil {
+		done = a.ctx.Done()
+	}
+	go func() {
+		ticker := time.NewTicker(trafficStatsPollInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				if !a.refreshTrafficStatsFromClash() {
+					return
+				}
+			}
+		}
+	}()
 }
 
 // fetchClashTraffic получает статистику трафика через Clash API
@@ -124,18 +175,17 @@ func (a *App) fetchClashTraffic() (upload, download int64) {
 
 // UpdateTrafficFromClash обновляет статистику трафика из Clash API (вызывается периодически)
 func (a *App) UpdateTrafficFromClash() map[string]interface{} {
-	if !a.isRunning || a.trafficStats == nil {
+	if !a.refreshTrafficStatsFromClash() {
 		return map[string]interface{}{
 			"success": false,
 		}
 	}
 
-	upload, download := a.fetchClashTraffic()
-	a.trafficStats.UpdateTraffic(upload, download)
+	current := a.trafficStats.GetCurrentSession()
 
 	return map[string]interface{}{
 		"success":  true,
-		"upload":   upload,
-		"download": download,
+		"upload":   current.Uploaded,
+		"download": current.Downloaded,
 	}
 }

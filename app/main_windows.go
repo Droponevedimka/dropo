@@ -5,6 +5,7 @@ package main
 import (
 	"embed"
 	"log"
+	"os"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -33,18 +34,24 @@ var (
 	showWindow                  = user32.NewProc("ShowWindow")
 	setForeground               = user32.NewProc("SetForegroundWindow")
 	sendMessage                 = user32.NewProc("SendMessageW")
+	postMessage                 = user32.NewProc("PostMessageW")
+	getWindowThreadProcessID    = user32.NewProc("GetWindowThreadProcessId")
+	openProcess                 = kernel32.NewProc("OpenProcess")
+	terminateProcess            = kernel32.NewProc("TerminateProcess")
 	createIconFromResourceEx    = user32.NewProc("CreateIconFromResourceEx")
 	destroyIcon                 = user32.NewProc("DestroyIcon")
 	lookupIconIdFromDirectoryEx = user32.NewProc("LookupIconIdFromDirectoryEx")
 )
 
 const (
-	swHide         = 0
-	swRestore      = 9
-	wmSetIcon      = 0x0080
-	iconSmall      = 0
-	iconBig        = 1
-	lrDefaultColor = 0x00000000
+	swHide           = 0
+	swRestore        = 9
+	wmClose          = 0x0010
+	wmSetIcon        = 0x0080
+	iconSmall        = 0
+	iconBig          = 1
+	lrDefaultColor   = 0x00000000
+	processTerminate = 0x0001
 )
 
 var systrayReady = make(chan struct{})
@@ -92,9 +99,14 @@ func ensurePlatformTray() {
 	startPlatformTray()
 }
 
-func showPlatformWindow() {
+func findAppWindow() uintptr {
 	windowName, _ := syscall.UTF16PtrFromString(AppDisplayName)
 	hwnd, _, _ := findWindow.Call(0, uintptr(unsafe.Pointer(windowName)))
+	return hwnd
+}
+
+func showPlatformWindow() {
+	hwnd := findAppWindow()
 	if hwnd != 0 {
 		showWindow.Call(hwnd, swRestore)
 		setForeground.Call(hwnd)
@@ -102,11 +114,38 @@ func showPlatformWindow() {
 }
 
 func hidePlatformWindow() {
-	windowName, _ := syscall.UTF16PtrFromString(AppDisplayName)
-	hwnd, _, _ := findWindow.Call(0, uintptr(unsafe.Pointer(windowName)))
+	hwnd := findAppWindow()
 	if hwnd != 0 {
 		showWindow.Call(hwnd, swHide)
 	}
+}
+
+func requestPlatformFrontendQuit() bool {
+	hwnd := findAppWindow()
+	if hwnd == 0 {
+		return false
+	}
+	postMessage.Call(hwnd, wmClose, 0, 0)
+	return true
+}
+
+func forcePlatformFrontendExit() bool {
+	hwnd := findAppWindow()
+	if hwnd == 0 {
+		return false
+	}
+	var pid uint32
+	getWindowThreadProcessID.Call(hwnd, uintptr(unsafe.Pointer(&pid)))
+	if pid == 0 || pid == uint32(os.Getpid()) {
+		return false
+	}
+	handle, _, _ := openProcess.Call(processTerminate, 0, uintptr(pid))
+	if handle == 0 {
+		return false
+	}
+	defer syscall.CloseHandle(syscall.Handle(handle))
+	terminated, _, _ := terminateProcess.Call(handle, 0)
+	return terminated != 0
 }
 
 func onSystrayReady() {
@@ -159,7 +198,7 @@ func onSystrayReady() {
 	mQuit.Click(func() {
 		if appInstance != nil {
 			appInstance.writeLog("Systray quit requested")
-			appInstance.QuitWithTelegramNotice()
+			appInstance.RequestFrontendQuit("tray")
 		}
 	})
 }

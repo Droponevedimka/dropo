@@ -72,7 +72,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
 
   FlutterWindow window(project);
   Win32Window::Point origin(10, 10);
-  Win32Window::Size size(680, 820);
+  Win32Window::Size size(760, 760);
   if (!window.Create(L"dropo", origin, size)) {
     return EXIT_FAILURE;
   }

@@ -28,6 +28,40 @@ func (a *App) QuitApp() {
 	a.FinalizeQuit()
 }
 
+// RequestFrontendQuit asks the Flutter shell to run the same two-step quit flow
+// as the in-app Exit button. If the frontend does not acknowledge the request,
+// the core falls back to a backend-only shutdown and closes the stale UI window.
+func (a *App) RequestFrontendQuit(source string) {
+	if a == nil {
+		os.Exit(0)
+	}
+	if source == "" {
+		source = "external"
+	}
+	if a.isShuttingDown() {
+		a.FinalizeQuit()
+		return
+	}
+	a.writeLog("Frontend quit requested from " + source)
+	requestPlatformFrontendQuit()
+	a.emitEvent("request-app-quit", map[string]interface{}{
+		"source": source,
+	})
+	if !a.frontendQuitRequested.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		time.Sleep(3500 * time.Millisecond)
+		if a.isShuttingDown() {
+			return
+		}
+		a.writeLog("Frontend did not acknowledge quit request; forcing shutdown")
+		a.PrepareQuit()
+		forcePlatformFrontendExit()
+		a.FinalizeQuit()
+	}()
+}
+
 // PrepareQuit stops the VPN, WinDivert and all background processes WITHOUT
 // exiting, then reports whether a Telegram-proxy cleanup notice should be shown
 // before the portable app finally closes. The frontend calls FinalizeQuit once
@@ -107,6 +141,7 @@ func (a *App) QuitWithTelegramNotice() {
 // FinalizeQuit performs the actual process exit. Call after PrepareQuit (and
 // after any closing notice has been dismissed).
 func (a *App) FinalizeQuit() {
+	removeBridgeToken()
 	a.closeLogFile()
 	go func() {
 		time.Sleep(500 * time.Millisecond)

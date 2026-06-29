@@ -20,5 +20,13 @@ func showPlatformWindow() {
 func hidePlatformWindow() {
 }
 
+func requestPlatformFrontendQuit() bool {
+	return false
+}
+
+func forcePlatformFrontendExit() bool {
+	return false
+}
+
 func UpdateTrayIcon(status string) {
 }

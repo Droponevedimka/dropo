@@ -359,6 +359,7 @@ func (a *App) Start() map[string]interface{} {
 		}
 		if a.trafficStats != nil {
 			a.trafficStats.StartSession()
+			a.startTrafficStatsPolling()
 		}
 
 		startupSucceeded = true
@@ -449,6 +450,7 @@ func (a *App) Start() map[string]interface{} {
 	// Start tracking traffic statistics
 	if a.trafficStats != nil {
 		a.trafficStats.StartSession()
+		a.startTrafficStatsPolling()
 	}
 
 	// Hybrid: run the winws desync engine ALONGSIDE sing-box TUN. sing-box

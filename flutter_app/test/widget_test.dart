@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  testWidgets('dropo Flutter shell keeps the classic compact controls', (
+  testWidgets('dropo Flutter shell keeps the compact map dashboard controls', (
     tester,
   ) async {
     tester.view.physicalSize = const Size(1280, 860);
@@ -16,6 +16,15 @@ void main() {
 
     expect(find.text('Dr'), findsOneWidget);
     expect(find.text('opo'), findsOneWidget);
+    expect(find.byIcon(Icons.menu), findsOneWidget);
+    expect(find.byIcon(Icons.public), findsOneWidget);
+    expect(find.byIcon(Icons.settings), findsOneWidget);
+
+    await tester.tap(find.byIcon(Icons.menu));
+    await tester.pump(const Duration(milliseconds: 240));
+
+    expect(find.text('Подключение'), findsOneWidget);
+    expect(find.text('Профили'), findsWidgets);
     expect(find.text('Настройки'), findsOneWidget);
     expect(find.text('Статистика'), findsOneWidget);
     expect(find.text('Логи'), findsOneWidget);

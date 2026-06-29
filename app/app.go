@@ -62,6 +62,7 @@ type App struct {
 	tgProxyPromptedSession     atomic.Bool // tg://proxy was opened at most once per VPN session
 	busySeq                    uint64
 	vpnStopping                atomic.Bool
+	frontendQuitRequested      atomic.Bool
 	initializedReady           atomic.Bool
 	shutdownRequested          atomic.Bool
 	windowVisibleFlag          atomic.Bool

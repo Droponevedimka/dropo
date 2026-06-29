@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"path/filepath"
-	"runtime"
 	"strings"
 )
 
@@ -98,8 +97,8 @@ func (a *App) deepWindowsEngineReady() (bool, string, string) {
 	if a != nil && a.basePath != "" {
 		helperPath = filepath.Join(a.basePath, "bin", ZapretProcessName)
 	}
-	if runtime.GOOS != "windows" {
-		return false, helperPath, fmt.Sprintf("Deep Windows is Windows-only; active mode is %s", networkModeLabel(NetworkModeCompatTun))
+	if !interceptionEngineSupported() {
+		return false, helperPath, fmt.Sprintf("transparent interception engine (%s) is unavailable on this platform; active mode is %s", interceptionEngineKind(), networkModeLabel(NetworkModeCompatTun))
 	}
 
 	if a != nil && a.zapret != nil {
@@ -153,8 +152,8 @@ func (a *App) logDeepWindowsError(message string) {
 }
 
 func (a *App) shouldUseDeepWindowsPrimary(configPath string, status NetworkModeStatus) (bool, string) {
-	if runtime.GOOS != "windows" {
-		return false, "Deep Windows transparent engine is Windows-only"
+	if !interceptionEngineSupported() {
+		return false, fmt.Sprintf("transparent interception engine (%s) is unavailable on this platform", interceptionEngineKind())
 	}
 	if status.Active != NetworkModeDeepWindows {
 		return false, fmt.Sprintf("active network mode is %s", status.Active)

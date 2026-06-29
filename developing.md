@@ -36,10 +36,16 @@ flutter_app/
 
 app/
   main.go                   # headless Go-core process
-  http_bridge.go            # local HTTP bridge for Flutter
+  http_bridge.go            # local HTTP bridge for Flutter (token-guarded POSTs)
+  core_bridge_auth.go       # per-launch bridge token (X-Dropo-Token)
+  core_interception_engine.go            # InterceptionEngine interface (multi-OS seam)
+  core_interception_engine_<os>.go       # per-OS desync/TUN engine adapters
   app_api_*.go              # VPN, profiles, subscription, update APIs
   core_*.go                 # routing, storage, filters, WireGuard, sidecars
 ```
+
+There is a single Go core. The previously orphaned `core/` (`dropo/core`)
+module has been removed; do not reintroduce a parallel routing core.
 
 Windows release layout:
 

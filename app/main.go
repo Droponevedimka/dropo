@@ -51,9 +51,15 @@ func main() {
 	defer cancel()
 	appInstance.startup(ctx)
 
+	bridgeToken, err := ensureBridgeToken()
+	if err != nil {
+		log.Printf("warning: bridge token provisioning failed (%v); mutating endpoints will be unauthenticated", err)
+	}
+	defer removeBridgeToken()
+
 	server := &http.Server{
 		Addr:              *listen,
-		Handler:           newBridgeMux(appInstance),
+		Handler:           newBridgeMux(appInstance, bridgeToken),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

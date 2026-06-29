@@ -80,6 +80,13 @@ dropo открывает заблокированные в РФ сервисы, 
 сохраняется тот же каталог сервисов, та же таксономия блокировок и та же лаба-цензор
 ([docs/TESTING.md](docs/TESTING.md)); платформенная обвязка добавляется позже.
 
+Единое Go-ядро (пакет `app/`, собирается как `dropo-core.exe`) платформонезависимо;
+движок перехвата спрятан за интерфейсом `InterceptionEngine` — добавление ОС = один
+файл-адаптер `core_interception_engine_<os>.go`, без правок общей логики. Мобильные
+(Android/iOS) — нативный VPN-shell поверх того же ядра через gomobile, не вариант
+этого бинаря. Локальный bridge защищён per-launch токеном (`X-Dropo-Token`) на
+изменяющих эндпоинтах. Подробности — [docs/PLATFORMS.md](docs/PLATFORMS.md).
+
 ## Возможности
 
 - Подписки sing-box: VLESS, VMess, Trojan, Shadowsocks, Hysteria2, TUIC (xhttp — через Xray-bridge).

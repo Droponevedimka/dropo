@@ -81,8 +81,11 @@ jobs:
             Sort-Object LastWriteTime -Descending | Select-Object -First 1
           if (-not $dir) { throw "build output for $v not found" }
           $hostTag = [string]((Get-Content deps-lock.json -Raw | ConvertFrom-Json).tag)
+          $depsAsset = [string]((Get-Content deps-lock.json -Raw | ConvertFrom-Json).asset)
           Write-Host "App release $v references the dependencies archive hosted at $hostTag."
           "dir=$($dir.FullName)" | Out-File $env:GITHUB_OUTPUT -Append
+          "deps_tag=$hostTag" | Out-File $env:GITHUB_OUTPUT -Append
+          "deps_asset=$depsAsset" | Out-File $env:GITHUB_OUTPUT -Append
 
       # ---- Publish: create the tag from main + the release -----------------
       - name: Publish release
@@ -95,17 +98,26 @@ jobs:
           body: |
             ## dropo ${{ steps.ver.outputs.tag }}
 
-            **Скачайте под вашу ОС / Download for your OS:**
+            Коротко: обновлен Windows UI, добавлен понятный прогресс подбора стратегий по сервисам, исправлена статистика трафика и защищен локальный bridge-token.
 
-            | ОС | Загрузка |
-            | --- | --- |
-            | **Windows** | [![Portable x64](https://img.shields.io/badge/Portable-x64-0078D6?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/${{ github.repository }}/releases/download/${{ steps.ver.outputs.tag }}/dropo-Windows-Portable-x64.zip) |
-            | **Android** | ![soon](https://img.shields.io/badge/Android-soon-555?style=for-the-badge&logo=android&logoColor=white) |
-            | **macOS** | ![soon](https://img.shields.io/badge/macOS-soon-555?style=for-the-badge&logo=apple&logoColor=white) |
-            | **Linux** | ![soon](https://img.shields.io/badge/Linux-soon-555?style=for-the-badge&logo=linux&logoColor=white) |
+            ### Скачать
 
-            **Windows (portable):** распакуйте `dropo-Windows-Portable-x64.zip` и запустите `dropo.exe`.
-            Движки обхода/VPN (`dropo-Windows-Dependencies-x64.zip`) загружаются автоматически один раз при первом запуске.
+            | Версия | Файл | Ссылка | Примечание |
+            | --- | --- | --- | --- |
+            | Windows Portable x64 | `dropo-Windows-Portable-x64.zip` | [Скачать](https://github.com/${{ github.repository }}/releases/download/${{ steps.ver.outputs.tag }}/dropo-Windows-Portable-x64.zip) | Распакуйте и запустите `dropo.exe` |
+            | Windows Dependencies x64 | `${{ steps.assets.outputs.deps_asset }}` | [Скачать](https://github.com/${{ github.repository }}/releases/download/${{ steps.assets.outputs.deps_tag }}/${{ steps.assets.outputs.deps_asset }}) | Движки VPN/обхода, приложение скачает само при первом запуске |
+            | Android | `dropo-Android-universal.apk` | Скоро | В разработке |
+            | macOS | `dropo-MacOS-arm64.dmg` | Скоро | В разработке |
+            | Linux | `dropo-Linux-x64.AppImage` | Скоро | В разработке |
+
+            ### Изменения
+
+            - Статус сразу переключается в `Подключаем VPN` после клика.
+            - Добавлена панель подбора стратегий обхода по сервисам с красным состоянием ошибки.
+            - Длинные списки стратегий, подписок и рабочих сетей теперь скроллятся.
+            - Статус Deep Windows/сетевого режима перенесен в меню.
+            - Настройки открываются при активном VPN, но небезопасные изменения блокируются.
+            - Статистика трафика теперь обновляется из sing-box API во время сессии.
           files: |
             ${{ steps.assets.outputs.dir }}/dropo-Windows-Portable-x64.zip
           fail_on_unmatched_files: false
