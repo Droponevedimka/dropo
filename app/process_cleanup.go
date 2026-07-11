@@ -324,7 +324,6 @@ func (a *App) managedSidecarPaths() []string {
 	candidates := []string{
 		a.singBoxPathSnapshot(),
 		filepath.Join(a.binDir(), ByeDPIProcessName),
-		filepath.Join(a.binDir(), SpoofDPIExeName),
 		filepath.Join(a.binDir(), ZapretProcessName),
 		filepath.Join(a.binDir(), XrayExeName),
 		filepath.Join(a.binDir(), TgWsProxyProcessName),
@@ -404,7 +403,7 @@ func looksLikeDropoPortableRoot(path string) bool {
 }
 
 func hasManagedSidecarBin(root string) bool {
-	for _, name := range []string{ByeDPIProcessName, SpoofDPIExeName, ZapretProcessName, XrayExeName, TgWsProxyProcessName, "sing-box.exe"} {
+	for _, name := range []string{ByeDPIProcessName, ZapretProcessName, XrayExeName, TgWsProxyProcessName, "sing-box.exe"} {
 		if fileExists(filepath.Join(root, "bin", name)) {
 			return true
 		}
@@ -442,7 +441,7 @@ func killWindowsDropoManagedSidecars(paths []string, roots []string) ([]int, err
 	script := fmt.Sprintf(`
 $paths = @(%s)
 $roots = @(%s)
-$names = @('sing-box', 'ciadpi', 'spoofdpi', 'winws', 'xray', 'tg-ws-proxy')
+$names = @('sing-box', 'ciadpi', 'winws', 'xray', 'tg-ws-proxy')
 function Test-InsidePath($path, $root) {
   if (-not $path -or -not $root) { return $false }
   try {

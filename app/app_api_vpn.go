@@ -75,7 +75,7 @@ func (a *App) Start() map[string]interface{} {
 
 	a.updateBusy(busyID, "Проверяем состояние приложения...")
 	// Heavy binaries (bin/) ship as a separate release asset and are fetched on
-	// first run. Refuse to start until they are present (see docs/UPDATE.md).
+	// first run. Refuse to start until they are present.
 	if st := a.DependenciesStatus(); st.Managed {
 		if !st.Ready {
 			return map[string]interface{}{
@@ -1564,7 +1564,7 @@ func (a *App) startFreeAccess(activeConfig map[string]interface{}) []string {
 		a.zapret.Stop()
 	}
 	if a.freeProxySidecarsCapturedByActiveNetwork(activeConfig) {
-		a.writeLog("[FreeAccess] ByeDPI/SpoofDPI proxy helpers skipped: Windows TUN auto_route captures helper process traffic; transparent methods/VPN will be used")
+		a.writeLog("[FreeAccess] ByeDPI proxy helpers skipped: Windows TUN auto_route captures helper process traffic; transparent methods/VPN will be used")
 		return activeTags
 	}
 	if runtime.GOOS == "windows" && tunAutoRouteEnabled(activeConfig) {
@@ -1586,20 +1586,6 @@ func (a *App) startFreeAccess(activeConfig map[string]interface{}) []string {
 			activeTags = append(activeTags, tags...)
 			a.writeLog(fmt.Sprintf("[ByeDPI] Free access bypass started (%d/%d strategy/strategies active: %s)",
 				len(tags), len(DefaultByeDPIStrategies), strings.Join(tags, ",")))
-		}
-	}
-
-	if a.spoofDPI != nil {
-		if a.spoofDPI.IsInstalled() {
-			if err := a.spoofDPI.Start(); err != nil {
-				a.writeLog(fmt.Sprintf("[FreeAccess] SpoofDPI failed to start: %v", err))
-			} else {
-				tags := a.spoofDPI.WaitForActiveTags(freeProxyStartupWait)
-				activeTags = append(activeTags, tags...)
-				a.writeLog(fmt.Sprintf("[FreeAccess] proxy methods active: %s", strings.Join(tags, ",")))
-			}
-		} else {
-			a.writeLog("[FreeAccess] SpoofDPI binary not bundled, SpoofDPI methods unavailable this session")
 		}
 	}
 
@@ -1838,11 +1824,6 @@ func freeAccessProxyPort(tag string) (int, bool) {
 			return strategy.Port, true
 		}
 	}
-	for _, method := range DefaultSpoofDPIMethods {
-		if method.Tag == tag {
-			return method.Port, true
-		}
-	}
 	return 0, false
 }
 
@@ -1850,9 +1831,6 @@ func freeAccessProxyPort(tag string) (int, bool) {
 func (a *App) stopFreeAccess() {
 	if a.byeDPI != nil {
 		a.byeDPI.Stop()
-	}
-	if a.spoofDPI != nil {
-		a.spoofDPI.Stop()
 	}
 	if a.zapret != nil {
 		a.zapret.Stop()

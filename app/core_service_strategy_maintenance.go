@@ -272,9 +272,6 @@ func (a *App) activeServiceMaintenanceCandidates() []routeProbeCandidate {
 	if a.byeDPI != nil {
 		activeTags = append(activeTags, a.byeDPI.ActiveTags()...)
 	}
-	if a.spoofDPI != nil {
-		activeTags = append(activeTags, a.spoofDPI.ActiveTags()...)
-	}
 	for _, tag := range uniqueStrings(activeTags) {
 		candidate, err := newFreeRouteProbeCandidate(tag)
 		if err != nil {

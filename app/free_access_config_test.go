@@ -49,9 +49,6 @@ func TestBuildConfigWithoutSubscriptionUsesFreeAccess(t *testing.T) {
 	if !containsOutbound(config, ByeDPIOutboundTag) {
 		t.Fatalf("generated config does not contain %q outbound", ByeDPIOutboundTag)
 	}
-	if !containsOutbound(config, SpoofDPIOutboundTag) {
-		t.Fatalf("generated config does not contain %q outbound", SpoofDPIOutboundTag)
-	}
 	if !containsOutbound(config, SmartBypassGroupTag) {
 		t.Fatalf("generated config does not contain %q group", SmartBypassGroupTag)
 	}
@@ -83,9 +80,6 @@ func TestBuildConfigWithoutSubscriptionUsesFreeAccess(t *testing.T) {
 	}
 	if !containsProcessDirectRule(config, ByeDPIProcessName) {
 		t.Fatalf("generated config does not bypass %s process traffic directly", ByeDPIProcessName)
-	}
-	if !containsProcessDirectRule(config, SpoofDPIExeName) {
-		t.Fatalf("generated config does not bypass %s process traffic directly", SpoofDPIExeName)
 	}
 	if !containsProcessDirectRule(config, ZapretProcessName) {
 		t.Fatalf("generated config does not bypass %s process traffic directly", ZapretProcessName)
@@ -1579,7 +1573,7 @@ func TestWindowsTunAutoRouteKeepsProxySidecarsWithProcessDirectRule(t *testing.T
 			},
 		},
 	}
-	tags := []string{ByeDPIOutboundTag, "byedpi-sni", SpoofDPIOutboundTag}
+	tags := []string{ByeDPIOutboundTag, "byedpi-sni"}
 
 	filtered, skipped := routeProbeFreeProxyTagsForConfig(config, tags)
 	if skipped || !sameStringSet(filtered, tags) {
@@ -1597,7 +1591,7 @@ func TestWindowsTunAutoRouteSkipsProxySidecarsWithoutProcessDirectRule(t *testin
 			},
 		},
 	}
-	tags := []string{ByeDPIOutboundTag, "byedpi-sni", SpoofDPIOutboundTag}
+	tags := []string{ByeDPIOutboundTag, "byedpi-sni"}
 
 	filtered, skipped := routeProbeFreeProxyTagsForConfig(config, tags)
 	if runtime.GOOS == "windows" {
@@ -1629,7 +1623,7 @@ func TestDeepWindowsDoesNotTreatInactiveTunAsProxySidecarCapture(t *testing.T) {
 			},
 		},
 	}
-	tags := []string{ByeDPIOutboundTag, "byedpi-sni", SpoofDPIOutboundTag}
+	tags := []string{ByeDPIOutboundTag, "byedpi-sni"}
 
 	if app.freeProxySidecarsCapturedByActiveNetwork(config) {
 		t.Fatal("Deep Windows must ignore inactive TUN inbound when deciding whether sidecars are captured")

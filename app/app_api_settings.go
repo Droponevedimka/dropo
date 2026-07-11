@@ -414,7 +414,7 @@ func (a *App) UpdateFilters() map[string]interface{} {
 }
 
 // ============================================================================
-// Free Access API methods (developing.md §4) — opening blocked-in-RF
+// Free Access API methods — opening blocked-in-RF
 // services without a VPN key, via local DPI-bypass methods (ByeDPI).
 // ============================================================================
 
@@ -690,7 +690,7 @@ func (a *App) SetFreeAccessServiceMethod(tag string, method string) map[string]i
 }
 
 // ============================================================================
-// RU-traffic API methods (developing.md §5) — RU domains are direct by
+// RU-traffic API methods — RU domains are direct by
 // default in every routing mode; this opt-in hides them behind a proxy.
 // ============================================================================
 
@@ -716,7 +716,7 @@ func (a *App) GetHideRuTraffic() map[string]interface{} {
 
 // SetHideRuTraffic toggles RU-traffic hiding and optionally sets a dedicated
 // RU proxy address. proxyAddress may be empty (falls back to the main VPN
-// proxy, then direct — see developing.md §5).
+// proxy, then direct).
 func (a *App) SetHideRuTraffic(enabled bool, proxyAddress string) map[string]interface{} {
 	a.waitForInit()
 

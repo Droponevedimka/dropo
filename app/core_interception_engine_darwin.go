@@ -7,7 +7,7 @@ package main
 // is treated as separate R&D. The pragmatic first target is a sing-box TUN tunnel
 // with VPN fallback (transparent free-bypass degraded), not packet desync.
 //
-// Roadmap to implement (see docs/PLATFORMS.md):
+// Roadmap to implement:
 //   - Ship a packet-tunnel provider (NetworkExtension) with signing/notarization.
 //   - Drive routing through sing-box TUN; map composed profiles to outbounds.
 //   - Investigate a divert-socket/pf-based desync as an optional later phase.

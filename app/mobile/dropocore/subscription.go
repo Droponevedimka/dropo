@@ -70,12 +70,12 @@ func (f *subscriptionFetcher) fetchAndParse(subscriptionURL string) ([]proxyConf
 	}
 	req, err := http.NewRequest(http.MethodGet, subscriptionURL, nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("invalid subscription request")
 	}
 	req.Header.Set("User-Agent", "dropo-android")
 	resp, err := f.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("fetch subscription: %w", err)
+		return nil, fmt.Errorf("subscription download failed")
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -91,7 +91,7 @@ func (f *subscriptionFetcher) fetchAndParse(subscriptionURL string) ([]proxyConf
 func validateSubscriptionURL(rawURL string) error {
 	u, err := url.Parse(strings.TrimSpace(rawURL))
 	if err != nil {
-		return fmt.Errorf("invalid subscription URL: %w", err)
+		return fmt.Errorf("invalid subscription URL")
 	}
 	if !strings.EqualFold(u.Scheme, "https") || u.Hostname() == "" {
 		return fmt.Errorf("subscription URL must use HTTPS")

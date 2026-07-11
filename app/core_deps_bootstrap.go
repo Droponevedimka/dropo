@@ -5,7 +5,7 @@ package main
 // separate release asset `dependencies-<depsVersion>.zip` and are downloaded
 // once on first run (or when depsVersion changes), verified by sha256, and
 // extracted into bin/. A `dependencies.json` manifest next to dropo.exe declares
-// the required depsVersion. See docs/UPDATE.md.
+// the required depsVersion.
 
 import (
 	"archive/zip"

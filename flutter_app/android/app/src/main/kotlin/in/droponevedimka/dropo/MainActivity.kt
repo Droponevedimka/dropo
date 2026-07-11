@@ -20,6 +20,9 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.UserManager
+import android.util.Log
+import android.widget.Toast
 import dropoandroid.Dropoandroid
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -40,13 +43,34 @@ class MainActivity : FlutterActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (repairManagedProfileIfNeeded()) {
+            return
+        }
         handleDropoSpaceShortcut(intent)
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        if (repairManagedProfileIfNeeded()) {
+            return
+        }
         handleDropoSpaceShortcut(intent)
+    }
+
+    private fun repairManagedProfileIfNeeded(): Boolean {
+        if (!DropoSpaceManager.isProfileOwner(this)) {
+            return false
+        }
+        val report = DropoSpaceManager.installExistingApps(this)
+        Log.i(
+            "DropoSpace",
+            "Repair complete: installed=${report.installed.size} existing=${report.alreadyInstalled.size} " +
+                "unavailable=${report.unavailable.size} errors=${report.errors.size}",
+        )
+        Toast.makeText(this, report.userMessage(), Toast.LENGTH_LONG).show()
+        mainHandler.postDelayed({ finishAndRemoveTask() }, 900)
+        return true
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -163,6 +187,7 @@ class MainActivity : FlutterActivity() {
                 }
                 "androidCreateDropoSpace" -> startManagedProfileProvisioning()
                 "androidMoveToDropoSpace" -> movePackageToDropoSpace(stringArg(call, "packageName"))
+                "androidOpenDropoSpaceMarket" -> openPackageMarketInDropoSpace(stringArg(call, "packageName"))
                 "androidRequestDropoSpaceShortcut" -> requestDropoSpaceShortcut(stringArg(call, "packageName"))
                 "androidOpenCloneHelpSearch" -> openCloneHelpSearch()
                 "androidOpenExternal" -> openExternalUrl(stringArg(call, "url"))
@@ -323,6 +348,7 @@ class MainActivity : FlutterActivity() {
         val installedCount = apps.count { it["installed"] == true }
         val inSpaceCount = apps.count { it["inDropoSpace"] == true }
         val hasDropoSpace = hasDropoSpaceProfile()
+        val dropoSpacePaused = isDropoSpacePaused()
         val canCreate = canProvisionManagedProfile()
         val payload = mapOf(
             "success" to true,
@@ -337,6 +363,7 @@ class MainActivity : FlutterActivity() {
             "sdk" to Build.VERSION.SDK_INT,
             "dropoSpaceSupported" to (hasDropoSpace || canCreate),
             "dropoSpaceReady" to hasDropoSpace,
+            "dropoSpacePaused" to dropoSpacePaused,
             "dropoSpaceCanCreate" to canCreate,
             "privateSpaceSupported" to (Build.VERSION.SDK_INT >= 35),
             "promptDismissed" to prefs().getBoolean(PREF_COMPAT_PROMPT_DISMISSED, false),
@@ -405,10 +432,25 @@ class MainActivity : FlutterActivity() {
         val current = android.os.Process.myUserHandle()
         return runCatching {
             val launcher = getSystemService(LauncherApps::class.java)
-            launcher?.profiles.orEmpty().filter { user ->
-                user != current && launchableActivities(packageName, user).isNotEmpty()
+            val profiles = launcher?.profiles.orEmpty().filter { it != current }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM) {
+                profiles.filter { user ->
+                    launcher?.getLauncherUserInfo(user)?.userType ==
+                        UserManager.USER_TYPE_PROFILE_MANAGED
+                }
+            } else {
+                profiles.filter { user ->
+                    launchableActivities(packageName, user).isNotEmpty()
+                }
             }
         }.getOrDefault(emptyList())
+    }
+
+    private fun isDropoSpacePaused(): Boolean {
+        val userManager = getSystemService(UserManager::class.java) ?: return false
+        return dropoSpaceUsers().any { user ->
+            runCatching { userManager.isQuietModeEnabled(user) }.getOrDefault(false)
+        }
     }
 
     private fun launchableActivities(
@@ -562,34 +604,98 @@ class MainActivity : FlutterActivity() {
             return data.toString()
         }
         val profileUser = profileUsers.first()
+        val userManager = getSystemService(UserManager::class.java)
+        if (runCatching { userManager?.isQuietModeEnabled(profileUser) == true }.getOrDefault(false)) {
+            logDropoSpace("configure blocked: managed profile is paused")
+            return JSONObject(
+                mapOf(
+                    "success" to false,
+                    "action" to "profile_paused",
+                    "packageName" to packageName,
+                    "appName" to label,
+                    "error" to "Dropo Space приостановлен. Включите рабочий профиль в системной панели Android.",
+                ),
+            ).toString()
+        }
         if (launchableActivities(packageName, profileUser).isNotEmpty()) {
             logDropoSpace("package already launchable in profile: $packageName")
-            val shortcut = requestDropoSpaceShortcutJson(packageName)
-            shortcut.put("success", true)
-            shortcut.put("action", "already_in_space")
-            shortcut.put("message", "Приложение уже есть в Dropo Space")
-            return shortcut.toString()
+            return JSONObject(
+                mapOf(
+                    "success" to true,
+                    "action" to "already_in_space",
+                    "packageName" to packageName,
+                    "appName" to label,
+                    "message" to "Приложение уже есть в Dropo Space",
+                ),
+            ).toString()
         }
 
+        val repair = startProfileRepair(profileUser)
+        if (repair.success) {
+            logDropoSpace("profile repair started for $packageName")
+            return JSONObject(
+                mapOf(
+                    "success" to true,
+                    "action" to "profile_install_requested",
+                    "packageName" to packageName,
+                    "appName" to label,
+                    "message" to "Dropo Space добавляет установленные приложения",
+                ),
+            ).toString()
+        }
+
+        logDropoSpace("profile repair failed for $packageName: ${repair.error}; waiting for user confirmation")
+        return JSONObject(
+            mapOf(
+                "success" to true,
+                "action" to "manual_install_required",
+                "packageName" to packageName,
+                "appName" to label,
+                "message" to "Нужно подтверждение ручной установки в Dropo Space",
+                "error" to repair.error,
+                "searchUrl" to cloneHelpSearchUrl(),
+            ),
+        ).toString()
+    }
+
+    private fun startProfileRepair(user: android.os.UserHandle): DropoSpaceStartResult {
+        return runCatching {
+            val launcher = getSystemService(LauncherApps::class.java)
+                ?: return DropoSpaceStartResult(false, "LauncherApps service недоступен")
+            val activity = launchableActivities(packageName, user)
+                .firstOrNull { it.componentName.className == MainActivity::class.java.name }
+                ?: return DropoSpaceStartResult(false, "Приложение dropo не найдено в рабочем профиле")
+            launcher.startMainActivity(activity.componentName, user, null, null)
+            DropoSpaceStartResult(true)
+        }.getOrElse { error ->
+            DropoSpaceStartResult(false, error.message ?: error.javaClass.simpleName)
+        }
+    }
+
+    private fun openPackageMarketInDropoSpace(targetPackage: String): String {
+        val packageName = targetPackage.trim()
+        val app = RISK_APPS.firstOrNull { it.packageName == packageName }
+            ?: return errorJson("Package is not supported by Dropo Space")
+        val profileUser = dropoSpaceUsers().firstOrNull()
+            ?: return errorJson("Dropo Space не найден")
         val market = openMarketInProfile(packageName, profileUser)
         if (market.success) {
-            logDropoSpace("market opened in profile for $packageName")
+            logDropoSpace("fallback market opened in profile for $packageName")
         } else {
-            logDropoSpace("market open failed for $packageName: ${market.error}")
+            logDropoSpace("fallback market failed for $packageName: ${market.error}")
         }
         return JSONObject(
             mapOf(
                 "success" to market.success,
                 "action" to if (market.success) "open_market" else "manual_install_required",
                 "packageName" to packageName,
-                "appName" to label,
+                "appName" to app.name,
                 "message" to if (market.success) {
-                    "Открылся магазин приложений в Dropo Space. Установите приложение там и вернитесь в dropo."
+                    "Установите ${app.name} в открывшемся магазине рабочего профиля"
                 } else {
-                    "Не удалось открыть магазин в Dropo Space. Установите копию приложения внутри рабочего профиля вручную."
+                    "Не удалось открыть магазин рабочего профиля"
                 },
                 "error" to market.error,
-                "searchUrl" to cloneHelpSearchUrl(),
             ),
         ).toString()
     }
@@ -866,6 +972,7 @@ class MainActivity : FlutterActivity() {
             "androidSetCompatibilityPromptDismissed",
             "androidCreateDropoSpace",
             "androidMoveToDropoSpace",
+            "androidOpenDropoSpaceMarket",
             "androidRequestDropoSpaceShortcut",
             "androidOpenCloneHelpSearch",
             "androidOpenExternal",
@@ -879,31 +986,6 @@ class MainActivity : FlutterActivity() {
 
         private val MARKET_PACKAGES = listOf("com.android.vending", "ru.vk.store")
 
-        private data class RiskApp(val packageName: String, val name: String)
-
-        private val RISK_APPS = listOf(
-            RiskApp("ru.oneme.app", "MAX"),
-            RiskApp("ru.rostel", "Госуслуги"),
-            RiskApp("ru.sberbankmobile", "СберБанк"),
-            RiskApp("ru.sberbankmobile_new", "СберБанк"),
-            RiskApp("com.idamob.tinkoff.android", "Т-Банк"),
-            RiskApp("ru.vtb24.mobilebanking.android", "ВТБ Онлайн"),
-            RiskApp("ru.alfabank.mobile.android", "Альфа-Банк"),
-            RiskApp("ru.ozon.app.android", "Ozon"),
-            RiskApp("com.wildberries.ru", "Wildberries"),
-            RiskApp("com.avito.android", "Avito"),
-            RiskApp("com.vkontakte.android", "ВКонтакте"),
-            RiskApp("ru.ok.android", "Одноклассники"),
-            RiskApp("ru.vk.store", "RuStore"),
-            RiskApp("ru.rutube.app", "Rutube"),
-            RiskApp("ru.yandex.yandexmaps", "Яндекс Карты"),
-            RiskApp("com.yandex.browser", "Яндекс Браузер"),
-            RiskApp("ru.yandex.music", "Яндекс Музыка"),
-            RiskApp("ru.kinopoisk", "Кинопоиск"),
-            RiskApp("ru.dublgis.dgismobile", "2ГИС"),
-            RiskApp("ru.mts.mymts", "Мой МТС"),
-            RiskApp("ru.sbermegamarket", "МегаМаркет"),
-            RiskApp("ru.samokat.android", "Самокат"),
-        )
+        private val RISK_APPS = DropoSpaceManager.apps
     }
 }

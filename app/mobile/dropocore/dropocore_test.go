@@ -56,6 +56,58 @@ func TestAndroidCoreSubscriptionCall(t *testing.T) {
 	}
 }
 
+func TestSubscriptionSummaryDoesNotLeakCredentials(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  string
+	}{
+		{
+			name:  "subscription URL",
+			value: "https://api.example.test/sub/secret-token?user=private",
+			want:  "https://[redacted]",
+		},
+		{
+			name:  "direct proxy URL",
+			value: "vless://secret-user@example.test:443?security=tls#private-name",
+			want:  "vless://[redacted]",
+		},
+		{
+			name:  "encoded subscription",
+			value: "c2VjcmV0LXN1YnNjcmlwdGlvbi1wYXlsb2Fk",
+			want:  "[redacted]",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := subscriptionSummary(tt.value); got != tt.want {
+				t.Fatalf("subscriptionSummary() = %q, want %q", got, tt.want)
+			}
+			for _, secret := range []string{"api.example.test", "example.test", "secret-token", "secret-user", "private", "c2VjcmV0"} {
+				if strings.Contains(subscriptionSummary(tt.value), secret) {
+					t.Fatalf("subscriptionSummary() leaked %q", secret)
+				}
+			}
+		})
+	}
+}
+
+func TestProxyListSummaryDoesNotLeakServers(t *testing.T) {
+	proxies := []proxyConfig{
+		{Type: "vless", Network: "ws", Server: "secret.example.test", ServerPort: 443},
+		{Type: "trojan", Server: "192.0.2.10", ServerPort: 8443},
+	}
+	got := proxyListSummary(proxies)
+	if got != "vless/ws, trojan" {
+		t.Fatalf("proxyListSummary() = %q", got)
+	}
+	for _, secret := range []string{"secret.example.test", "192.0.2.10", "443", "8443"} {
+		if strings.Contains(got, secret) {
+			t.Fatalf("proxyListSummary() leaked %q", secret)
+		}
+	}
+}
+
 func TestBuildSingBoxConfigForDirectVLESS(t *testing.T) {
 	mu.Lock()
 	current = defaultState()

@@ -4,25 +4,25 @@
 
 ## preflight-release.ps1
 
-Главный релизный gate. Скрипт собирает frontend, запускает Go-тесты, опционально гоняет визуальные Playwright-сценарии, собирает релиз, валидирует ZIP и может запустить runtime-smoke на собранном артефакте.
+Главный релизный gate. Скрипт запускает Go- и Flutter-проверки, собирает релиз,
+валидирует артефакты и при необходимости выполняет runtime-smoke.
 
 Минимальный запуск перед билдом:
 
 ```powershell
-.\tools\preflight-release.ps1 -WithVisual -InstallBrowsers -Build
+.\tools\preflight-release.ps1 -Build
 ```
 
 Полный запуск с сетью и подпиской выполняйте из PowerShell с правами администратора:
 
 ```powershell
 $env:DROPO_TEST_SUBSCRIPTION_URL = "<subscription-url>"
-.\tools\preflight-release.ps1 -WithVisual -InstallBrowsers -WithNetwork -WithSubscription -Build
+.\tools\preflight-release.ps1 -WithNetwork -WithSubscription -Build
 Remove-Item Env:\DROPO_TEST_SUBSCRIPTION_URL
 ```
 
 Полезные параметры:
 
-- `-WithVisual` запускает Playwright-клики и визуальные проверки.
 - `-WithNetwork` запускает free-access runtime smoke на релизной папке.
 - `-WithSubscription` запускает subscription/xHTTP runtime smoke через Xray bridge.
 - `-WireGuardConfigPath <path>` проверяет парсинг WireGuard-конфига без записи секрета в репозиторий.
@@ -80,8 +80,8 @@ test, moved from the home screen into Settings). It runs a native concurrent
 check inside dropo, updates the result table dynamically, does not open
 PowerShell windows, and does not write the quick-check output into the main app
 logs. For diagnosing *how* a provider blocks (RST/timeout/IP/DNS), use
-**Настройки → `🩻 Снять отпечаток`** and send the file to the developer — see
-`docs/TESTING.md` (L5) and the censor lab in `testlab/`.
+**Настройки → `🩻 Снять отпечаток`** and send the file to the developer. The
+local censor lab used to reproduce these reports lives in `testlab/`.
 
 Manual quick client bundle script, for emergency support only:
 
@@ -97,7 +97,7 @@ For blocked-service failures, run the deeper method matrix:
 .\client-quick-check.ps1 -DeepMethodCheck
 ```
 
-This adds `free-method-results.csv` (and the legacy `byedpi-method-results.csv` copy), testing failed blocked URLs through each live local free proxy method: ByeDPI SOCKS5 ports (`18091..18094`) and optional SpoofDPI SOCKS5 (`18095`). Transparent zapret/winws is selected by the app route-probe and appears in app logs plus the main route indicator rather than this SOCKS-only matrix.
+This adds `free-method-results.csv` (and the legacy `byedpi-method-results.csv` copy), testing failed blocked URLs through each live ByeDPI SOCKS5 method (`18091..18094`). Transparent zapret/winws is selected by the app route-probe and appears in app logs plus the main route indicator rather than this SOCKS-only matrix.
 
 Dropo now cleans bundled sidecar processes automatically on startup, before VPN
 start, on failed starts, on stop, and on quit. It also scans sibling portable
@@ -111,7 +111,7 @@ cleanup command as an emergency fallback:
 ```
 
 `-CleanupDropoOrphans` kills only managed `sing-box.exe`, `ciadpi.exe`,
-`spoofdpi.exe`, `winws.exe`, and `xray.exe` whose executable path is inside the
+`winws.exe` and `xray.exe` whose executable path is inside the
 detected Dropo app root. It does not target other VPN applications.
 
 ## Практические сценарии

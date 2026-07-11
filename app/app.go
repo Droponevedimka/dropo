@@ -42,7 +42,6 @@ type App struct {
 	trafficStats      *TrafficStats
 	nativeWG          *NativeWireGuardManager // Native WireGuard tunnel manager
 	byeDPI            *ByeDPIManager          // Free access (DPI-bypass) process manager
-	spoofDPI          *ProxyBypassManager     // Optional proxy-mode DPI-bypass methods
 	zapret            *TransparentBypassManager
 	tgwsproxy         *TgWsProxyManager  // Telegram MTProto-over-WebSocket proxy sidecar
 	xrayBridge        *XrayBridgeManager // Xray bridge for VLESS xhttp profiles
@@ -300,9 +299,6 @@ func (a *App) shutdown(ctx context.Context) {
 	if a.byeDPI != nil {
 		a.byeDPI.Stop()
 	}
-	if a.spoofDPI != nil {
-		a.spoofDPI.Stop()
-	}
 	if a.zapret != nil {
 		a.zapret.Stop()
 	}
@@ -411,7 +407,6 @@ func (a *App) initFreeAccess() {
 
 	runtimeBase := a.runtimeBasePath()
 	a.byeDPI = NewByeDPIManager(runtimeBase, a.writeLog)
-	a.spoofDPI = NewProxyBypassManager(runtimeBase, DefaultSpoofDPIMethods, a.writeLog)
 	a.zapret = NewTransparentBypassManager(runtimeBase, DefaultZapretTransparentStrategies, a.writeLog)
 	if a.storage != nil {
 		a.zapret.hostlistPath = filepath.Join(a.storage.GetResourcesPath(), "zapret-hostlist.txt")
@@ -423,11 +418,6 @@ func (a *App) initFreeAccess() {
 		a.writeLog("Free access (ByeDPI) binary found")
 	} else {
 		a.writeLog("Free access (ByeDPI) binary not found - bundle ciadpi.exe in bin/ to enable")
-	}
-	if a.spoofDPI.IsInstalled() {
-		a.writeLog("Free access (SpoofDPI) binary found")
-	} else {
-		a.writeLog("Free access (SpoofDPI) binary not found - optional on this platform")
 	}
 	if a.zapret.IsInstalled() {
 		a.writeLog("Free access (zapret/winws) binary found")

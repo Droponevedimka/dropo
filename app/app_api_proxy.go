@@ -236,7 +236,7 @@ func (a *App) TestAllProxiesDelay() map[string]interface{} {
 		}
 	}
 
-	// Free access / RU-traffic resilient groups (developing.md §4, §5) - only
+	// Free access / RU-traffic resilient groups - only
 	// the ones actually configured exist as outbounds, see addFreeAccessOutbounds.
 	type freeAccessGroup struct {
 		Tag   string

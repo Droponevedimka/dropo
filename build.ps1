@@ -372,7 +372,6 @@ $AppVersion = if ($Version) { $Version } else { $VersionInfo.version }
 $SingBoxVersion = $VersionInfo.singbox.version
 $WireGuardVersion = $VersionInfo.wireguard.version
 $ByeDPIVersion = $VersionInfo.byedpi.version
-$SpoofDPIVersion = $VersionInfo.spoofdpi.version
 $ZapretVersion = $VersionInfo.zapret.version
 $XrayVersion = $VersionInfo.xray.version
 $TgWsProxyVersion = $VersionInfo.tgwsproxy.version
@@ -392,7 +391,6 @@ Write-Host "Build:     $BuildHash" -ForegroundColor Gray
 Write-Host "sing-box:  $SingBoxVersion" -ForegroundColor White
 Write-Host "WireGuard: $WireGuardVersion" -ForegroundColor White
 Write-Host "ByeDPI:    $ByeDPIVersion" -ForegroundColor White
-Write-Host "SpoofDPI:  $SpoofDPIVersion" -ForegroundColor White
 Write-Host "zapret:    $ZapretVersion" -ForegroundColor White
 Write-Host "Xray:      $XrayVersion" -ForegroundColor White
 Write-Host ""
@@ -406,8 +404,6 @@ $SingBoxDir = Join-Path $DepsDir "sing-box-v$SingBoxVersion"
 $SingBoxExe = Join-Path $SingBoxDir "windows-amd64\sing-box-$SingBoxVersion-windows-amd64\sing-box.exe"
 $XrayDir = Join-Path $DepsDir "xray-v$XrayVersion"
 $XrayExe = Join-Path $XrayDir "xray.exe"
-$SpoofDPIDir = Join-Path $DepsDir "spoofdpi-v$SpoofDPIVersion"
-$SpoofDPIExe = Join-Path $SpoofDPIDir "spoofdpi.exe"
 $ZapretRoot = Join-Path $DepsDir "zapret-v$ZapretVersion\zapret-v$ZapretVersion"
 $ZapretWinDir = Join-Path $ZapretRoot "binaries\windows-x86_64"
 $ReleasePlatform = "windows"
@@ -866,17 +862,6 @@ function Build-Application {
         Write-Host "[WARNING] ciadpi.exe not found at: $ByeDPIExe" -ForegroundColor Yellow
     }
 
-    # Copy SpoofDPI if a Windows binary was provided manually.
-    # Upstream publishes Linux/macOS assets; Windows support is optional until
-    # a compatible spoofdpi.exe is available.
-    $spoofDpiDst = Join-Path $binDir "spoofdpi.exe"
-    if (Test-Path $SpoofDPIExe) {
-        Copy-Item $SpoofDPIExe $spoofDpiDst -Force
-        Write-Host "[OK] Copied bin/spoofdpi.exe (SpoofDPI v$SpoofDPIVersion)" -ForegroundColor Green
-    } else {
-        Write-Host "[INFO] Optional spoofdpi.exe not found at: $SpoofDPIExe" -ForegroundColor DarkGray
-    }
-
     # Copy zapret/winws transparent DPI-bypass runtime to bin/ folder.
     $ZapretFiles = @("winws.exe", "cygwin1.dll", "WinDivert.dll", "WinDivert64.sys")
     foreach ($file in $ZapretFiles) {
@@ -973,11 +958,6 @@ function Build-Application {
     Copy-LicenseFile (Join-Path $WireGuardDir "LICENSE") $licensesDir "wireguard-windows-LICENSE.txt"
     Copy-LicenseFile (Join-Path $ByeDPIDir "LICENSE") $licensesDir "byedpi-LICENSE.txt"
     Copy-LicenseFile (Join-Path $ZapretRoot "docs\LICENSE.txt") $licensesDir "zapret-LICENSE.txt"
-    $spoofDpiLicense = Join-Path $SpoofDPIDir "LICENSE"
-    if (Test-Path $spoofDpiLicense -PathType Leaf) {
-        Copy-LicenseFile $spoofDpiLicense $licensesDir "spoofdpi-LICENSE.txt"
-    }
-
     # Copy template.json
     $templateSrc = Join-Path $AppDir "config\template.json"
     if (Test-Path $templateSrc) {
@@ -1038,13 +1018,12 @@ function Build-Application {
 
     # ---- Split packaging: app archive (no bin) + dependencies archive ----
     # depsVersion is a deterministic short hash of the bundled tool versions, so
-    # it changes only when an actual binary changes (see docs/UPDATE.md).
+    # it changes only when an actual bundled binary changes.
     $depsKey = @(
         [string]$VersionInfo.singbox.version,
         [string]$VersionInfo.wireguard.version,
         [string]$VersionInfo.wireguard.wintunVersion,
         [string]$VersionInfo.byedpi.version,
-        [string]$VersionInfo.spoofdpi.version,
         [string]$VersionInfo.zapret.version,
         [string]$VersionInfo.tgwsproxy.version,
         [string]$VersionInfo.xray.version

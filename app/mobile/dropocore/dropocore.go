@@ -3,6 +3,7 @@ package dropocore
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -900,25 +901,11 @@ func subscriptionSummary(value string) string {
 	if value == "" {
 		return "empty"
 	}
-	if isDirectProxyLink(value) {
-		if scheme, rest, ok := strings.Cut(value, "://"); ok {
-			hostPort := rest
-			if at := strings.LastIndex(hostPort, "@"); at >= 0 {
-				hostPort = hostPort[at+1:]
-			}
-			hostPort = strings.SplitN(hostPort, "?", 2)[0]
-			hostPort = strings.SplitN(hostPort, "#", 2)[0]
-			if hostPort != "" {
-				return scheme + "://" + hostPort
-			}
-			return scheme + "://direct-link"
-		}
-		return "direct-link"
+	parsed, err := url.Parse(value)
+	if err == nil && parsed.Scheme != "" {
+		return strings.ToLower(parsed.Scheme) + "://[redacted]"
 	}
-	if len(value) <= 64 {
-		return value
-	}
-	return value[:61] + "..."
+	return "[redacted]"
 }
 
 func proxyCandidatesPayload(proxies []proxyConfig) []interface{} {
@@ -951,11 +938,7 @@ func proxyListSummary(proxies []proxyConfig) string {
 		if proxy.Network != "" {
 			label += "/" + proxy.Network
 		}
-		host := proxy.Server
-		if proxy.ServerPort > 0 {
-			host = fmt.Sprintf("%s:%d", host, proxy.ServerPort)
-		}
-		parts = append(parts, label+" "+host)
+		parts = append(parts, label)
 	}
 	return strings.Join(parts, ", ")
 }

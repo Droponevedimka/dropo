@@ -92,7 +92,7 @@ func (a *App) runRouteProbeAndApply(configPath string, activeFreeAccessTags []st
 	if filteredFreeTags, skipped := a.routeProbeFreeProxyTagsForActiveNetwork(config, freeTags); skipped {
 		a.writeLog("[RouteProbe] skipping proxy free methods under Windows TUN: helper process traffic is captured by auto_route")
 		a.emitRouteProbe("route-probe-log", map[string]interface{}{
-			"message": "Skipping ByeDPI/SpoofDPI proxy methods: Windows TUN auto_route captures helper process traffic. Using transparent methods and VPN candidates.",
+			"message": "Skipping ByeDPI proxy methods: Windows TUN auto_route captures helper process traffic. Using transparent methods and VPN candidates.",
 		})
 		freeTags = filteredFreeTags
 	}
@@ -505,24 +505,6 @@ func newFreeRouteProbeCandidate(tag string) (routeProbeCandidate, error) {
 			}, nil
 		}
 	}
-	for _, method := range DefaultSpoofDPIMethods {
-		if method.Tag != tag {
-			continue
-		}
-		address := net.JoinHostPort("127.0.0.1", fmt.Sprintf("%d", method.Port))
-		client, err := newFreeProxyHTTPClient(method.Scheme, address)
-		if err != nil {
-			return routeProbeCandidate{}, err
-		}
-		return routeProbeCandidate{
-			Tag:       tag,
-			Label:     FreeAccessOutboundLabel(tag),
-			Kind:      "free",
-			Client:    client,
-			Available: true,
-		}, nil
-	}
-
 	return routeProbeCandidate{}, fmt.Errorf("unknown free method tag %q", tag)
 }
 

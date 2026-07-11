@@ -403,17 +403,6 @@ type ByeDPIStrategy struct {
 	Args  []string
 }
 
-type ProxyFreeAccessMethod struct {
-	Tag         string
-	Label       string
-	ProcessName string
-	ExeName     string
-	Port        int
-	Scheme      string
-	Args        []string
-	Platforms   []string
-}
-
 type TransparentFreeAccessStrategy struct {
 	Tag           string
 	Label         string
@@ -431,7 +420,6 @@ const (
 
 	ByeDPIProcessName   = "ciadpi.exe"
 	ByeDPIOutboundTag   = "byedpi"
-	SpoofDPIOutboundTag = "spoofdpi-socks"
 	ZapretProcessName   = "winws.exe"
 	RuProxyOutboundTag  = "ru-proxy"
 	SmartBypassGroupTag = "smart-bypass"
@@ -453,8 +441,6 @@ const (
 	// more settle time.
 	transparentStartupWait = 2500 * time.Millisecond
 )
-
-var SpoofDPIExeName = platformExecutableName("spoofdpi")
 
 var DefaultByeDPIStrategies = []ByeDPIStrategy{
 	{
@@ -480,24 +466,6 @@ var DefaultByeDPIStrategies = []ByeDPIStrategy{
 		Label: "ByeDPI fake packet",
 		Port:  18094,
 		Args:  []string{"--fake", "1+s", "--ttl", "5", "--mod-http=h,d", "--auto=torst", "--tlsrec", "1+s"},
-	},
-}
-
-var DefaultSpoofDPIMethods = []ProxyFreeAccessMethod{
-	{
-		Tag:         SpoofDPIOutboundTag,
-		Label:       "SpoofDPI SOCKS5",
-		ProcessName: SpoofDPIExeName,
-		ExeName:     SpoofDPIExeName,
-		Port:        18095,
-		Scheme:      "socks",
-		Args: []string{
-			"--app-mode", "socks5",
-			"--listen-addr", "127.0.0.1:18095",
-			"--no-tui",
-			"--log-level", "error",
-		},
-		Platforms: []string{"windows", "linux", "darwin"},
 	},
 }
 
@@ -787,14 +755,9 @@ func DefaultFreeAccessServiceMethodState() map[string]string {
 }
 
 func FreeAccessMethodTags() []string {
-	tags := make([]string, 0, len(DefaultByeDPIStrategies)+len(DefaultSpoofDPIMethods))
+	tags := make([]string, 0, len(DefaultByeDPIStrategies))
 	for _, strategy := range DefaultByeDPIStrategies {
 		tags = append(tags, strategy.Tag)
-	}
-	for _, method := range DefaultSpoofDPIMethods {
-		if methodSupportsCurrentPlatform(method.Platforms) {
-			tags = append(tags, method.Tag)
-		}
 	}
 	return tags
 }
@@ -878,11 +841,6 @@ func FreeAccessServiceMethodOptions() []map[string]string {
 	}
 	for _, strategy := range DefaultByeDPIStrategies {
 		options = append(options, map[string]string{"value": strategy.Tag, "label": strategy.Label})
-	}
-	for _, method := range DefaultSpoofDPIMethods {
-		if methodSupportsCurrentPlatform(method.Platforms) {
-			options = append(options, map[string]string{"value": method.Tag, "label": method.Label})
-		}
 	}
 	for _, strategy := range DefaultZapretTransparentStrategies {
 		if methodSupportsCurrentPlatform(strategy.Platforms) {
@@ -1006,11 +964,6 @@ func FreeAccessOutboundLabel(outboundTag string) string {
 	for _, strategy := range DefaultByeDPIStrategies {
 		if outboundTag == strategy.Tag {
 			return strategy.Label
-		}
-	}
-	for _, method := range DefaultSpoofDPIMethods {
-		if outboundTag == method.Tag {
-			return method.Label
 		}
 	}
 	for _, strategy := range DefaultZapretTransparentStrategies {

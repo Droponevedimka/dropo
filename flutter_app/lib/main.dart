@@ -175,6 +175,7 @@ abstract class CoreBridge {
   );
   Future<Map<String, dynamic>> createDropoSpace();
   Future<Map<String, dynamic>> moveAppToDropoSpace(String packageName);
+  Future<Map<String, dynamic>> openDropoSpaceMarket(String packageName);
   Future<Map<String, dynamic>> requestDropoSpaceShortcut(String packageName);
   Future<Map<String, dynamic>> openCloneHelpSearch();
   Future<Map<String, dynamic>> callMap(
@@ -666,6 +667,14 @@ class HttpCoreBridge implements CoreBridge {
 
   @override
   Future<Map<String, dynamic>> moveAppToDropoSpace(String packageName) async {
+    return {
+      'success': false,
+      'error': 'Dropo Space доступен только в Android-версии',
+    };
+  }
+
+  @override
+  Future<Map<String, dynamic>> openDropoSpaceMarket(String packageName) async {
     return {
       'success': false,
       'error': 'Dropo Space доступен только в Android-версии',
@@ -1244,6 +1253,15 @@ class ChannelCoreBridge implements CoreBridge {
   }
 
   @override
+  Future<Map<String, dynamic>> openDropoSpaceMarket(String packageName) {
+    return _invokeMap(
+      'androidOpenDropoSpaceMarket',
+      arguments: {'packageName': packageName},
+      timeout: const Duration(seconds: 8),
+    );
+  }
+
+  @override
   Future<Map<String, dynamic>> requestDropoSpaceShortcut(String packageName) {
     return _invokeMap(
       'androidRequestDropoSpaceShortcut',
@@ -1755,6 +1773,7 @@ class MockCoreBridge implements CoreBridge {
       'sdk': 36,
       'dropoSpaceSupported': true,
       'dropoSpaceReady': false,
+      'dropoSpacePaused': false,
       'dropoSpaceCanCreate': true,
       'privateSpaceSupported': true,
       'promptDismissed': false,
@@ -1802,6 +1821,15 @@ class MockCoreBridge implements CoreBridge {
       'action': 'open_market',
       'packageName': packageName,
       'message': 'Mock app profile install opened',
+    };
+  }
+
+  @override
+  Future<Map<String, dynamic>> openDropoSpaceMarket(String packageName) async {
+    return {
+      'success': true,
+      'action': 'open_market',
+      'packageName': packageName,
     };
   }
 
@@ -2369,6 +2397,7 @@ class AndroidCompatibilityInfo {
     required this.sdk,
     required this.dropoSpaceSupported,
     required this.dropoSpaceReady,
+    required this.dropoSpacePaused,
     required this.dropoSpaceCanCreate,
     required this.privateSpaceSupported,
     required this.promptDismissed,
@@ -2384,6 +2413,7 @@ class AndroidCompatibilityInfo {
   final int sdk;
   final bool dropoSpaceSupported;
   final bool dropoSpaceReady;
+  final bool dropoSpacePaused;
   final bool dropoSpaceCanCreate;
   final bool privateSpaceSupported;
   final bool promptDismissed;
@@ -2392,6 +2422,9 @@ class AndroidCompatibilityInfo {
 
   List<AndroidRiskApp> get installedRiskApps =>
       riskApps.where((app) => app.installed).toList(growable: false);
+
+  List<AndroidRiskApp> get inDropoSpaceApps =>
+      riskApps.where((app) => app.inDropoSpace).toList(growable: false);
 
   bool get hasInstalledRiskApps => installedRiskApps.isNotEmpty;
 
@@ -2422,6 +2455,7 @@ class AndroidCompatibilityInfo {
       sdk: _asInt(json['sdk']),
       dropoSpaceSupported: json['dropoSpaceSupported'] == true,
       dropoSpaceReady: json['dropoSpaceReady'] == true,
+      dropoSpacePaused: json['dropoSpacePaused'] == true,
       dropoSpaceCanCreate: json['dropoSpaceCanCreate'] == true,
       privateSpaceSupported: json['privateSpaceSupported'] == true,
       promptDismissed: json['promptDismissed'] == true,
@@ -2440,6 +2474,7 @@ class AndroidCompatibilityInfo {
       sdk: 0,
       dropoSpaceSupported: false,
       dropoSpaceReady: false,
+      dropoSpacePaused: false,
       dropoSpaceCanCreate: false,
       privateSpaceSupported: false,
       promptDismissed: true,
@@ -8214,7 +8249,7 @@ class _AndroidCompatibilityNoticeDialogState
                 ? 'Можно использовать Dropo Space'
                 : 'Используйте клон приложения',
             body: canUseSpace
-                ? 'Создайте отдельное пространство и пользуйтесь копией приложения там. Обычный VPN при этом продолжит работать как раньше.'
+                ? 'Создайте отдельное пространство для прямого запуска выбранных приложений без VPN основного профиля.'
                 : 'На этой версии Android Dropo Space недоступен. Создайте клон приложения штатными средствами телефона и запускайте клон.',
           ),
           const SizedBox(height: 10),
@@ -8390,6 +8425,7 @@ class _AndroidCompatibilityPanel extends StatelessWidget {
                             app: app,
                             saving: saving,
                             dropoSpaceReady: data.dropoSpaceReady,
+                            dropoSpacePaused: data.dropoSpacePaused,
                             dropoSpaceCanCreate: data.dropoSpaceCanCreate,
                             onMoveApp: onMoveApp,
                             onShortcut: onShortcut,
@@ -8405,7 +8441,7 @@ class _AndroidCompatibilityPanel extends StatelessWidget {
               icon: Icons.info_outline,
               title: 'Что делает этот раздел',
               body:
-                  'Маршрутизацию VPN он не меняет. Он помогает создать отдельную копию приложений, которые могут проверять системный флаг VPN.',
+                  'Рабочие копии работают отдельно от VPN основного профиля. Добавляйте сюда только приложения, которым нужен прямой доступ без системного флага VPN.',
             ),
           ],
         ],
@@ -8421,18 +8457,24 @@ class _DropoSpaceStatusBand extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final color = info.dropoSpaceReady
+    final color = info.dropoSpacePaused
+        ? const Color(0xFFFBBF24)
+        : info.dropoSpaceReady
         ? const Color(0xFF36D399)
         : info.dropoSpaceCanCreate
         ? const Color(0xFFFBBF24)
         : const Color(0xFF93A3A0);
-    final title = info.dropoSpaceReady
+    final title = info.dropoSpacePaused
+        ? 'Dropo Space приостановлен'
+        : info.dropoSpaceReady
         ? 'Dropo Space создан'
         : info.dropoSpaceCanCreate
         ? 'Dropo Space доступен'
         : 'Dropo Space недоступен';
-    final body = info.dropoSpaceReady
-        ? 'Можно устанавливать копии приложений в отдельное пространство. Установлено риск-приложений: ${info.installedRiskApps.length}.'
+    final body = info.dropoSpacePaused
+        ? 'Включите рабочий профиль в системной панели Android, затем нажмите «Обновить».'
+        : info.dropoSpaceReady
+        ? 'Можно добавлять отдельные копии приложений. Готово приложений: ${info.inDropoSpaceApps.length}.'
         : info.dropoSpaceCanCreate
         ? 'Устройство ${info.deviceLabel} поддерживает создание рабочего профиля. Нажмите «Создать Dropo Space».'
         : 'Используйте штатное клонирование приложений в настройках телефона. Для Android 15+ можно проверить Private Space.';
@@ -8447,7 +8489,7 @@ class _DropoSpaceStatusBand extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Icon(
-            info.dropoSpaceReady
+            info.dropoSpaceReady && !info.dropoSpacePaused
                 ? Icons.verified_user_outlined
                 : Icons.info_outline,
             size: 17,
@@ -8489,6 +8531,7 @@ class _AndroidRiskAppRow extends StatelessWidget {
     required this.app,
     required this.saving,
     required this.dropoSpaceReady,
+    required this.dropoSpacePaused,
     required this.dropoSpaceCanCreate,
     required this.onMoveApp,
     required this.onShortcut,
@@ -8497,6 +8540,7 @@ class _AndroidRiskAppRow extends StatelessWidget {
   final AndroidRiskApp app;
   final bool saving;
   final bool dropoSpaceReady;
+  final bool dropoSpacePaused;
   final bool dropoSpaceCanCreate;
   final ValueChanged<AndroidRiskApp> onMoveApp;
   final ValueChanged<AndroidRiskApp> onShortcut;
@@ -8567,8 +8611,11 @@ class _AndroidRiskAppRow extends StatelessWidget {
           else if (app.installed)
             _CompactActionChip(
               icon: dropoSpaceReady ? Icons.work_outline : Icons.start,
-              label: dropoSpaceReady ? 'В Space' : 'Настроить',
-              onPressed: saving || (!dropoSpaceReady && !dropoSpaceCanCreate)
+              label: dropoSpaceReady ? 'Добавить' : 'Настроить',
+              onPressed:
+                  saving ||
+                      dropoSpacePaused ||
+                      (!dropoSpaceReady && !dropoSpaceCanCreate)
                   ? null
                   : () => onMoveApp(app),
             ),
@@ -8862,16 +8909,48 @@ class _AndroidCompatibilityPageState extends State<_AndroidCompatibilityPage> {
           : result['message']?.toString() ??
                 'Действие для ${app.name} выполнено';
     });
-    if (result['success'] != false &&
-        (action == 'already_in_space' || action == 'shortcut_requested')) {
+    if (result['success'] != false && action == 'already_in_space') {
+      await _requestRiskAppShortcut(app);
+    } else if (result['success'] != false && action == 'shortcut_requested') {
       await _showDropoSpaceShortcutNotice(app);
+    } else if (result['success'] != false &&
+        action == 'profile_install_requested') {
+      final installedApp = await _waitForRiskAppInDropoSpace(app.packageName);
+      if (!mounted) {
+        return;
+      }
+      if (installedApp != null) {
+        setState(() {
+          statusText = '${app.name} добавлено в Dropo Space.';
+        });
+        await _requestRiskAppShortcut(installedApp);
+      } else {
+        await _offerManualDropoSpaceInstall(
+          app,
+          details:
+              'Android не подтвердил появление приложения после автоматической установки.',
+        );
+      }
     } else if (result['success'] != false && action == 'open_market') {
       await _showDropoSpaceInstallNotice(app);
     } else if (result['success'] != false &&
         action == 'provisioning_started_for_app') {
       await _showDropoSpaceProvisioningNotice(app: app);
+    } else if (action == 'profile_paused') {
+      await _showDropoSpaceFallbackNotice(
+        title: 'Dropo Space приостановлен',
+        body:
+            'Разверните системную панель Android, включите рабочий профиль кнопкой с портфелем, затем вернитесь в dropo и нажмите «Обновить».',
+        details: result['error']?.toString() ?? '',
+        offerSearch: false,
+      );
+    } else if (result['success'] != false &&
+        action == 'manual_install_required') {
+      await _offerManualDropoSpaceInstall(
+        app,
+        details: result['error']?.toString() ?? '',
+      );
     } else if (result['success'] == false ||
-        action == 'manual_install_required' ||
         action == 'unsupported' ||
         action == 'not_installed' ||
         action == 'provisioning_failed') {
@@ -8886,6 +8965,141 @@ class _AndroidCompatibilityPageState extends State<_AndroidCompatibilityPage> {
       );
     }
     unawaited(_loadAndroidCompatibility());
+  }
+
+  Future<AndroidRiskApp?> _waitForRiskAppInDropoSpace(
+    String packageName,
+  ) async {
+    for (var attempt = 0; attempt < 20; attempt++) {
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+      if (!mounted) {
+        return null;
+      }
+      try {
+        final info = await widget.bridge.androidCompatibility();
+        if (!mounted) {
+          return null;
+        }
+        setState(() {
+          androidCompatibility = info;
+          androidCompatibilityLoading = false;
+          androidCompatibilityError = '';
+        });
+        for (final candidate in info.riskApps) {
+          if (candidate.packageName == packageName && candidate.inDropoSpace) {
+            return candidate;
+          }
+        }
+      } catch (_) {
+        // The managed-profile activity briefly pauses the parent app. Retry
+        // until Android has published the package state through LauncherApps.
+      }
+    }
+    return null;
+  }
+
+  Future<void> _offerManualDropoSpaceInstall(
+    AndroidRiskApp app, {
+    String details = '',
+  }) async {
+    final proceed = await _showDropoSpaceManualInstallPrompt(
+      app,
+      details: details,
+    );
+    if (!mounted) {
+      return;
+    }
+    if (!proceed) {
+      setState(() {
+        statusText = 'Ручная установка ${app.name} отменена.';
+      });
+      return;
+    }
+
+    final market = await widget.bridge.openDropoSpaceMarket(app.packageName);
+    if (!mounted) {
+      return;
+    }
+    if (market['success'] != false &&
+        market['action']?.toString() == 'open_market') {
+      setState(() {
+        statusText = 'Открыта ручная установка ${app.name} в рабочем профиле.';
+      });
+      return;
+    }
+    await _showDropoSpaceFallbackNotice(
+      title: 'Не удалось открыть ручную установку',
+      body:
+          'Откройте вкладку «Рабочие» в списке приложений Android, запустите магазин с портфелем и установите ${app.name}. Затем вернитесь в dropo и нажмите «Обновить».',
+      details: market['error']?.toString() ?? '',
+      offerSearch: false,
+    );
+  }
+
+  Future<bool> _showDropoSpaceManualInstallPrompt(
+    AndroidRiskApp app, {
+    String details = '',
+  }) async {
+    return await showDialog<bool>(
+          context: context,
+          barrierDismissible: false,
+          builder: (dialogContext) => _AppDialog(
+            title: 'Нужна ручная установка',
+            icon: Icons.install_mobile_outlined,
+            width: 560,
+            centered: true,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(
+                  'Прошивка запретила dropo автоматически добавить ${app.name}. '
+                  'Можно перейти к установке внутри рабочего профиля.',
+                  style: const TextStyle(
+                    color: Color(0xFFD8E4E0),
+                    height: 1.35,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                const _InfoBand(
+                  icon: Icons.work_outline,
+                  title: 'Что нужно сделать',
+                  body:
+                      'Нажмите «Перейти к установке», выберите магазин со значком портфеля, установите приложение и вернитесь в dropo. После этого нажмите «Обновить».',
+                ),
+                if (details.trim().isNotEmpty) ...[
+                  const SizedBox(height: 10),
+                  _InfoBand(
+                    icon: Icons.info_outline,
+                    title: 'Причина',
+                    body: details.trim(),
+                  ),
+                ],
+                const SizedBox(height: 14),
+                Row(
+                  children: [
+                    Expanded(
+                      child: _ActionButton(
+                        label: 'Отмена',
+                        icon: Icons.close,
+                        secondary: true,
+                        onPressed: () => Navigator.of(dialogContext).pop(false),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: _ActionButton(
+                        label: 'Перейти к установке',
+                        icon: Icons.open_in_new,
+                        onPressed: () => Navigator.of(dialogContext).pop(true),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ) ??
+        false;
   }
 
   Future<void> _requestRiskAppShortcut(AndroidRiskApp app) async {

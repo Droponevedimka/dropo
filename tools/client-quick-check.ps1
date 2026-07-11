@@ -316,8 +316,8 @@ function Test-PathInside {
 
 function Get-DropoProcessDetails {
     param([string]$Root)
-    $names = @("dropo.exe", "sing-box.exe", "ciadpi.exe", "spoofdpi.exe", "winws.exe", "xray.exe")
-    $managedNames = @("sing-box.exe", "ciadpi.exe", "spoofdpi.exe", "winws.exe", "xray.exe")
+    $names = @("dropo.exe", "sing-box.exe", "ciadpi.exe", "winws.exe", "xray.exe")
+    $managedNames = @("sing-box.exe", "ciadpi.exe", "winws.exe", "xray.exe")
     Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
         Where-Object { $names -contains $_.Name } |
         ForEach-Object {
@@ -478,8 +478,7 @@ if ($DeepMethodCheck) {
         @{ Tag = "byedpi"; Port = 18091; Type = "socks" },
         @{ Tag = "byedpi-sni"; Port = 18092; Type = "socks" },
         @{ Tag = "byedpi-oob"; Port = 18093; Type = "socks" },
-        @{ Tag = "byedpi-fake"; Port = 18094; Type = "socks" },
-        @{ Tag = "spoofdpi-socks"; Port = 18095; Type = "socks" }
+        @{ Tag = "byedpi-fake"; Port = 18094; Type = "socks" }
     )
     $openFreeProxyMethods = $freeProxyMethods | Where-Object { Test-TcpPort "127.0.0.1" $_.Port }
     $failedBlocked = $results | Where-Object { $_.Category -notlike "Direct*" -and -not $_.NormalSuccess }

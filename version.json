@@ -1,5 +1,5 @@
 {
-    "version":  "2.1.14",
+    "version":  "2.2.0",
     "name":  "dropo",
     "productName":  "dropo",
     "description":  "dropo VPN client with sing-box, WireGuard, and smart routing",
@@ -20,9 +20,6 @@
     "byedpi":  {
                    "version":  "0.17.3"
                },
-    "spoofdpi":  {
-                     "version":  "1.5.3"
-                 },
     "zapret":  {
                    "version":  "72.12"
                },

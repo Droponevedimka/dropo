@@ -2,14 +2,12 @@
 # Runs Flutter UI, Go, artifact and optional runtime checks before publishing a build.
 
 param(
-    [switch]$WithVisual,
     [switch]$WithNetwork,
     [switch]$WithSubscription,
     [switch]$Build,
     [switch]$SkipInstall,
     [switch]$SkipFlutterChecks,
     [switch]$SkipLifecycleSmoke,
-    [switch]$InstallBrowsers,
     [string]$SubscriptionUrl = $env:DROPO_TEST_SUBSCRIPTION_URL,
     [string]$WireGuardConfigPath,
     [string]$ReleaseFolder
@@ -241,9 +239,6 @@ function Invoke-ArtifactValidation {
     Assert-FileExists (Join-Path $runtimeFolder "data\flutter_assets\AssetManifest.bin")
     $depsManifestPath = Join-Path $runtimeFolder "dependencies.json"
     Assert-FileExists $depsManifestPath
-    if (Test-Path (Join-Path $runtimeFolder "bin")) {
-        throw "App-only release must not execute dependencies from user-writable resources\bin"
-    }
     $depsManifest = Get-Content $depsManifestPath -Raw | ConvertFrom-Json
     $depsLock = Get-Content (Join-Path $RepoRoot "deps-lock.json") -Raw | ConvertFrom-Json
     foreach ($field in @("depsVersion", "asset", "sha256", "size")) {

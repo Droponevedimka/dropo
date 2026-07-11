@@ -55,7 +55,7 @@ type GlobalAppSettings struct {
 	RoutingMode RoutingMode `json:"routing_mode"` // How traffic is routed: blocked_only, except_russia, all_traffic
 	NetworkMode NetworkMode `json:"network_mode"` // Network engine request: auto, deep_windows, compat_tun
 
-	// Free access settings (developing.md §4) — opening blocked-in-RF
+	// Free access settings — opening blocked-in-RF
 	// services without a VPN key, via local DPI-bypass methods (ByeDPI).
 	FreeAccessEnabled  bool              `json:"free_access_enabled"`  // Master switch for the "Free access" tab
 	FreeAccessReverse  bool              `json:"free_access_reverse"`  // Prefer ByeDPI candidates before VPN when latency is equal
@@ -70,7 +70,7 @@ type GlobalAppSettings struct {
 	// or the app is uninstalled. See [[telegram-tg-ws-proxy-sidecar]].
 	TelegramProxyInjected bool `json:"telegram_proxy_injected"`
 
-	// RU-traffic settings (developing.md §5) — RU domains are direct by
+	// RU-traffic settings — RU domains are direct by
 	// default in every routing mode; this opt-in hides them behind a proxy.
 	HideRuTraffic  bool   `json:"hide_ru_traffic"`  // "Скрывать RU-трафик от провайдера"
 	RuProxyAddress string `json:"ru_proxy_address"` // Optional proxy link used for RU traffic when the toggle above is on
@@ -247,7 +247,7 @@ func (s *Storage) createDefaultSettings() *SettingsFile {
 			AutoUpdateSub:       true,
 			SubUpdateInterval:   24,
 			ActiveProfileID:     DefaultProfileID,
-			FreeAccessEnabled:   true, // on by default per developing.md §4
+			FreeAccessEnabled:   true, // enabled by default
 			FreeAccessReverse:   false,
 			FreeAccessServices:  DefaultFreeAccessServiceState(), // every service enabled by default
 			FreeAccessMethods:   DefaultFreeAccessServiceMethodState(),
@@ -1763,7 +1763,7 @@ func (b *ConfigBuilderForStorage) applyRoutingMode(template map[string]interface
 	// Clean up DNS rules that reference remote rule_sets (geosite-*)
 	b.cleanupDNSRuleSets(template)
 
-	// Free access (developing.md §2-§4) and RU-traffic (§5) settings are
+	// Free access and RU-traffic settings are
 	// cross-cutting: read fresh on every build rather than caching them on
 	// the builder, so a settings change always takes effect on next rebuild
 	// without needing every call site to push the new value down explicitly.
@@ -1796,7 +1796,7 @@ func (b *ConfigBuilderForStorage) applyRoutingMode(template map[string]interface
 }
 
 // addFreeAccessOutbounds appends the outbounds needed for the free-access
-// bypass and RU-traffic routing scheme (developing.md §3.2, §5):
+// bypass and RU-traffic routing scheme:
 //   - "byedpi" — local ByeDPI SOCKS5 outbound, only if the feature is enabled
 //   - "ru-proxy" — only if "Hide RU traffic" is on and an address is set
 //   - shared resilient groups (smart-bypass / vpn-or-direct / ru-route)
@@ -1804,7 +1804,7 @@ func (b *ConfigBuilderForStorage) applyRoutingMode(template map[string]interface
 //
 // Generated groups/outbounds are skipped entirely when not needed, so a
 // user who never touches these settings pays no extra health-check cost
-// (see developing.md §9).
+// and preserves existing user preferences.
 func (b *ConfigBuilderForStorage) addFreeAccessOutbounds(template map[string]interface{}, settings GlobalAppSettings) {
 	outbounds, _ := template["outbounds"].([]interface{})
 
@@ -1817,25 +1817,6 @@ func (b *ConfigBuilderForStorage) addFreeAccessOutbounds(template map[string]int
 				"server_port": strategy.Port,
 				"version":     "5",
 			})
-		}
-		for _, method := range DefaultSpoofDPIMethods {
-			if !methodSupportsCurrentPlatform(method.Platforms) {
-				continue
-			}
-			outboundType := method.Scheme
-			if outboundType == "" {
-				outboundType = "socks"
-			}
-			outbound := map[string]interface{}{
-				"type":        outboundType,
-				"tag":         method.Tag,
-				"server":      "127.0.0.1",
-				"server_port": method.Port,
-			}
-			if outboundType == "socks" {
-				outbound["version"] = "5"
-			}
-			outbounds = append(outbounds, outbound)
 		}
 	}
 
@@ -1963,13 +1944,7 @@ func buildFreeAccessProcessRules(settings GlobalAppSettings) []interface{} {
 }
 
 func freeAccessProcessNames() []string {
-	names := []string{ByeDPIProcessName, ZapretProcessName, "winws2.exe"}
-	for _, method := range DefaultSpoofDPIMethods {
-		if method.ProcessName != "" {
-			names = append(names, method.ProcessName)
-		}
-	}
-	return uniqueStrings(names)
+	return []string{ByeDPIProcessName, ZapretProcessName, "winws2.exe"}
 }
 
 func uniqueStrings(items []string) []string {
@@ -2046,7 +2021,7 @@ func insertAfterFirstRouteRule(rules []interface{}, extra []interface{}) []inter
 
 // buildFreeAccessRules returns route rules sending each catalogued service to
 // its own latency-tested bypass group (toggle on) or vpn-or-direct group
-// (toggle off). Same rule set regardless of routing mode (developing.md §6).
+// (toggle off). Same rule set regardless of routing mode.
 func (b *ConfigBuilderForStorage) buildFreeAccessRules(settings GlobalAppSettings, hasVPNProxy bool) []interface{} {
 	rules := make([]interface{}, 0, len(DefaultFreeAccessServices))
 
@@ -2094,7 +2069,7 @@ func (b *ConfigBuilderForStorage) blockedCatchAllOutbound(settings GlobalAppSett
 
 // ruRuleOutbound returns which outbound RU-classified domains should use:
 // the "ru-route" group when the hide toggle is on, "direct" otherwise
-// (default, unchanged behaviour — developing.md §5).
+// (default, unchanged behaviour).
 func (b *ConfigBuilderForStorage) ruRuleOutbound(settings GlobalAppSettings) string {
 	if settings.HideRuTraffic {
 		return RuRouteGroupTag
@@ -2355,7 +2330,7 @@ func (b *ConfigBuilderForStorage) applyBlockedOnlyMode(route map[string]interfac
 	// This is handled separately by WireGuard integration, not here
 	// Internal networks go through WireGuard tunnel directly
 
-	// 6. RU traffic: direct by default, "ru-route" if the hide toggle is on (developing.md §5)
+	// 6. RU traffic: direct by default, "ru-route" if the hide toggle is on.
 	newRules = append(newRules, buildDirectServiceRules()...)
 
 	newRules = append(newRules,
@@ -2402,7 +2377,7 @@ func (b *ConfigBuilderForStorage) applyBlockedOnlyMode(route map[string]interfac
 // RU traffic is intentionally NOT carved out here even when "Скрывать
 // RU-трафик" is on: this mode's entire point is "everything through VPN",
 // which already includes RU domains via final=proxy — the hide-toggle has
-// no additional effect in this mode (see process.md for the reasoning).
+// no additional effect in this mode.
 func (b *ConfigBuilderForStorage) applyAllTrafficMode(route map[string]interface{}, settings GlobalAppSettings, hasVPNProxy bool) {
 	fmt.Printf("[applyRoutingMode] Using all_traffic mode\n")
 
@@ -2472,7 +2447,7 @@ func (b *ConfigBuilderForStorage) applyExceptRussiaMode(route map[string]interfa
 			"action":        "route",
 			"outbound":      "direct",
 		},
-		// 5. Russian domains: direct by default, "ru-route" if the hide toggle is on (developing.md §5)
+		// 5. Russian domains: direct by default, "ru-route" if the hide toggle is on.
 		map[string]interface{}{
 			"domain_suffix": RuDomainSuffixes,
 			"action":        "route",

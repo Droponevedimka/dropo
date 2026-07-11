@@ -186,15 +186,7 @@ func (p *DeepWindowsRoutePlan) requireProxy(reason string) {
 }
 
 func freeProxyMethodsAvailable() bool {
-	if len(DefaultByeDPIStrategies) > 0 {
-		return true
-	}
-	for _, method := range DefaultSpoofDPIMethods {
-		if methodSupportsCurrentPlatform(method.Platforms) {
-			return true
-		}
-	}
-	return false
+	return len(DefaultByeDPIStrategies) > 0
 }
 
 func (a *App) logDeepWindowsRoutePlan(plan DeepWindowsRoutePlan) {
