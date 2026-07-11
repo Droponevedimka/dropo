@@ -198,6 +198,24 @@ func TestLiveFindDependenciesRelease(t *testing.T) {
 	}
 }
 
+func TestReleaseAssetURLsFromHTMLPreservesNewestOrder(t *testing.T) {
+	body := `<a href="/Droponevedimka/dropo/releases/download/v2.2.0/dropo-Windows-Dependencies-x64.zip">new</a>` +
+		`<a href="https://github.com/Droponevedimka/dropo/releases/download/v2.1.14/dropo-Windows-Dependencies-x64.zip">old</a>`
+	got := releaseAssetURLsFromHTML(body, "dropo-Windows-Dependencies-x64.zip")
+	want := []string{
+		"https://github.com/Droponevedimka/dropo/releases/download/v2.2.0/dropo-Windows-Dependencies-x64.zip",
+		"https://github.com/Droponevedimka/dropo/releases/download/v2.1.14/dropo-Windows-Dependencies-x64.zip",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("HTML asset URLs = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("HTML asset URL[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
 func TestDownloadDependenciesFromManifest(t *testing.T) {
 	dir := t.TempDir()
 	zipPath := filepath.Join(dir, "deps.zip")
