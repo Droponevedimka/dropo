@@ -697,8 +697,7 @@ function Build-Application {
             [string]::IsNullOrWhiteSpace($trustedRequired)) {
             throw "deps-lock.json contains invalid or incomplete trusted dependency identity."
         }
-        $trustedURL = "https://github.com/Droponevedimka/dropo/releases/download/$trustedTag/$trustedAsset"
-        $ldflags = "-X 'main.trustedDepsVersion=$trustedVersion' -X 'main.trustedDepsAsset=$trustedAsset' -X 'main.trustedDepsSHA256=$trustedSHA256' -X 'main.trustedDepsSize=$trustedSize' -X 'main.trustedDepsURL=$trustedURL' -X 'main.trustedDepsRequired=$trustedRequired' $ldflags"
+        $ldflags = "-X 'main.trustedDepsVersion=$trustedVersion' -X 'main.trustedDepsAsset=$trustedAsset' -X 'main.trustedDepsSHA256=$trustedSHA256' -X 'main.trustedDepsSize=$trustedSize' -X 'main.trustedDepsRequired=$trustedRequired' $ldflags"
     }
 
     Push-Location $AppDir
@@ -802,7 +801,6 @@ function Build-Application {
             platform    = if ($lock.platform) { [string]$lock.platform } else { $ReleasePlatform }
             arch        = if ($lock.arch) { [string]$lock.arch } else { $ReleaseArch }
             asset       = [string]$lock.asset
-            url         = $depsUrl
             sha256      = [string]$lock.sha256
             size        = [long]$lock.size
             appVersion  = $AppVersion
@@ -1087,15 +1085,13 @@ function Build-Application {
 
     # dependencies.json manifest ships inside resources/ next to dropo-ui.exe
     # and dropo-core.exe.
-    # url points straight at the hosting release tag (name-based search is the Go
-    # fallback if the tag asset ever moves).
-    $depsUrl = "https://github.com/Droponevedimka/dropo/releases/download/$depsTag/$DepsAsset"
+    # Runtime resolves the freshest compatible asset across all GitHub releases;
+    # no fixed release-download URL is embedded in the client.
     $manifest = [ordered]@{
         depsVersion = $DepsVersion
         platform    = $ReleasePlatform
         arch        = $ReleaseArch
         asset       = $DepsAsset
-        url         = $depsUrl
         sha256      = $depsSha
         size        = $depsSize
         appVersion  = $AppVersion

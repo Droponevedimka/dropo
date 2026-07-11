@@ -38,6 +38,17 @@ try {
             $failures.Add("${relativePath}: contains likely UTF-8/Windows-1251 mojibake")
         }
     }
+
+    # The local release publisher runs under Windows PowerShell 5.1. Passing a
+    # JSON string to Invoke-RestMethod there uses the ANSI code page and turns
+    # Cyrillic GitHub release notes into question marks. Keep this regression
+    # guard next to the general encoding validation used by CI.
+    $publisherPath = Join-Path $RepoRoot "tools\publish-release-assets.ps1"
+    $publisherText = $strictUtf8.GetString([IO.File]::ReadAllBytes($publisherPath))
+    if ($publisherText -notmatch 'application/json; charset=utf-8' -or
+        $publisherText -notmatch 'UTF8Encoding\]::new\(\$false\)\.GetBytes') {
+        $failures.Add("tools/publish-release-assets.ps1: GitHub JSON PATCH must use explicit UTF-8 bytes")
+    }
 } finally {
     Pop-Location
 }

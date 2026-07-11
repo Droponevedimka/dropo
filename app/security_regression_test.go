@@ -8,15 +8,14 @@ import (
 )
 
 func TestTrustedDepsManifestIgnoresAdjacentManifest(t *testing.T) {
-	old := []string{trustedDepsVersion, trustedDepsAsset, trustedDepsSHA256, trustedDepsSize, trustedDepsURL, trustedDepsRequired}
+	old := []string{trustedDepsVersion, trustedDepsAsset, trustedDepsSHA256, trustedDepsSize, trustedDepsRequired}
 	t.Cleanup(func() {
-		trustedDepsVersion, trustedDepsAsset, trustedDepsSHA256, trustedDepsSize, trustedDepsURL, trustedDepsRequired = old[0], old[1], old[2], old[3], old[4], old[5]
+		trustedDepsVersion, trustedDepsAsset, trustedDepsSHA256, trustedDepsSize, trustedDepsRequired = old[0], old[1], old[2], old[3], old[4]
 	})
 	trustedDepsVersion = "0123456789ab"
 	trustedDepsAsset = "dropo-Windows-Dependencies-x64.zip"
 	trustedDepsSHA256 = "687d903d03f5dcbda1dbd0f66231fa32ecfd67a9dc0e451aa34a669e49db1f89"
 	trustedDepsSize = "123"
-	trustedDepsURL = "https://github.com/Droponevedimka/dropo/releases/download/v2.1.0/dropo-Windows-Dependencies-x64.zip"
 	trustedDepsRequired = "sing-box.exe,winws.exe,WinDivert.dll"
 
 	base := t.TempDir()
@@ -24,7 +23,7 @@ func TestTrustedDepsManifestIgnoresAdjacentManifest(t *testing.T) {
 		t.Fatal(err)
 	}
 	m, ok := (&App{basePath: base}).loadDepsManifest()
-	if !ok || m.URL != trustedDepsURL || m.SHA256 != trustedDepsSHA256 || m.Size != 123 {
+	if !ok || m.URL != "" || m.SHA256 != trustedDepsSHA256 || m.Size != 123 {
 		t.Fatalf("signed dependency identity was not authoritative: ok=%v manifest=%+v", ok, m)
 	}
 }

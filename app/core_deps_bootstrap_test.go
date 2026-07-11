@@ -4,12 +4,14 @@ import (
 	"archive/zip"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -124,15 +126,75 @@ func TestExtractZipRejectsTraversal(t *testing.T) {
 }
 
 func TestReleaseAssetMatchesExpectedSize(t *testing.T) {
-	asset := GitHubReleaseAsset{Name: "dropo-Windows-Dependencies-x64.zip", Size: 68575183}
-	if !releaseAssetMatches(asset, "dropo-Windows-Dependencies-x64.zip", 68575183) {
+	sha := "7efaa1b1d6d973f1d82a18bfcfda2f17ff7857ee12c6d55597414f8c8e8def52"
+	asset := GitHubReleaseAsset{
+		Name:               "dropo-Windows-Dependencies-x64.zip",
+		Size:               68575183,
+		Digest:             "sha256:" + sha,
+		BrowserDownloadURL: "https://example.test/dependencies.zip",
+	}
+	if !releaseAssetMatches(asset, "dropo-Windows-Dependencies-x64.zip", 68575183, sha) {
 		t.Fatal("asset with matching name and size should match")
 	}
-	if releaseAssetMatches(asset, "dropo-Windows-Dependencies-x64.zip", 67063090) {
+	if releaseAssetMatches(asset, "dropo-Windows-Dependencies-x64.zip", 67063090, sha) {
 		t.Fatal("asset with stale size must not match")
 	}
-	if releaseAssetMatches(asset, "other.zip", 68575183) {
+	if releaseAssetMatches(asset, "other.zip", 68575183, sha) {
 		t.Fatal("asset with different name must not match")
+	}
+	if releaseAssetMatches(asset, "dropo-Windows-Dependencies-x64.zip", 68575183, strings.Repeat("0", 64)) {
+		t.Fatal("asset with a different GitHub digest must not match")
+	}
+}
+
+func TestFindReleaseAssetURLUsesNewestCompatibleRelease(t *testing.T) {
+	sha := "7efaa1b1d6d973f1d82a18bfcfda2f17ff7857ee12c6d55597414f8c8e8def52"
+	asset := func(url, digest string) GitHubReleaseAsset {
+		return GitHubReleaseAsset{
+			Name:               "dropo-Windows-Dependencies-x64.zip",
+			Size:               68575183,
+			Digest:             "sha256:" + digest,
+			BrowserDownloadURL: url,
+		}
+	}
+	releases := []GitHubRelease{
+		{TagName: "v2.2.1", Assets: []GitHubReleaseAsset{{Name: "dropo-Windows-Portable-x64.zip"}}},
+		{TagName: "v2.2.0", Assets: []GitHubReleaseAsset{asset("https://github.test/v2.2.0/deps.zip", sha)}},
+		{TagName: "v2.1.14", Assets: []GitHubReleaseAsset{asset("https://github.test/v2.1.14/deps.zip", sha)}},
+	}
+	got := findReleaseAssetURLIn(releases, "dropo-Windows-Dependencies-x64.zip", 68575183, sha)
+	if got != "https://github.test/v2.2.0/deps.zip" {
+		t.Fatalf("selected URL = %q, want newest compatible v2.2.0 asset", got)
+	}
+
+	releases[1].Assets[0] = asset("https://github.test/v2.2.0/wrong.zip", strings.Repeat("0", 64))
+	got = findReleaseAssetURLIn(releases, "dropo-Windows-Dependencies-x64.zip", 68575183, sha)
+	if got != "https://github.test/v2.1.14/deps.zip" {
+		t.Fatalf("selected URL = %q, want older asset after digest mismatch", got)
+	}
+}
+
+func TestLiveFindDependenciesRelease(t *testing.T) {
+	if os.Getenv("DROPO_TEST_LIVE_DEPS_RELEASES") != "1" {
+		t.Skip("set DROPO_TEST_LIVE_DEPS_RELEASES=1 to verify GitHub release discovery")
+	}
+	data, err := os.ReadFile(filepath.Join("..", "deps-lock.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lock struct {
+		Tag    string `json:"tag"`
+		Asset  string `json:"asset"`
+		SHA256 string `json:"sha256"`
+		Size   int64  `json:"size"`
+	}
+	if err := json.Unmarshal(data, &lock); err != nil {
+		t.Fatal(err)
+	}
+	got := findReleaseAssetURL(GitHubRepo, lock.Asset, lock.Size, lock.SHA256)
+	wantPart := "/releases/download/" + lock.Tag + "/" + lock.Asset
+	if !strings.Contains(got, wantPart) {
+		t.Fatalf("selected dependency URL = %q, want an asset from %s", got, lock.Tag)
 	}
 }
 

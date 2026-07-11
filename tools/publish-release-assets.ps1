@@ -37,8 +37,12 @@ function Invoke-GitHubApi {
         Headers = $script:GitHubHeaders
     }
     if ($null -ne $Body) {
-        $params.ContentType = "application/json"
-        $params.Body = ($Body | ConvertTo-Json -Depth 10)
+        # Windows PowerShell 5.1 sends a string request body through the active
+        # ANSI code page unless explicit UTF-8 bytes are provided. That replaced
+        # every Cyrillic release-note character with '?'. Keep JSON Unicode-safe.
+        $json = $Body | ConvertTo-Json -Depth 10
+        $params.ContentType = "application/json; charset=utf-8"
+        $params.Body = [System.Text.UTF8Encoding]::new($false).GetBytes($json)
     }
     return Invoke-RestMethod @params
 }

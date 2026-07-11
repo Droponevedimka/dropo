@@ -35,7 +35,6 @@ var (
 	trustedDepsAsset    string
 	trustedDepsSHA256   string
 	trustedDepsSize     string
-	trustedDepsURL      string
 	trustedDepsRequired string
 )
 
@@ -77,7 +76,7 @@ func (a *App) loadDepsManifest() (*DepsManifest, bool) {
 		size, err := strconv.ParseInt(trustedDepsSize, 10, 64)
 		sha := strings.ToLower(strings.TrimSpace(trustedDepsSHA256))
 		if err != nil || size <= 0 || len(sha) != sha256.Size*2 ||
-			trustedDepsVersion == "" || trustedDepsAsset == "" || trustedDepsURL == "" {
+			trustedDepsVersion == "" || trustedDepsAsset == "" {
 			return nil, false
 		}
 		if _, err := hex.DecodeString(sha); err != nil {
@@ -97,7 +96,6 @@ func (a *App) loadDepsManifest() (*DepsManifest, bool) {
 			SHA256:      sha,
 			Size:        size,
 			Repo:        GitHubRepo,
-			URL:         trustedDepsURL,
 			Required:    required,
 		}, true
 	}
@@ -413,33 +411,20 @@ func extractedFilesMatchArchive(archivePath, destDir string) error {
 	return nil
 }
 
-// resolveDepsURL prefers an explicit manifest URL, then a direct release-download
-// URL, then a search across the repo's releases for the asset by name.
+// resolveDepsURL searches releases from newest to oldest for the freshest asset
+// matching the signed name, size and SHA-256. Production builds never trust a
+// fixed release tag or an adjacent manifest URL.
 func (a *App) resolveDepsURL(m *DepsManifest) (string, error) {
-	if strings.TrimSpace(trustedDepsSHA256) != "" {
-		if m.URL == trustedDepsURL && httpResourceLooksUsable(m.URL, m.Size) {
-			return m.URL, nil
-		}
-		return "", fmt.Errorf("trusted dependencies URL is unavailable")
-	}
-	if m.URL != "" {
-		if httpResourceLooksUsable(m.URL, m.Size) {
-			return m.URL, nil
-		}
-		a.writeLog(fmt.Sprintf("[Deps] manifest URL is not available, searching releases: %s", m.URL))
-	}
 	repo := m.Repo
 	if repo == "" {
 		repo = GitHubRepo
 	}
-	if m.AppVersion != "" {
-		direct := fmt.Sprintf("https://github.com/%s/releases/download/v%s/%s", repo, m.AppVersion, m.Asset)
-		if httpResourceLooksUsable(direct, m.Size) {
-			return direct, nil
-		}
-	}
-	if url := findReleaseAssetURL(repo, m.Asset, m.Size); url != "" {
+	if url := findReleaseAssetURL(repo, m.Asset, m.Size, m.SHA256); url != "" {
 		return url, nil
+	}
+	// Direct URLs remain available only to unsigned development builds and tests.
+	if strings.TrimSpace(trustedDepsSHA256) == "" && m.URL != "" && httpResourceLooksUsable(m.URL, m.Size) {
+		return m.URL, nil
 	}
 	return "", fmt.Errorf("asset %s with expected size %d not found in releases of %s", m.Asset, m.Size, repo)
 }
@@ -464,46 +449,67 @@ func httpResourceLooksUsable(url string, expectedSize int64) bool {
 	return true
 }
 
-// findReleaseAssetURL scans recent releases for an asset with the given name.
-func findReleaseAssetURL(repo, asset string, expectedSize int64) string {
-	url := fmt.Sprintf("https://api.github.com/repos/%s/releases?per_page=30", repo)
-	req, err := http.NewRequest(http.MethodGet, url, nil)
-	if err != nil {
-		return ""
+// findReleaseAssetURL scans every published release in GitHub's newest-first
+// order. Pagination avoids silently falling back to a fixed historical tag.
+func findReleaseAssetURL(repo, asset string, expectedSize int64, expectedSHA256 string) string {
+	for page := 1; ; page++ {
+		url := fmt.Sprintf("https://api.github.com/repos/%s/releases?per_page=100&page=%d", repo, page)
+		req, err := http.NewRequest(http.MethodGet, url, nil)
+		if err != nil {
+			return ""
+		}
+		req.Header.Set("Accept", "application/vnd.github+json")
+		req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+		req.Header.Set("User-Agent", AppName+"/"+Version)
+		resp, err := ShortHTTPClient.Do(req)
+		if err != nil {
+			return ""
+		}
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			return ""
+		}
+		body, err := readHTTPBodyLimited(resp.Body, maxReleaseMetadataBytes)
+		resp.Body.Close()
+		if err != nil {
+			return ""
+		}
+		var releases []GitHubRelease
+		if json.Unmarshal(body, &releases) != nil {
+			return ""
+		}
+		if url := findReleaseAssetURLIn(releases, asset, expectedSize, expectedSHA256); url != "" {
+			return url
+		}
+		if len(releases) < 100 {
+			return ""
+		}
 	}
-	req.Header.Set("Accept", "application/vnd.github.v3+json")
-	req.Header.Set("User-Agent", AppName+"/"+Version)
-	resp, err := ShortHTTPClient.Do(req)
-	if err != nil {
-		return ""
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return ""
-	}
-	body, err := readHTTPBodyLimited(resp.Body, maxReleaseMetadataBytes)
-	if err != nil {
-		return ""
-	}
-	var releases []GitHubRelease
-	if json.Unmarshal(body, &releases) != nil {
-		return ""
-	}
-	for _, r := range releases {
-		for _, as := range r.Assets {
-			if releaseAssetMatches(as, asset, expectedSize) {
-				return as.BrowserDownloadURL
+}
+
+func findReleaseAssetURLIn(releases []GitHubRelease, asset string, expectedSize int64, expectedSHA256 string) string {
+	for _, release := range releases {
+		for _, candidate := range release.Assets {
+			if releaseAssetMatches(candidate, asset, expectedSize, expectedSHA256) {
+				return candidate.BrowserDownloadURL
 			}
 		}
 	}
 	return ""
 }
 
-func releaseAssetMatches(as GitHubReleaseAsset, asset string, expectedSize int64) bool {
+func releaseAssetMatches(as GitHubReleaseAsset, asset string, expectedSize int64, expectedSHA256 string) bool {
 	if as.Name != asset {
 		return false
 	}
-	return expectedSize <= 0 || as.Size == 0 || as.Size == expectedSize
+	if expectedSize > 0 && as.Size > 0 && as.Size != expectedSize {
+		return false
+	}
+	expectedSHA256 = strings.ToLower(strings.TrimSpace(expectedSHA256))
+	if expectedSHA256 != "" && as.Digest != "" && normalizeGitHubSHA256(as.Digest) != expectedSHA256 {
+		return false
+	}
+	return as.BrowserDownloadURL != ""
 }
 
 // extractZip unpacks src into destDir, guarding against path traversal.
