@@ -1,0 +1,201 @@
+{
+  "log": {
+    "level": "info",
+    "timestamp": true
+  },
+  "dns": {
+    "servers": [
+      {
+        "type": "udp",
+        "tag": "dns-remote",
+        "server": "8.8.8.8"
+      },
+      {
+        "type": "udp",
+        "tag": "dns-direct",
+        "server": "77.88.8.8"
+      },
+      {
+        "type": "local",
+        "tag": "dns-local"
+      }
+    ],
+    "rules": [
+      {
+        "domain_suffix": ["local", "internal", "corp", "lan", "home", "intranet", "private"],
+        "action": "route",
+        "server": "dns-local"
+      },
+      {
+        "rule_set": ["geosite-category-ru", "geosite-yandex", "geosite-vk", "geosite-mailru"],
+        "action": "route",
+        "server": "dns-direct"
+      },
+      {
+        "domain_suffix": [
+          "ru", "su", "xn--p1ai",
+          "yandex.com", "yandex.net", "yandex.ru",
+          "mail.ru", "vk.com", "ok.ru",
+          "sberbank.ru", "tinkoff.ru", "gosuslugi.ru"
+        ],
+        "action": "route",
+        "server": "dns-direct"
+      }
+    ],
+    "final": "dns-direct",
+    "strategy": "ipv4_only",
+    "reverse_mapping": true,
+    "independent_cache": true
+  },
+  "inbounds": [
+    {
+      "type": "tun",
+      "tag": "tun-in",
+      "interface_name": "singbox-tun",
+      "address": [
+        "172.19.0.1/30"
+      ],
+      "mtu": 1500,
+      "auto_route": true,
+      "strict_route": true,
+      "stack": "mixed"
+    },
+    {
+      "type": "mixed",
+      "tag": "mixed-in",
+      "listen": "127.0.0.1",
+      "listen_port": 2088
+    }
+  ],
+  "outbounds_template": {
+    "selector": {
+      "type": "selector",
+      "tag": "proxy",
+      "default": "auto-select"
+    },
+    "urltest": {
+      "type": "selector",
+      "tag": "auto-select",
+      "default": ""
+    },
+    "direct": {
+      "type": "direct",
+      "tag": "direct"
+    }
+  },
+  "route": {
+    "rule_set": [
+      {
+        "type": "remote",
+        "tag": "geosite-category-ru",
+        "format": "binary",
+        "url": "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-category-ru.srs",
+        "download_detour": "direct"
+      },
+      {
+        "type": "remote",
+        "tag": "geosite-yandex",
+        "format": "binary",
+        "url": "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-yandex.srs",
+        "download_detour": "direct"
+      },
+      {
+        "type": "remote",
+        "tag": "geosite-vk",
+        "format": "binary",
+        "url": "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-vk.srs",
+        "download_detour": "direct"
+      },
+      {
+        "type": "remote",
+        "tag": "geosite-mailru",
+        "format": "binary",
+        "url": "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-mailru.srs",
+        "download_detour": "direct"
+      },
+      {
+        "type": "remote",
+        "tag": "geoip-ru",
+        "format": "binary",
+        "url": "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-ru.srs",
+        "download_detour": "direct"
+      }
+    ],
+    "rules": [
+      {
+        "action": "sniff"
+      },
+      {
+        "domain_suffix": ["local", "internal", "corp", "lan", "home", "intranet", "private"],
+        "action": "route",
+        "outbound": "direct"
+      },
+      {
+        "protocol": "dns",
+        "action": "hijack-dns"
+      },
+      {
+        "ip_is_private": true,
+        "action": "route",
+        "outbound": "direct"
+      },
+      {
+        "rule_set": ["geosite-category-ru", "geosite-yandex", "geosite-vk", "geosite-mailru"],
+        "action": "route",
+        "outbound": "direct"
+      },
+      {
+        "rule_set": ["geoip-ru"],
+        "action": "route",
+        "outbound": "direct"
+      },
+      {
+        "domain_suffix": [
+          "ru", "su", "xn--p1ai",
+          "yandex.com", "yandex.net", "yandex.ru",
+          "mail.ru", "vk.com", "vkontakte.ru", "ok.ru",
+          "sberbank.ru", "sber.ru", "tinkoff.ru", "vtb.ru",
+          "gazprom.ru", "mos.ru", "gosuslugi.ru",
+          "nalog.ru", "government.ru", "kremlin.ru",
+          "duma.gov.ru", "cbr.ru", "ria.ru", "rbc.ru",
+          "interfax.ru", "tass.ru", "kommersant.ru",
+          "lenta.ru", "gazeta.ru", "kp.ru", "mk.ru",
+          "sport-express.ru", "championat.com",
+          "2gis.ru", "avito.ru", "ozon.ru", "wildberries.ru",
+          "lamoda.ru", "dns-shop.ru", "mvideo.ru", "eldorado.ru",
+          "citilink.ru", "perekrestok.ru", "lenta.com",
+          "magnit.ru", "5ka.ru", "dixy.ru",
+          "rzd.ru", "aeroflot.ru", "s7.ru", "utair.ru",
+          "pochta.ru", "cdek.ru", "boxberry.ru",
+          "mts.ru", "megafon.ru", "beeline.ru", "tele2.ru",
+          "rostelecom.ru", "rt.ru",
+          "vgtrk.ru", "1tv.ru", "ntv.ru", "ren.tv",
+          "rutube.ru", "ivi.ru", "okko.tv", "more.tv", "kinopoisk.ru",
+          "dzen.ru", "ya.ru"
+        ],
+        "action": "route",
+        "outbound": "direct"
+      },
+      {
+        "domain_keyword": [
+          "yandex", "sber", "tinkoff", "gosuslugi", "rutube",
+          "vkontakte", "mailru", "rambler", "wildberries", "ozon"
+        ],
+        "action": "route",
+        "outbound": "direct"
+      }
+    ],
+    "final": "proxy",
+    "auto_detect_interface": true,
+    "default_domain_resolver": {
+      "server": "dns-direct",
+      "strategy": "ipv4_only"
+    }
+  },
+  "experimental": {
+    "cache_file": {
+      "enabled": true,
+      "path": "cache.db"
+    }
+  }
+}

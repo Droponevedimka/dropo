@@ -1,0 +1,20 @@
+# Overlay that swaps the naive xt_string censor for the stateful, reassembling
+# one (faithful TSPU model). Use:
+#   docker compose -f docker-compose.yml -f docker-compose.stateful.yml up -d --build censor
+#   docker compose -f docker-compose.yml -f docker-compose.stateful.yml run --rm tester
+#
+# Knobs model the desync tricks (see censor/stateful.py):
+#   REASSEMBLE_POLICY first|last  -> whether seqovl defeats it
+#   VALIDATE_CHECKSUM 0|1         -> whether fooling=badsum defeats it
+#   MIN_TTL 0..255                -> whether fake-ttl defeats it
+#   QUIC 0|1                      -> inspect+block QUIC Initial SNI
+services:
+  censor:
+    build:
+      context: ./censor
+      dockerfile: Dockerfile.stateful
+    environment:
+      - REASSEMBLE_POLICY=last
+      - VALIDATE_CHECKSUM=0
+      - MIN_TTL=0
+      - QUIC=1

@@ -1,0 +1,116 @@
+{
+  "version": 6,
+  "updated": "2026-06-26",
+  "note": "Per-service DPI-bypass ladders. blockType: 'dpi' (desync works), 'ip'/'protocol' (desync may help, prefer VPN fallback), 'vpn' (NO free bypass — never searched, needs a VPN/VLESS subscription). After the May-2026 ТСПУ update, the working Google/YouTube technique is fake,multisplit + fooling=ts + repeats=8 + fake-tls (Flowseal ALT11 / FAKE TLS AUTO), not plain multisplit. Most general DPI services are solved by fakedsplit-ts (empirically the winner). Techniques: fake-multisplit(seqovl,pos,repeats,fakeTlsMod[,ipIdZero]), multisplit(seqovl,pos[,ipIdZero]), fakedsplit-ts, multidisorder, split-autottl. quic: google|facebook.",
+  "services": {
+    "discord": {
+      "source": "Flowseal/zapret-discord-youtube; empirically fakedsplit-ts",
+      "blockType": "dpi",
+      "methods": [
+        { "tag": "fakedsplit-ts", "label": "Fakedsplit (ts)", "technique": "fakedsplit-ts", "quic": "google" },
+        { "tag": "fake-multisplit-664", "label": "Fake+multisplit 664 ts", "technique": "fake-multisplit", "seqovl": 664, "pos": 1, "repeats": 8, "quic": "google" },
+        { "tag": "multisplit-652-2", "label": "Multisplit 652/2", "technique": "multisplit", "seqovl": 652, "pos": 2, "quic": "google" }
+      ]
+    },
+    "youtube": {
+      "source": "Flowseal ALT11 / FAKE TLS AUTO ALT3 (post-May-2026 Google profile)",
+      "blockType": "dpi",
+      "methods": [
+        { "tag": "google-fakemultisplit-681-mod", "label": "Google fake+multisplit 681 ts mod", "technique": "fake-multisplit", "seqovl": 681, "pos": 1, "repeats": 8, "fakeTlsMod": true, "ipIdZero": true, "quic": "google" },
+        { "tag": "google-fakemultisplit-681", "label": "Google fake+multisplit 681 ts", "technique": "fake-multisplit", "seqovl": 681, "pos": 1, "repeats": 8, "ipIdZero": true, "quic": "google" },
+        { "tag": "google-fakemultisplit-664", "label": "Google fake+multisplit 664 ts", "technique": "fake-multisplit", "seqovl": 664, "pos": 1, "repeats": 8, "ipIdZero": true, "quic": "google" },
+        { "tag": "google-multisplit-681", "label": "Google ip-id=zero multisplit 681/1", "technique": "multisplit", "seqovl": 681, "pos": 1, "ipIdZero": true, "quic": "google" },
+        { "tag": "fakedsplit-ts", "label": "Fakedsplit (ts)", "technique": "fakedsplit-ts", "quic": "google" },
+        { "tag": "multidisorder", "label": "Fake+multidisorder", "technique": "multidisorder", "quic": "google" }
+      ]
+    },
+    "telegram": {
+      "source": "Flowseal/tg-ws-proxy — MTProto/IP block; handled by the local MTProto-over-WebSocket proxy sidecar, not winws desync",
+      "blockType": "proxy",
+      "methods": []
+    },
+    "meta": {
+      "source": "bol-van/zapret #1134 — Meta is IP-blocked; no free desync, needs VPN",
+      "blockType": "vpn",
+      "methods": []
+    },
+    "whatsapp": {
+      "source": "Meta infra — IP-blocked; no free desync, needs VPN",
+      "blockType": "vpn",
+      "methods": []
+    },
+    "twitter": {
+      "source": "empirically desync-solvable (fakedsplit-ts)",
+      "blockType": "dpi",
+      "methods": [
+        { "tag": "fakedsplit-ts", "label": "Fakedsplit (ts)", "technique": "fakedsplit-ts", "quic": "google" },
+        { "tag": "fake-multisplit-664", "label": "Fake+multisplit 664 ts", "technique": "fake-multisplit", "seqovl": 664, "pos": 1, "repeats": 8, "quic": "google" }
+      ]
+    },
+    "linkedin": {
+      "source": "general TLS desync",
+      "blockType": "dpi",
+      "methods": [
+        { "tag": "fakedsplit-ts", "label": "Fakedsplit (ts)", "technique": "fakedsplit-ts", "quic": "google" },
+        { "tag": "fake-multisplit-664", "label": "Fake+multisplit 664 ts", "technique": "fake-multisplit", "seqovl": 664, "pos": 1, "repeats": 8, "quic": "google" }
+      ]
+    },
+    "twitch": {
+      "source": "general TLS desync",
+      "blockType": "dpi",
+      "methods": [
+        { "tag": "fakedsplit-ts", "label": "Fakedsplit (ts)", "technique": "fakedsplit-ts", "quic": "google" },
+        { "tag": "fake-multisplit-664", "label": "Fake+multisplit 664 ts", "technique": "fake-multisplit", "seqovl": 664, "pos": 1, "repeats": 8, "quic": "google" }
+      ]
+    },
+    "spotify": {
+      "source": "general TLS desync",
+      "blockType": "dpi",
+      "methods": [
+        { "tag": "fakedsplit-ts", "label": "Fakedsplit (ts)", "technique": "fakedsplit-ts", "quic": "google" },
+        { "tag": "fake-multisplit-664", "label": "Fake+multisplit 664 ts", "technique": "fake-multisplit", "seqovl": 664, "pos": 1, "repeats": 8, "quic": "google" }
+      ]
+    },
+    "snapchat": {
+      "source": "general TLS desync",
+      "blockType": "dpi",
+      "methods": [
+        { "tag": "fakedsplit-ts", "label": "Fakedsplit (ts)", "technique": "fakedsplit-ts", "quic": "google" },
+        { "tag": "fake-multisplit-664", "label": "Fake+multisplit 664 ts", "technique": "fake-multisplit", "seqovl": 664, "pos": 1, "repeats": 8, "quic": "google" }
+      ]
+    },
+    "viber": {
+      "source": "ankddev/zapret-discord-youtube; client winner = multisplit 652/2",
+      "blockType": "dpi",
+      "methods": [
+        { "tag": "multisplit-652-2", "label": "Multisplit 652/2", "technique": "multisplit", "seqovl": 652, "pos": 2, "quic": "google" },
+        { "tag": "fakedsplit-ts", "label": "Fakedsplit (ts)", "technique": "fakedsplit-ts", "quic": "google" },
+        { "tag": "fake-multisplit-664", "label": "Fake+multisplit 664 ts", "technique": "fake-multisplit", "seqovl": 664, "pos": 1, "repeats": 8, "quic": "google" }
+      ]
+    },
+    "facetime": {
+      "source": "general TLS desync",
+      "blockType": "dpi",
+      "methods": [
+        { "tag": "fakedsplit-ts", "label": "Fakedsplit (ts)", "technique": "fakedsplit-ts", "quic": "google" },
+        { "tag": "fake-multisplit-664", "label": "Fake+multisplit 664 ts", "technique": "fake-multisplit", "seqovl": 664, "pos": 1, "repeats": 8, "quic": "google" }
+      ]
+    },
+    "signal": {
+      "source": "general TLS desync",
+      "blockType": "dpi",
+      "methods": [
+        { "tag": "fakedsplit-ts", "label": "Fakedsplit (ts)", "technique": "fakedsplit-ts", "quic": "google" },
+        { "tag": "fake-multisplit-664", "label": "Fake+multisplit 664 ts", "technique": "fake-multisplit", "seqovl": 664, "pos": 1, "repeats": 8, "quic": "google" }
+      ]
+    },
+    "tiktok": {
+      "source": "general TLS desync (empirically fakedsplit-ts)",
+      "blockType": "dpi",
+      "methods": [
+        { "tag": "fakedsplit-ts", "label": "Fakedsplit (ts)", "technique": "fakedsplit-ts", "quic": "google" },
+        { "tag": "fake-multisplit-664", "label": "Fake+multisplit 664 ts", "technique": "fake-multisplit", "seqovl": 664, "pos": 1, "repeats": 8, "quic": "google" }
+      ]
+    }
+  }
+}

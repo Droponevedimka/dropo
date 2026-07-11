@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+
+message_file="$1"
+
+if grep -Eiq '^[[:space:]]*(co-authored-by|authored-by|committed-by|generated-by|reviewed-by|acked-by):' "$message_file"; then
+  echo "error: generated contributor trailers are not allowed in this repository." >&2
+  echo "Remove the extra contributor trailer and commit again." >&2
+  exit 1
+fi

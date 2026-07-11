@@ -1,0 +1,140 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  contributor-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.25.12"
+      - name: Scan full Git history for secrets
+        run: go run github.com/zricethezav/gitleaks/v8@v8.30.1 git --no-banner --redact=100 .
+      - name: Reject generated contributor metadata
+        shell: pwsh
+        run: ./tools/check-clean-contributors.ps1
+      - name: Validate UTF-8 text and reject mojibake
+        shell: pwsh
+        run: ./tools/check-text-encoding.ps1
+
+  windows-tests:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.25.12"
+          cache-dependency-path: |
+            app/go.sum
+            launcher/go.sum
+            app/mobile/dropocore/go.sum
+            app/mobile/dropoandroid/go.sum
+      - name: Go tests
+        working-directory: app
+        shell: pwsh
+        run: |
+          $coveragePath = Join-Path $env:RUNNER_TEMP "desktop.coverage"
+          go test "-coverprofile=$coveragePath" ./...
+          if ($LASTEXITCODE -ne 0) { throw "Desktop Go tests failed" }
+          $coverage = go tool cover "-func=$coveragePath" | Select-Object -Last 1
+          if ($coverage -notmatch '([0-9]+(?:\.[0-9]+)?)%$' -or [double]$Matches[1] -lt 30) {
+            throw "Desktop Go coverage fell below 30%: $coverage"
+          }
+          go vet ./...
+          go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
+      - name: Launcher and Android Go bridge tests
+        shell: pwsh
+        run: |
+          Push-Location launcher
+          $coveragePath = Join-Path $env:RUNNER_TEMP "launcher.coverage"
+          go test "-coverprofile=$coveragePath" ./...
+          if ($LASTEXITCODE -ne 0) { throw "Launcher Go tests failed" }
+          $coverage = go tool cover "-func=$coveragePath" | Select-Object -Last 1
+          if ($coverage -notmatch '([0-9]+(?:\.[0-9]+)?)%$' -or [double]$Matches[1] -lt 15) {
+            throw "Launcher coverage fell below 15%: $coverage"
+          }
+          go vet ./...
+          Pop-Location
+          Push-Location app/mobile/dropocore
+          $coveragePath = Join-Path $env:RUNNER_TEMP "dropocore.coverage"
+          go test "-coverprofile=$coveragePath" ./...
+          if ($LASTEXITCODE -ne 0) { throw "Android core Go tests failed" }
+          $coverage = go tool cover "-func=$coveragePath" | Select-Object -Last 1
+          if ($coverage -notmatch '([0-9]+(?:\.[0-9]+)?)%$' -or [double]$Matches[1] -lt 45) {
+            throw "Android core coverage fell below 45%: $coverage"
+          }
+          go vet ./...
+          Pop-Location
+          Push-Location app/mobile/dropoandroid
+          go test ./...
+          go vet ./...
+          Pop-Location
+
+  flutter-tests:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          flutter-version: "3.44.4"
+          channel: stable
+          cache: true
+      - name: Flutter analysis and tests
+        working-directory: flutter_app
+        run: |
+          flutter pub get
+          flutter analyze
+          flutter test
+
+  go-race:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.25.12"
+          cache-dependency-path: app/go.sum
+      - name: Install Linux tray build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libayatana-appindicator3-dev
+      - name: Go race detector
+        working-directory: app
+        run: go test -race ./...
+
+  platform-compile:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            out: dropo-linux-test
+          - goos: darwin
+            goarch: arm64
+            out: dropo-darwin-test
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.25.12"
+          cache-dependency-path: app/go.sum
+      - name: Compile tests for ${{ matrix.goos }}/${{ matrix.goarch }}
+        working-directory: app
+        shell: pwsh
+        run: |
+          $env:GOOS = "${{ matrix.goos }}"
+          $env:GOARCH = "${{ matrix.goarch }}"
+          $out = Join-Path $env:RUNNER_TEMP "${{ matrix.out }}"
+          go test -c -o $out ./...
