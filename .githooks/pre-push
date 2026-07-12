@@ -1,0 +1,22 @@
+#!/bin/sh
+set -eu
+
+if command -v pwsh >/dev/null 2>&1; then
+  powershell_command='pwsh'
+elif command -v powershell.exe >/dev/null 2>&1; then
+  powershell_command='powershell.exe'
+else
+  echo "error: PowerShell is required to validate contributor metadata before push." >&2
+  exit 1
+fi
+
+zero='0000000000000000000000000000000000000000'
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [ "$local_sha" = "$zero" ] && continue
+
+  commit_sha=$(git rev-parse "$local_sha^{commit}" 2>/dev/null || true)
+  [ -z "$commit_sha" ] && continue
+
+  "$powershell_command" -NoProfile -File tools/check-clean-contributors.ps1 -RevisionRange "$commit_sha"
+done

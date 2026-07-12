@@ -1,0 +1,21 @@
+#!/bin/sh
+set -eu
+
+message_file="$1"
+expected_identity='Droponevedimka <34841931+Droponevedimka@users.noreply.github.com>'
+
+author_identity=$(git var GIT_AUTHOR_IDENT | sed -E 's/ [0-9]+ [+-][0-9]{4}$//')
+committer_identity=$(git var GIT_COMMITTER_IDENT | sed -E 's/ [0-9]+ [+-][0-9]{4}$//')
+
+if [ "$author_identity" != "$expected_identity" ] || [ "$committer_identity" != "$expected_identity" ]; then
+  echo "error: commit author and committer must both be $expected_identity" >&2
+  echo "author:    $author_identity" >&2
+  echo "committer: $committer_identity" >&2
+  exit 1
+fi
+
+if grep -Eiq '^[[:space:]]*(co-authored-by|authored-by|committed-by|generated-by|assisted-by|ai-generated-by|reviewed-by|acked-by|signed-off-by|tested-by|suggested-by|claude-session):' "$message_file"; then
+  echo "error: contributor and AI attribution trailers are not allowed in this repository." >&2
+  echo "Remove the attribution trailer and commit again." >&2
+  exit 1
+fi

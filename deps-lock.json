@@ -1,0 +1,14 @@
+{
+    "platform":  "windows",
+    "arch":  "x64",
+    "depsVersion":  "a7a94dcf3c7e",
+    "tag":  "v2.2.0",
+    "asset":  "dropo-Windows-Dependencies-x64.zip",
+    "sha256":  "7efaa1b1d6d973f1d82a18bfcfda2f17ff7857ee12c6d55597414f8c8e8def52",
+    "size":  68575183,
+    "requiredFiles":  [
+                          "sing-box.exe",
+                          "winws.exe",
+                          "WinDivert.dll"
+                      ]
+}

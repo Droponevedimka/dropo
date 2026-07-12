@@ -1,0 +1,107 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <application
+        android:label="dropo"
+        android:name="${applicationName}"
+        android:icon="@mipmap/ic_launcher"
+        android:allowBackup="false"
+        android:fullBackupContent="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:enableOnBackInvokedCallback="true">
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:taskAffinity=""
+            android:theme="@style/LaunchTheme"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+            android:hardwareAccelerated="true"
+            android:windowSoftInputMode="adjustResize">
+            <!-- Specifies an Android theme to apply to this Activity as soon as
+                 the Android process has started. This theme is visible to the user
+                 while the Flutter UI initializes. After that, this theme continues
+                 to determine the Window background behind the Flutter UI. -->
+            <meta-data
+              android:name="io.flutter.embedding.android.NormalTheme"
+              android:resource="@style/NormalTheme"
+              />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity>
+        <!-- Don't delete the meta-data below.
+             This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
+        <meta-data
+            android:name="flutterEmbedding"
+            android:value="2" />
+        <service
+            android:name=".DropoVpnService"
+            android:permission="android.permission.BIND_VPN_SERVICE"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="User-initiated VpnService tunnel for secure routing." />
+            <intent-filter>
+                <action android:name="android.net.VpnService" />
+            </intent-filter>
+        </service>
+        <receiver
+            android:name=".DropoDeviceAdminReceiver"
+            android:permission="android.permission.BIND_DEVICE_ADMIN"
+            android:exported="true">
+            <meta-data
+                android:name="android.app.device_admin"
+                android:resource="@xml/dropo_device_admin" />
+            <intent-filter>
+                <action android:name="android.app.action.DEVICE_ADMIN_ENABLED" />
+            </intent-filter>
+        </receiver>
+    </application>
+    <!-- Required to query activities that can process text, see:
+         https://developer.android.com/training/package-visibility and
+         https://developer.android.com/reference/android/content/Intent#ACTION_PROCESS_TEXT.
+
+         In particular, this is used by the Flutter engine in io.flutter.plugin.text.ProcessTextPlugin. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.PROCESS_TEXT"/>
+            <data android:mimeType="text/plain"/>
+        </intent>
+        <package android:name="ru.oneme.app" />
+        <package android:name="ru.rostel" />
+        <package android:name="ru.sberbankmobile" />
+        <package android:name="ru.sberbankmobile_new" />
+        <package android:name="com.idamob.tinkoff.android" />
+        <package android:name="ru.vtb24.mobilebanking.android" />
+        <package android:name="ru.alfabank.mobile.android" />
+        <package android:name="ru.ozon.app.android" />
+        <package android:name="com.wildberries.ru" />
+        <package android:name="com.avito.android" />
+        <package android:name="com.vkontakte.android" />
+        <package android:name="ru.ok.android" />
+        <package android:name="ru.vk.store" />
+        <package android:name="ru.rutube.app" />
+        <package android:name="ru.yandex.yandexmaps" />
+        <package android:name="com.yandex.browser" />
+        <package android:name="ru.yandex.music" />
+        <package android:name="ru.kinopoisk" />
+        <package android:name="ru.dublgis.dgismobile" />
+        <package android:name="ru.mts.mymts" />
+        <package android:name="ru.sbermegamarket" />
+        <package android:name="ru.samokat.android" />
+        <package android:name="com.android.vending" />
+        <!-- Needed by sing-box owner lookup so IP-only Discord voice UDP follows
+             the Discord service route instead of falling through to direct. -->
+        <package android:name="com.discord" />
+        <!-- Telegram also uses IP-only endpoints outside the configured DC ranges. -->
+        <package android:name="org.telegram.messenger" />
+        <package android:name="org.telegram.messenger.web" />
+    </queries>
+</manifest>

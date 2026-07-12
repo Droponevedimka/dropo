@@ -1,0 +1,85 @@
+name: Create Release Record
+
+# GitHub Actions only creates the immutable tag and the information page.
+# Verified Windows/Android artifacts are uploaded from the owner's local machine
+# with tools/publish-release-assets.ps1; no signing keys are stored in Actions.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "version.json"
+      - ".github/workflows/release.yml"
+      - ".github/release-notes-template.md"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  release-record:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Reject generated contributor metadata
+        shell: pwsh
+        run: .\tools\check-clean-contributors.ps1
+
+      - name: Read version and check existing release
+        id: version
+        shell: pwsh
+        run: |
+          $version = (Get-Content version.json -Raw | ConvertFrom-Json).version
+          $tag = "v$version"
+          "version=$version" | Out-File $env:GITHUB_OUTPUT -Append
+          "tag=$tag" | Out-File $env:GITHUB_OUTPUT -Append
+          $PSNativeCommandUseErrorActionPreference = $false
+          gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "Release $tag already exists; leaving it immutable."
+            "exists=true" | Out-File $env:GITHUB_OUTPUT -Append
+          } elseif ($LASTEXITCODE -eq 1) {
+            "exists=false" | Out-File $env:GITHUB_OUTPUT -Append
+            $global:LASTEXITCODE = 0
+          } else {
+            throw "gh release view failed with exit code $LASTEXITCODE"
+          }
+
+      - name: Prepare release information
+        if: steps.version.outputs.exists == 'false'
+        shell: pwsh
+        run: |
+          $tag = "${{ steps.version.outputs.tag }}"
+          $repo = "${{ github.repository }}"
+          $lock = Get-Content deps-lock.json -Raw | ConvertFrom-Json
+          $depsTag = [string]$lock.tag
+          $depsAsset = [string]$lock.asset
+          if (-not $depsTag -or -not $depsAsset) {
+            throw "deps-lock.json is incomplete"
+          }
+          $strictUtf8 = [System.Text.UTF8Encoding]::new($false, $true)
+          $templatePath = (Resolve-Path ".github/release-notes-template.md").Path
+          $notes = [IO.File]::ReadAllText($templatePath, $strictUtf8)
+          $notes = $notes.Replace("{{TAG}}", $tag)
+          $notes = $notes.Replace("{{REPOSITORY}}", $repo)
+          $notes = $notes.Replace("{{DEPENDENCIES_TAG}}", $depsTag)
+          $notes = $notes.Replace("{{DEPENDENCIES_ASSET}}", $depsAsset)
+          if ($notes -match '\?{3,}' -or $notes -notmatch '[А-Яа-яЁё]') {
+            throw "Release notes failed the UTF-8/Cyrillic integrity check."
+          }
+          [IO.File]::WriteAllText("release-notes.md", $notes, [System.Text.UTF8Encoding]::new($false))
+
+      - name: Create release record
+        if: steps.version.outputs.exists == 'false'
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: dropo ${{ steps.version.outputs.tag }}
+          body_path: release-notes.md

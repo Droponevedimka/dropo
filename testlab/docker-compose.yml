@@ -1,0 +1,36 @@
+# Local DPI-censor lab. The censor emulates the ISP/TSPU blocking from the
+# merged client fingerprints; the tester routes through it and verifies the
+# blocking. Run your Windows dropo VM behind the censor for full validation.
+#
+#   python tools/build_profile.py        # generate profiles/censor-profile.json
+#   docker compose up --build censor     # start the censor (gateway 172.31.66.2)
+#   docker compose run --rm tester       # self-check the censor
+#
+services:
+  censor:
+    build: ./censor
+    cap_add: ["NET_ADMIN"]
+    sysctls:
+      - net.ipv4.ip_forward=1
+    volumes:
+      - ./profiles:/profile:ro
+    networks:
+      lab:
+        ipv4_address: 172.31.66.2
+
+  tester:
+    build: ./tester
+    cap_add: ["NET_ADMIN"]
+    depends_on: [censor]
+    environment:
+      - CENSOR_IP=172.31.66.2
+    networks:
+      lab:
+        ipv4_address: 172.31.66.3
+
+networks:
+  lab:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.31.66.0/24

@@ -1,0 +1,35 @@
+{
+    "version":  "2.2.2",
+    "name":  "dropo",
+    "productName":  "dropo",
+    "description":  "dropo VPN client with sing-box, WireGuard, and smart routing",
+    "author":  "Droponevedimka",
+    "license":  "MIT",
+    "homepage":  "https://k-ampus.dev",
+    "repository":  "https://github.com/Droponevedimka/dropo",
+    "dependenciesReleaseAsset":  "dropo-Windows-Dependencies-x64.zip",
+    "singbox":  {
+                    "version":  "1.13.14",
+                    "minVersion":  "1.12.0"
+                },
+    "wireguard":  {
+                      "version":  "0.5.3",
+                      "wintunVersion":  "0.14.1"
+                  },
+    "byedpi":  {
+                   "version":  "0.17.3"
+               },
+    "zapret":  {
+                   "version":  "72.12"
+               },
+    "tgwsproxy":  {
+                      "version":  "1.7.3"
+                  },
+    "xray":  {
+                 "version":  "26.3.27"
+             },
+    "build":  {
+                  "appId":  "in.droponevedimka.dropo",
+                  "copyright":  "Copyright © 2026 dropo"
+              }
+}

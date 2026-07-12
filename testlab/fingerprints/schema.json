@@ -1,0 +1,30 @@
+{
+  "title": "dropo DPI fingerprint",
+  "description": "Produced by the in-app 'Снять отпечаток блокировки' button (App.CaptureDPIFingerprint). One file per client/ISP. Merged into the censor profile by tools/build_profile.py.",
+  "type": "object",
+  "required": ["schema", "services"],
+  "properties": {
+    "schema": { "const": 1 },
+    "capturedAt": { "type": "string", "description": "RFC3339 UTC" },
+    "app": { "type": "string" },
+    "appVersion": { "type": "string" },
+    "country": { "type": "string", "description": "ISO country, best-effort" },
+    "services": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["tag", "verdict"],
+        "properties": {
+          "tag": { "type": "string" },
+          "name": { "type": "string" },
+          "host": { "type": "string" },
+          "dns": { "enum": ["ok", "poisoned", "nxdomain", "error"] },
+          "tcp": { "enum": ["ok", "timeout", "refused", "error"] },
+          "tls": { "enum": ["ok", "rst", "drop", "error"] },
+          "verdict": { "enum": ["ok", "dns-poison", "ip-block", "tls-rst", "tls-drop", "unknown"] },
+          "detail": { "type": "string" }
+        }
+      }
+    }
+  }
+}
