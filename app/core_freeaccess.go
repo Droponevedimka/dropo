@@ -420,7 +420,7 @@ const (
 
 	ByeDPIProcessName   = "ciadpi.exe"
 	ByeDPIOutboundTag   = "byedpi"
-	ZapretProcessName   = "winws.exe"
+	ZapretProcessName   = "winws2.exe"
 	RuProxyOutboundTag  = "ru-proxy"
 	SmartBypassGroupTag = "smart-bypass"
 	VpnOrDirectGroupTag = "vpn-or-direct"
@@ -434,7 +434,7 @@ const (
 	byeDPIRestartBackoff      = 5 * time.Second
 	byeDPIStartupWait         = 8 * time.Second
 	freeProxyStartupWait      = 8 * time.Second
-	// transparentStartupWait gives winws + WinDivert time to actually attach its
+	// transparentStartupWait gives winws2 + WinDivert time to actually attach its
 	// packet filter and start desyncing before we probe through it. 800ms was
 	// too short: probes ran before the filter was effective, reported false
 	// failures, and triggered needless strategy churn. QUIC in particular needs
@@ -469,266 +469,10 @@ var DefaultByeDPIStrategies = []ByeDPIStrategy{
 	},
 }
 
-// DefaultZapretTransparentStrategies are derived from the Flowseal
-// zapret-discord-youtube bundle (https://github.com/Flowseal/zapret-discord-youtube),
-// which is what clients run successfully standalone. The winning technique is
-// multisplit + --dpi-desync-split-seqovl with a fake TLS ClientHello pattern;
-// our previous fake/multidisorder profiles did not reproduce it and scored 0.
-// Every strategy here is self-contained on the www_google_com payloads we
-// already bundle, so each one is guaranteed to start. The global reselection
-// probes all of them on the client network and locks whichever scores best —
-// mirroring Flowseal's own "try each general(.ALT*) until one works" workflow.
-var DefaultZapretTransparentStrategies = []TransparentFreeAccessStrategy{
-	{
-		// Flowseal "general (ALT2)": uniform multisplit seqovl=652 pos=2. Uses
-		// only google payloads, so it is the safest primary default.
-		Tag:         "flowseal-general-alt2",
-		Label:       "Flowseal general ALT2",
-		ExeName:     ZapretProcessName,
-		ManualScope: true,
-		RequiredFiles: []string{
-			"quic_initial_www_google_com.bin",
-			"quic_initial_dbankcloud_ru.bin",
-			"tls_clienthello_www_google_com.bin",
-			"discord-ip-discovery-without-port.bin",
-			"stun.bin",
-			"windivert_part.discord_media.txt",
-			"windivert_part.stun.txt",
-		},
-		Args: []string{
-			"--wf-tcp=80,443,2048,2053,2083,2087,2096,8443",
-			"--wf-udp=443,19294-19344,50000-50100",
-			"--wf-raw-part=@${BIN}windivert_part.discord_media.txt",
-			"--wf-raw-part=@${BIN}windivert_part.stun.txt",
-			"--filter-udp=443",
-			"--hostlist=${HOSTLIST}",
-			"--dpi-desync=fake",
-			"--dpi-desync-repeats=6",
-			"--dpi-desync-fake-quic=${BIN}quic_initial_www_google_com.bin",
-			"--new",
-			"--filter-udp=19294-19344,50000-50100",
-			"--filter-l7=discord,stun",
-			"--dpi-desync=fake",
-			"--dpi-desync-fake-discord=${BIN}quic_initial_dbankcloud_ru.bin",
-			"--dpi-desync-fake-stun=${BIN}quic_initial_dbankcloud_ru.bin",
-			"--dpi-desync-repeats=6",
-			"--new",
-			"--filter-tcp=2048,2053,2083,2087,2096,8443",
-			"--hostlist-domains=discord.media",
-			"--dpi-desync=multisplit",
-			"--dpi-desync-split-seqovl=652",
-			"--dpi-desync-split-pos=2",
-			"--dpi-desync-split-seqovl-pattern=${BIN}tls_clienthello_www_google_com.bin",
-			"--new",
-			"--filter-tcp=80,443",
-			"--hostlist=${HOSTLIST}",
-			"--dpi-desync=multisplit",
-			"--dpi-desync-split-seqovl=652",
-			"--dpi-desync-split-pos=2",
-			"--dpi-desync-split-seqovl-pattern=${BIN}tls_clienthello_www_google_com.bin",
-			"--new",
-			"--filter-udp=443",
-			"--ipset=${IPSET}",
-			"--dpi-desync=fake",
-			"--dpi-desync-repeats=6",
-			"--dpi-desync-fake-quic=${BIN}quic_initial_www_google_com.bin",
-			"--new",
-			"--filter-tcp=80,443,8443",
-			"--ipset=${IPSET}",
-			"--dpi-desync=multisplit",
-			"--dpi-desync-split-seqovl=652",
-			"--dpi-desync-split-pos=2",
-			"--dpi-desync-split-seqovl-pattern=${BIN}tls_clienthello_www_google_com.bin",
-		},
-		Platforms: []string{"windows"},
-	},
-	{
-		// Flowseal "general": multisplit seqovl=568 pos=1.
-		Tag:         "flowseal-general",
-		Label:       "Flowseal general",
-		ExeName:     ZapretProcessName,
-		ManualScope: true,
-		RequiredFiles: []string{
-			"quic_initial_www_google_com.bin",
-			"quic_initial_dbankcloud_ru.bin",
-			"tls_clienthello_www_google_com.bin",
-			"discord-ip-discovery-without-port.bin",
-			"stun.bin",
-			"windivert_part.discord_media.txt",
-			"windivert_part.stun.txt",
-		},
-		Args: []string{
-			"--wf-tcp=80,443,2048,2053,2083,2087,2096,8443",
-			"--wf-udp=443,19294-19344,50000-50100",
-			"--wf-raw-part=@${BIN}windivert_part.discord_media.txt",
-			"--wf-raw-part=@${BIN}windivert_part.stun.txt",
-			"--filter-udp=443",
-			"--hostlist=${HOSTLIST}",
-			"--dpi-desync=fake",
-			"--dpi-desync-repeats=6",
-			"--dpi-desync-fake-quic=${BIN}quic_initial_www_google_com.bin",
-			"--new",
-			"--filter-udp=19294-19344,50000-50100",
-			"--filter-l7=discord,stun",
-			"--dpi-desync=fake",
-			"--dpi-desync-fake-discord=${BIN}quic_initial_dbankcloud_ru.bin",
-			"--dpi-desync-fake-stun=${BIN}quic_initial_dbankcloud_ru.bin",
-			"--dpi-desync-repeats=6",
-			"--new",
-			"--filter-tcp=2048,2053,2083,2087,2096,8443",
-			"--hostlist-domains=discord.media",
-			"--dpi-desync=multisplit",
-			"--dpi-desync-split-seqovl=681",
-			"--dpi-desync-split-pos=1",
-			"--dpi-desync-split-seqovl-pattern=${BIN}tls_clienthello_www_google_com.bin",
-			"--new",
-			"--filter-tcp=80,443",
-			"--hostlist=${HOSTLIST}",
-			"--dpi-desync=multisplit",
-			"--dpi-desync-split-seqovl=568",
-			"--dpi-desync-split-pos=1",
-			"--dpi-desync-split-seqovl-pattern=${BIN}tls_clienthello_www_google_com.bin",
-			"--new",
-			"--filter-udp=443",
-			"--ipset=${IPSET}",
-			"--dpi-desync=fake",
-			"--dpi-desync-repeats=6",
-			"--dpi-desync-fake-quic=${BIN}quic_initial_www_google_com.bin",
-			"--new",
-			"--filter-tcp=80,443,8443",
-			"--ipset=${IPSET}",
-			"--dpi-desync=multisplit",
-			"--dpi-desync-split-seqovl=568",
-			"--dpi-desync-split-pos=1",
-			"--dpi-desync-split-seqovl-pattern=${BIN}tls_clienthello_www_google_com.bin",
-		},
-		Platforms: []string{"windows"},
-	},
-	{
-		// Flowseal "general (ALT)": fake,fakedsplit with ts fooling for the
-		// TLS profile — a genuinely different evasion from multisplit.
-		Tag:         "flowseal-general-alt",
-		Label:       "Flowseal general ALT",
-		ExeName:     ZapretProcessName,
-		ManualScope: true,
-		RequiredFiles: []string{
-			"quic_initial_www_google_com.bin",
-			"quic_initial_dbankcloud_ru.bin",
-			"tls_clienthello_www_google_com.bin",
-			"discord-ip-discovery-without-port.bin",
-			"stun.bin",
-			"windivert_part.discord_media.txt",
-			"windivert_part.stun.txt",
-		},
-		Args: []string{
-			"--wf-tcp=80,443,2048,2053,2083,2087,2096,8443",
-			"--wf-udp=443,19294-19344,50000-50100",
-			"--wf-raw-part=@${BIN}windivert_part.discord_media.txt",
-			"--wf-raw-part=@${BIN}windivert_part.stun.txt",
-			"--filter-udp=443",
-			"--hostlist=${HOSTLIST}",
-			"--dpi-desync=fake",
-			"--dpi-desync-repeats=6",
-			"--dpi-desync-fake-quic=${BIN}quic_initial_www_google_com.bin",
-			"--new",
-			"--filter-udp=19294-19344,50000-50100",
-			"--filter-l7=discord,stun",
-			"--dpi-desync=fake",
-			"--dpi-desync-fake-discord=${BIN}quic_initial_dbankcloud_ru.bin",
-			"--dpi-desync-fake-stun=${BIN}quic_initial_dbankcloud_ru.bin",
-			"--dpi-desync-repeats=6",
-			"--new",
-			"--filter-tcp=80,443",
-			"--hostlist=${HOSTLIST}",
-			"--dpi-desync=fake,fakedsplit",
-			"--dpi-desync-repeats=6",
-			"--dpi-desync-fooling=ts",
-			"--dpi-desync-fakedsplit-pattern=0x00",
-			"--dpi-desync-fake-tls=${BIN}tls_clienthello_www_google_com.bin",
-			"--new",
-			"--filter-udp=443",
-			"--ipset=${IPSET}",
-			"--dpi-desync=fake",
-			"--dpi-desync-repeats=6",
-			"--dpi-desync-fake-quic=${BIN}quic_initial_www_google_com.bin",
-			"--new",
-			"--filter-tcp=80,443,8443",
-			"--ipset=${IPSET}",
-			"--dpi-desync=fake,fakedsplit",
-			"--dpi-desync-repeats=6",
-			"--dpi-desync-fooling=ts",
-			"--dpi-desync-fakedsplit-pattern=0x00",
-			"--dpi-desync-fake-tls=${BIN}tls_clienthello_www_google_com.bin",
-		},
-		Platforms: []string{"windows"},
-	},
-	{
-		// Flowseal-style multidisorder fallback: another distinct split method
-		// in case a provider rejects multisplit/fakedsplit.
-		Tag:         "flowseal-multidisorder",
-		Label:       "Flowseal multidisorder",
-		ExeName:     ZapretProcessName,
-		ManualScope: true,
-		RequiredFiles: []string{
-			"quic_initial_www_google_com.bin",
-			"quic_initial_dbankcloud_ru.bin",
-			"tls_clienthello_www_google_com.bin",
-			"discord-ip-discovery-without-port.bin",
-			"stun.bin",
-			"windivert_part.discord_media.txt",
-			"windivert_part.stun.txt",
-		},
-		Args: []string{
-			"--wf-tcp=80,443,2048,2053,2083,2087,2096,8443",
-			"--wf-udp=443,19294-19344,50000-50100",
-			"--wf-raw-part=@${BIN}windivert_part.discord_media.txt",
-			"--wf-raw-part=@${BIN}windivert_part.stun.txt",
-			"--filter-udp=443",
-			"--hostlist=${HOSTLIST}",
-			"--dpi-desync=fake",
-			"--dpi-desync-repeats=6",
-			"--dpi-desync-fake-quic=${BIN}quic_initial_www_google_com.bin",
-			"--new",
-			"--filter-udp=19294-19344,50000-50100",
-			"--filter-l7=discord,stun",
-			"--dpi-desync=fake",
-			"--dpi-desync-fake-discord=${BIN}quic_initial_dbankcloud_ru.bin",
-			"--dpi-desync-fake-stun=${BIN}quic_initial_dbankcloud_ru.bin",
-			"--dpi-desync-repeats=6",
-			"--new",
-			"--filter-tcp=2048,2053,2083,2087,2096,8443",
-			"--hostlist-domains=discord.media",
-			"--dpi-desync=fake,multidisorder",
-			"--dpi-desync-split-pos=1,midsld",
-			"--dpi-desync-repeats=6",
-			"--dpi-desync-fooling=badseq",
-			"--dpi-desync-fake-tls=${BIN}tls_clienthello_www_google_com.bin",
-			"--new",
-			"--filter-tcp=80,443",
-			"--hostlist=${HOSTLIST}",
-			"--dpi-desync=fake,multidisorder",
-			"--dpi-desync-split-pos=1,midsld",
-			"--dpi-desync-repeats=6",
-			"--dpi-desync-fooling=badseq",
-			"--dpi-desync-fake-tls=${BIN}tls_clienthello_www_google_com.bin",
-			"--new",
-			"--filter-udp=443",
-			"--ipset=${IPSET}",
-			"--dpi-desync=fake",
-			"--dpi-desync-repeats=6",
-			"--dpi-desync-fake-quic=${BIN}quic_initial_www_google_com.bin",
-			"--new",
-			"--filter-tcp=80,443",
-			"--ipset=${IPSET}",
-			"--dpi-desync=fake,multidisorder",
-			"--dpi-desync-split-pos=1,midsld",
-			"--dpi-desync-repeats=6",
-			"--dpi-desync-fooling=badseq",
-			"--dpi-desync-fake-tls=${BIN}tls_clienthello_www_google_com.bin",
-		},
-		Platforms: []string{"windows"},
-	},
-}
+// DefaultZapretTransparentStrategies uses zapret2's Lua strategy API and
+// outbound-only WinDivert filters. Tags stay stable so existing client
+// selections migrate without resetting user preferences.
+var DefaultZapretTransparentStrategies = defaultZapret2TransparentStrategies()
 
 func FreeAccessServiceTags() []string {
 	tags := make([]string, len(DefaultFreeAccessServices))
@@ -812,7 +556,11 @@ func FreeAccessServiceMethod(settings GlobalAppSettings, serviceTag string) stri
 	if settings.FreeAccessMethods == nil {
 		return FreeAccessMethodAuto
 	}
-	return NormalizeFreeAccessServiceMethod(settings.FreeAccessMethods[serviceTag])
+	method := NormalizeFreeAccessServiceMethod(settings.FreeAccessMethods[serviceTag])
+	if runtime.GOOS == "windows" && (IsFreeAccessProxyMethod(method) || IsFreeAccessTransparentMethod(method)) {
+		return FreeAccessMethodAuto
+	}
+	return method
 }
 
 func IsFreeAccessProxyMethod(tag string) bool {
@@ -838,6 +586,9 @@ func FreeAccessServiceMethodOptions() []map[string]string {
 		{"value": FreeAccessMethodAuto, "label": "Автоматически"},
 		{"value": FreeAccessMethodDirect, "label": "Direct"},
 		{"value": FreeAccessMethodVPN, "label": "VPN подписка"},
+	}
+	if runtime.GOOS == "windows" {
+		return options
 	}
 	for _, strategy := range DefaultByeDPIStrategies {
 		options = append(options, map[string]string{"value": strategy.Tag, "label": strategy.Label})
@@ -878,6 +629,36 @@ func FreeAccessServiceCandidateTags(service FreeAccessService, hasVPNProxy bool,
 
 func FreeAccessServiceCandidateTagsForSettings(service FreeAccessService, settings GlobalAppSettings, hasVPNProxy bool) []string {
 	method := FreeAccessServiceMethod(settings, service.Tag)
+	if runtime.GOOS == "windows" {
+		// Windows has one automatic path: direct traffic passes through the
+		// service-specific profile in the composed winws2 process. VPN is its
+		// only fallback; legacy ByeDPI/global-zapret choices migrate to auto.
+		switch method {
+		case FreeAccessMethodDirect:
+			return []string{"direct"}
+		case FreeAccessMethodVPN:
+			if hasVPNProxy {
+				return []string{"auto-select"}
+			}
+			return nil
+		}
+		if service.RequiresVPN {
+			if hasVPNProxy {
+				return []string{"auto-select"}
+			}
+			return nil
+		}
+		if !FreeMethodsAllowed(settings) || !serviceHasFreeBypass(service.Tag) {
+			if hasVPNProxy {
+				return []string{"auto-select"}
+			}
+			return nil
+		}
+		if hasVPNProxy {
+			return []string{"direct", "auto-select"}
+		}
+		return []string{"direct"}
+	}
 	switch method {
 	case FreeAccessMethodDirect:
 		return []string{"direct"}

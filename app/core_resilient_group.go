@@ -37,6 +37,21 @@ func BuildResilientGroupWithURL(tag string, candidates []string, testURL string)
 	}
 }
 
+// BuildServiceRouteGroup is intentionally a selector, not urltest. Windows
+// Unified owns service health in the per-service strategy state machine and
+// switches this group between direct (through winws2) and the VPN fallback.
+func BuildServiceRouteGroup(tag string, candidates []string) map[string]interface{} {
+	if len(candidates) == 0 {
+		candidates = []string{NoRouteOutboundTag}
+	}
+	return map[string]interface{}{
+		"type":      "selector",
+		"tag":       tag,
+		"outbounds": candidates,
+		"default":   candidates[0],
+	}
+}
+
 func buildAutoSelectOutbound(proxyTags []string) map[string]interface{} {
 	if len(proxyTags) == 1 {
 		return map[string]interface{}{

@@ -212,12 +212,16 @@ func (a *App) Start() map[string]interface{} {
 		a.writeLog(fmt.Sprintf("[FreeAccess] failed to filter active free-access outbounds: %v", err))
 	}
 	a.updateBusy(busyID, "Применяем сохранённые стратегии бесплатного доступа...")
-	if changed, err := a.applyStoredFreeAccessStrategiesToConfig(configPath, activeFreeAccessTags); err != nil {
-		a.writeLog(fmt.Sprintf("[FreeAccess] failed to apply stored strategies: %v", err))
-	} else if changed {
-		a.writeLog("[FreeAccess] stored/default strategies applied before start")
+	if runtime.GOOS == "windows" {
+		a.writeLog("[FreeAccess] legacy global strategy store skipped: Windows Unified uses service_strategy_cache.json")
 	} else {
-		a.writeLog("[FreeAccess] stored/default strategies did not require config changes")
+		if changed, err := a.applyStoredFreeAccessStrategiesToConfig(configPath, activeFreeAccessTags); err != nil {
+			a.writeLog(fmt.Sprintf("[FreeAccess] failed to apply stored strategies: %v", err))
+		} else if changed {
+			a.writeLog("[FreeAccess] stored/default strategies applied before start")
+		} else {
+			a.writeLog("[FreeAccess] stored/default strategies did not require config changes")
+		}
 	}
 	a.updateBusy(busyID, "Сравниваем бесплатные методы с VPN/VLESS подпиской...")
 	cacheApplied, cacheFresh := false, false
@@ -276,104 +280,7 @@ func (a *App) Start() map[string]interface{} {
 	}
 	a.logActiveConfigDiagnostics(configPath)
 
-	if useDeepWindows, reason := a.shouldUseDeepWindowsPrimary(configPath, networkMode); useDeepWindows {
-		a.writeLog(fmt.Sprintf("[NetworkMode] Deep Windows primary mode: %s", reason))
-		deepPlan := a.buildDeepWindowsRoutePlan(configPath)
-		a.logDeepWindowsRoutePlan(deepPlan)
-		a.updateBusy(busyID, "Starting Deep Windows transparent engine...")
-		if err := a.ensureDefaultZapretForDeepWindowsStart(deepPlan, busyID); err != nil {
-			a.hasError.Store(true)
-			UpdateTrayIcon("error")
-			a.writeLog(fmt.Sprintf("[NetworkMode] Deep Windows startup failed: %v", err))
-			return map[string]interface{}{
-				"success": false,
-				"error":   err.Error(),
-			}
-		}
-		if a.zapret != nil {
-			activeTransparent := a.zapret.ActiveTag()
-			if activeTransparent == "" {
-				activeTransparent = "not selected"
-			}
-			a.writeLog(fmt.Sprintf("[NetworkMode] Deep Windows transparent method ready: %s", activeTransparent))
-			a.zapret.logWinDivertStatus("transparent-only ready")
-			a.writeLog("[NetworkMode] Deep Windows packet debug is disabled by default; set DROPO_ZAPRET_PACKET_DEBUG=1 only for short local diagnostics")
-		}
-
-		proxyFallbackStarted := false
-		var proxyFallbackErr error
-		if deepPlan.RequiresSingBoxProxy {
-			a.updateBusy(busyID, "Запускаем VPN fallback как локальный proxy без TUN...")
-			a.writeLog(fmt.Sprintf("[NetworkMode] Deep Windows route plan requires local sing-box proxy: %s", strings.Join(deepPlan.ProxyReasons, "; ")))
-			if singboxPath == "" || !fileExists(singboxPath) {
-				proxyFallbackErr = fmt.Errorf("sing-box is not available")
-				a.writeLog(fmt.Sprintf("[NetworkMode] proxy fallback skipped: %v", proxyFallbackErr))
-			} else if err := a.startXrayBridge(); err != nil {
-				proxyFallbackErr = fmt.Errorf("failed to start Xray bridge: %w", err)
-				a.writeLog(fmt.Sprintf("[NetworkMode] proxy fallback skipped: %v", proxyFallbackErr))
-			} else if proxyConfigPath, err := a.writeDeepWindowsProxyFallbackConfig(configPath); err != nil {
-				proxyFallbackErr = fmt.Errorf("failed to write proxy-only config: %w", err)
-				a.writeLog(fmt.Sprintf("[NetworkMode] proxy fallback skipped: %v", proxyFallbackErr))
-			} else if err := a.startSingBoxProxyFallback(proxyConfigPath, logLevel); err != nil {
-				proxyFallbackErr = fmt.Errorf("failed to start sing-box proxy-only mode: %w", err)
-				a.writeLog(fmt.Sprintf("[NetworkMode] proxy fallback skipped: %v", proxyFallbackErr))
-				a.stopXrayBridge()
-			} else {
-				proxyFallbackStarted = true
-			}
-		}
-		if deepPlan.RequiresSingBoxProxy && !proxyFallbackStarted {
-			message := "Deep Windows requires local VPN proxy endpoint, but it did not start"
-			if proxyFallbackErr != nil {
-				message = fmt.Sprintf("%s: %v", message, proxyFallbackErr)
-			}
-			a.mu.Lock()
-			a.hasError.Store(true)
-			a.mu.Unlock()
-			UpdateTrayIcon("error")
-			a.writeLog(fmt.Sprintf("[NetworkMode] Deep Windows startup failed: %s", message))
-			return map[string]interface{}{
-				"success": false,
-				"error":   message,
-			}
-		}
-
-		a.mu.Lock()
-		if !proxyFallbackStarted {
-			a.cmd = nil
-			a.cmdDone = nil
-		}
-		a.isRunning = true
-		a.hasError.Store(false)
-		a.stoppedManually = false
-		a.mu.Unlock()
-		UpdateTrayIcon("connected")
-		a.setRestoreVPNOnStartup(true)
-		if proxyFallbackStarted {
-			a.writeLog("VPN started successfully in Deep Windows mode with local proxy endpoint")
-			a.AddToLogBuffer("VPN запущен: Deep Windows + proxy endpoint")
-		} else {
-			a.writeLog("VPN started successfully in Deep Windows mode")
-			a.AddToLogBuffer("VPN запущен: Deep Windows")
-		}
-
-		if a.nativeWG != nil && a.nativeWG.IsInstalled() {
-			a.updateBusy(busyID, "Запускаем рабочие WireGuard-сети...")
-			a.startNativeWireGuardTunnels()
-		}
-		if a.trafficStats != nil {
-			a.trafficStats.StartSession()
-			a.startTrafficStatsPolling()
-		}
-
-		startupSucceeded = true
-		return map[string]interface{}{
-			"success": true,
-			"running": true,
-		}
-	} else {
-		a.writeLog(fmt.Sprintf("[NetworkMode] sing-box/TUN path required: %s", reason))
-	}
+	a.writeLog("[NetworkMode] Windows Unified startup: sing-box TUN + one composed winws2 engine")
 
 	a.updateBusy(busyID, "Проверяем sing-box...")
 	if singboxPath == "" || !fileExists(singboxPath) {
@@ -381,7 +288,7 @@ func (a *App) Start() map[string]interface{} {
 		UpdateTrayIcon("error")
 		return map[string]interface{}{
 			"success": false,
-			"error":   "sing-box не найден. Он нужен для подписок/VPN fallback или Compatibility TUN.",
+			"error":   "sing-box не найден. Он обязателен для единого режима Windows Unified.",
 		}
 	}
 
@@ -445,6 +352,10 @@ func (a *App) Start() map[string]interface{} {
 	a.setRestoreVPNOnStartup(true)
 	a.writeLog("VPN started successfully")
 	a.AddToLogBuffer("VPN запущен")
+	// Drain logs while the first-run strategy search is using sing-box. Waiting
+	// until after the search can fill child-process pipes and stall the runtime.
+	go a.logOutput(stdout, "sing-box/out")
+	go a.logOutput(stderr, "sing-box/log")
 
 	// Start Native WireGuard tunnels (internal/corporate VPNs)
 	if a.nativeWG != nil && a.nativeWG.IsInstalled() {
@@ -458,18 +369,28 @@ func (a *App) Start() map[string]interface{} {
 		a.startTrafficStatsPolling()
 	}
 
-	// Hybrid: run the winws desync engine ALONGSIDE sing-box TUN. sing-box
-	// routes per-service (urltest direct↔VPN, everything else direct); winws
-	// desyncs the 'direct' path so blocked desync-solvable services work for
-	// free and only the rest fall to the VPN. winws.exe traffic is process-routed
-	// to direct in the config, so it does not loop through the TUN.
-	if err := a.startComposedTransparentEngine(); err != nil {
-		a.writeLog(fmt.Sprintf("[NetworkMode] hybrid winws engine failed to start: %v", err))
+	// Windows Unified: sing-box owns TUN routing and one composed winws2 owns
+	// every per-service zapret2 profile. Uncached services are tested in ranked
+	// order and stop at the first successful strategy.
+	a.updateBusy(busyID, "Подбираем стратегии для заблокированных сервисов...")
+	if err := a.startComposedTransparentEngine(busyID); err != nil {
+		a.writeLog(fmt.Sprintf("[NetworkMode] Windows Unified winws2 engine failed to start: %v", err))
+		terminateProcessTree(cmd)
+		_ = cmd.Wait()
+		a.mu.Lock()
+		if a.cmd == cmd {
+			a.cmd = nil
+			a.cmdDone = nil
+			a.isRunning = false
+		}
+		a.hasError.Store(true)
+		a.mu.Unlock()
+		UpdateTrayIcon("error")
+		return map[string]interface{}{
+			"success": false,
+			"error":   fmt.Sprintf("Windows Unified: не удалось запустить подбор стратегий winws2: %v", err),
+		}
 	}
-
-	// Log output in goroutines
-	go a.logOutput(stdout, "sing-box/out")
-	go a.logOutput(stderr, "sing-box/log")
 
 	// Monitor process in goroutine
 	go func(cmd *exec.Cmd, done chan error) {
@@ -1285,8 +1206,8 @@ func (a *App) filterActiveFreeAccessOutbounds(configPath string, activeFreeAcces
 func (a *App) emptyBypassGroupFallbackOutbound() string {
 	if a != nil {
 		status := a.currentNetworkModeStatus()
-		if status.Active == NetworkModeDeepWindows {
-			a.writeLog("[FreeAccess] empty bypass group fallback: direct via Deep Windows transparent engine")
+		if status.Active == NetworkModeWindowsUnified {
+			a.writeLog("[FreeAccess] empty bypass group fallback: direct via Windows Unified winws2 engine")
 			return "direct"
 		}
 	}
@@ -1513,29 +1434,6 @@ func (a *App) stopXrayBridge() {
 	a.xrayBridge.Stop()
 }
 
-func (a *App) ensureDefaultZapretForDeepWindowsStart(plan DeepWindowsRoutePlan, busyID string) error {
-	if a == nil || a.zapret == nil || a.storage == nil {
-		return nil
-	}
-	settings := a.storage.GetAppSettings()
-	if !FreeMethodsAllowed(settings) {
-		a.writeLog("[NetworkMode] Deep Windows transparent engine skipped: free methods are disabled")
-		return nil
-	}
-	if len(plan.TransparentServices) == 0 {
-		return nil
-	}
-
-	// Compose a single winws engine from per-service profiles: each service
-	// keeps its own best method (cached, or found by the first-run search),
-	// because no single desync technique unblocks every service.
-	if err := a.startDeepWindowsPerServiceEngine(busyID); err != nil {
-		a.logDeepWindowsError(fmt.Sprintf("per-service engine failed to start: %v", err))
-		return fmt.Errorf("failed to start per-service transparent engine: %w", err)
-	}
-	return nil
-}
-
 // startFreeAccess starts the ByeDPI process if the "Free access" feature is
 // enabled in settings and the bundled binary is available. Best-effort: a
 // failure here does not block VPN startup, it just means the "smart-bypass"
@@ -1562,6 +1460,11 @@ func (a *App) startFreeAccess(activeConfig map[string]interface{}) []string {
 	activeTags := []string{}
 	if a.zapret != nil {
 		a.zapret.Stop()
+	}
+	if runtime.GOOS == "windows" {
+		a.writeLog("[FreeAccess] Windows Unified uses the composed winws2 engine; legacy ByeDPI proxy strategies are disabled")
+		a.startTelegramProxyIfNeeded(activeConfig)
+		return activeTags
 	}
 	if a.freeProxySidecarsCapturedByActiveNetwork(activeConfig) {
 		a.writeLog("[FreeAccess] ByeDPI proxy helpers skipped: Windows TUN auto_route captures helper process traffic; transparent methods/VPN will be used")

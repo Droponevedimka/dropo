@@ -52,25 +52,19 @@ func (a *App) startRouteStrategyMaintenanceListener() {
 			}
 			if serviceTag != "" {
 				if running {
-					// Per-service retune: the composed winws engine lets each
+					// Per-service retune: the composed winws2 engine lets each
 					// service keep its own method, so a failing service is
 					// retuned on its own ladder (cache → next working → VPN /
 					// direct) without disturbing the others. The dequeue above
 					// already enforced one search per service per session.
-					if a.deepWindowsTransparentOnlyActive() && a.zapret != nil && a.zapret.ActiveTag() == composedStrategyTag {
+					if a.zapret != nil && a.zapret.ActiveTag() == composedStrategyTag {
 						if err := a.retunePerServiceStrategy(serviceTag, serviceReason); err != nil {
 							a.writeLog(fmt.Sprintf("[FreeAccess] per-service retune failed (%s): %v", serviceReason, err))
 						}
 						a.sleepRouteStrategyMaintenancePause()
 						continue
 					}
-					result, err := a.runActiveServiceStrategyMaintenance(serviceTag, serviceReason)
-					if err != nil {
-						a.writeLog(fmt.Sprintf("[FreeAccess] service strategy maintenance failed (%s): %v", serviceReason, err))
-					} else if result != nil && result.Success {
-						a.writeLog(fmt.Sprintf("[FreeAccess] service strategy maintenance selected %s for %s (%d ms)",
-							result.MethodLabel, result.Name, result.LatencyMS))
-					}
+					a.writeLog(fmt.Sprintf("[FreeAccess] per-service retune deferred (%s): composed winws2 is not active; temporary fallback will be retried after TTL or a network change", serviceReason))
 					// Unhurried: pace consecutive searches so the single
 					// transparent engine is never thrashed by a burst of jobs.
 					a.sleepRouteStrategyMaintenancePause()

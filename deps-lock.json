@@ -1,14 +1,16 @@
 {
     "platform":  "windows",
     "arch":  "x64",
-    "depsVersion":  "a7a94dcf3c7e",
-    "tag":  "v2.2.0",
+    "depsVersion":  "8efda10134fe",
+    "tag":  "v2.1.55",
     "asset":  "dropo-Windows-Dependencies-x64.zip",
-    "sha256":  "7efaa1b1d6d973f1d82a18bfcfda2f17ff7857ee12c6d55597414f8c8e8def52",
-    "size":  68575183,
+    "sha256":  "37e7894e09d1a98e46450255031358d4321d8aa7e8527b08bacfcac6e6462b66",
+    "size":  68812032,
     "requiredFiles":  [
                           "sing-box.exe",
-                          "winws.exe",
-                          "WinDivert.dll"
+                          "winws2.exe",
+                          "WinDivert.dll",
+                          "zapret-lib.lua",
+                          "zapret-antidpi.lua"
                       ]
 }

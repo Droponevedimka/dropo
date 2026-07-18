@@ -12,7 +12,7 @@ var errEngineNotImplemented = errors.New("interception engine is not implemented
 // providing one adapter file rather than scattering runtime.GOOS branches.
 //
 // Per-OS adapters:
-//   - Windows: winws + WinDivert, implemented by *TransparentBypassManager.
+//   - Windows: winws2 + WinDivert, implemented by *TransparentBypassManager.
 //   - Linux:   nfqws/NFQUEUE (scaffold in core_interception_engine_linux.go).
 //   - macOS:   NetworkExtension/TUN (scaffold in core_interception_engine_darwin.go).
 //   - other:   unsupported (core_interception_engine_other.go).

@@ -1,7 +1,7 @@
 package main
 
 // Dependency bootstrap. The portable app ships WITHOUT the heavy bin/ (sing-box,
-// winws+WinDivert, wireguard, xray, tg-ws-proxy, filters). Those live in a
+// winws2+WinDivert+Lua, wireguard, xray, tg-ws-proxy, filters). Those live in a
 // separate release asset `dependencies-<depsVersion>.zip` and are downloaded
 // once on first run (or when depsVersion changes), verified by sha256, and
 // extracted into bin/. A `dependencies.json` manifest next to dropo.exe declares

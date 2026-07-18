@@ -7,7 +7,7 @@ import (
 
 func TestWriteLogFeedsUILogBuffer(t *testing.T) {
 	app := &App{logBuffer: make([]string, 0, MaxLogBufferSize)}
-	app.writeLog("[Zapret] WinDivert status after start: STATE RUNNING")
+	app.writeLog("[Zapret2] WinDivert status after start: STATE RUNNING")
 
 	result := app.GetLogs(10)
 	logs, ok := result["logs"].([]string)

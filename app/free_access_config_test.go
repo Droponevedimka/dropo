@@ -222,11 +222,11 @@ func TestFilterActiveFreeAccessOutboundsRemovesInactiveStrategies(t *testing.T) 
 		t.Fatalf("%s candidates = %v, want active byedpi plus auto-select", SmartBypassGroupTag, smartCandidates)
 	}
 	telegramCandidates := getOutboundCandidates(filtered, ServiceBypassGroupTag("telegram"))
-	if len(telegramCandidates) != 1 || telegramCandidates[0] != NoRouteOutboundTag {
-		t.Fatalf("%s candidates = %v, want no-route fallback when no strategy is active", ServiceBypassGroupTag("telegram"), telegramCandidates)
+	if len(telegramCandidates) != 1 || telegramCandidates[0] != "direct" {
+		t.Fatalf("%s candidates = %v, want Windows Unified direct fallback when legacy strategies are inactive", ServiceBypassGroupTag("telegram"), telegramCandidates)
 	}
-	if !containsOutbound(filtered, NoRouteOutboundTag) {
-		t.Fatalf("filtered config does not contain %q outbound", NoRouteOutboundTag)
+	if containsOutbound(filtered, NoRouteOutboundTag) {
+		t.Fatalf("Windows Unified direct fallback must not add obsolete %q outbound", NoRouteOutboundTag)
 	}
 	if got := interfaceStringSlice([]string{"byedpi", "auto-select"}); !sameStringSet(got, []string{"byedpi", "auto-select"}) {
 		t.Fatalf("interfaceStringSlice([]string) = %v", got)
@@ -293,7 +293,7 @@ func TestFilterActiveFreeAccessOutboundsUsesDirectWhenDeepWindowsAvailable(t *te
 	if err := os.MkdirAll(binPath, 0755); err != nil {
 		t.Fatalf("create bin dir failed: %v", err)
 	}
-	for _, name := range []string{
+	for _, name := range append([]string{
 		ZapretProcessName,
 		"WinDivert.dll",
 		"WinDivert64.sys",
@@ -305,7 +305,7 @@ func TestFilterActiveFreeAccessOutboundsUsesDirectWhenDeepWindowsAvailable(t *te
 		"stun.bin",
 		"windivert_part.discord_media.txt",
 		"windivert_part.stun.txt",
-	} {
+	}, zapret2RequiredFiles...) {
 		if err := os.WriteFile(filepath.Join(binPath, name), []byte("test"), 0644); err != nil {
 			t.Fatalf("write %s failed: %v", name, err)
 		}
@@ -614,7 +614,7 @@ func TestApplyRouteProbeSelectionsPreservesFallbacksForTransparentMethods(t *tes
 	}
 
 	// Hybrid: a VPN fallback exists, so transparent services become a urltest of
-	// [direct (winws desync), VPN] — direct wins when desync works, VPN when not.
+	// [direct (winws2 desync), VPN] — direct wins when desync works, VPN when not.
 	telegramCandidates := getOutboundCandidates(config, ServiceBypassGroupTag("telegram"))
 	if len(telegramCandidates) != 2 || telegramCandidates[0] != "direct" || telegramCandidates[1] != "auto-select" {
 		t.Fatalf("%s candidates = %v, want direct with VPN fallback only", ServiceBypassGroupTag("telegram"), telegramCandidates)
@@ -630,7 +630,7 @@ func TestApplyRouteProbeSelectionsPreservesFallbacksForTransparentMethods(t *tes
 		t.Fatalf("%s url = %v, want the service health URL preserved", ServiceBypassGroupTag("telegram"), telegramGroup["url"])
 	}
 
-	// smart-bypass (generic blocked catch-all not covered by per-service winws)
+	// smart-bypass (generic blocked catch-all not covered by per-service winws2)
 	// keeps its built free-proxy + VPN form when a VPN fallback exists, rather
 	// than being pinned to transparent-direct.
 	smartCandidates := getOutboundCandidates(config, SmartBypassGroupTag)
@@ -741,7 +741,7 @@ func TestApplyCachedRouteProbeSkipsUnavailableTransparentMethod(t *testing.T) {
 	report := &routeProbeReport{
 		DurationMS: 50,
 		Services: []routeProbeServiceResult{
-			{Tag: "telegram", Name: "Telegram", Success: true, MethodTag: "zapret-winws-desync", MethodKind: "transparent", MethodLabel: "Zapret winws desync", LatencyMS: 20},
+			{Tag: "telegram", Name: "Telegram", Success: true, MethodTag: "zapret-winws-desync", MethodKind: "transparent", MethodLabel: "zapret2 winws2 desync", LatencyMS: 20},
 		},
 	}
 	if err := app.saveRouteProbeCache(report); err != nil {
@@ -795,7 +795,7 @@ func TestStoredFreeAccessDefaultsToZapretWithoutByeDPIFallback(t *testing.T) {
 	if err := os.MkdirAll(binPath, 0755); err != nil {
 		t.Fatalf("create bin failed: %v", err)
 	}
-	for _, name := range []string{
+	for _, name := range append([]string{
 		ZapretProcessName,
 		"WinDivert.dll",
 		"WinDivert64.sys",
@@ -807,7 +807,7 @@ func TestStoredFreeAccessDefaultsToZapretWithoutByeDPIFallback(t *testing.T) {
 		"stun.bin",
 		"windivert_part.discord_media.txt",
 		"windivert_part.stun.txt",
-	} {
+	}, zapret2RequiredFiles...) {
 		if err := os.WriteFile(filepath.Join(binPath, name), []byte("sidecar"), 0644); err != nil {
 			t.Fatalf("write %s failed: %v", name, err)
 		}
@@ -956,7 +956,7 @@ func TestStoredVPNStrategyDoesNotOverrideAvailableFreeMethod(t *testing.T) {
 	if err := os.MkdirAll(binPath, 0755); err != nil {
 		t.Fatalf("create bin failed: %v", err)
 	}
-	for _, name := range []string{
+	for _, name := range append([]string{
 		ZapretProcessName,
 		"WinDivert.dll",
 		"WinDivert64.sys",
@@ -968,7 +968,7 @@ func TestStoredVPNStrategyDoesNotOverrideAvailableFreeMethod(t *testing.T) {
 		"stun.bin",
 		"windivert_part.discord_media.txt",
 		"windivert_part.stun.txt",
-	} {
+	}, zapret2RequiredFiles...) {
 		if err := os.WriteFile(filepath.Join(binPath, name), []byte("sidecar"), 0644); err != nil {
 			t.Fatalf("write %s failed: %v", name, err)
 		}
@@ -1245,15 +1245,15 @@ func TestZapretHostlistContainsOnlyFreeAccessServices(t *testing.T) {
 func TestTransparentScopeArgsAreAppliedToEveryFilterProfile(t *testing.T) {
 	args := applyTransparentScopeArgs(
 		[]string{
-			"--wf-tcp=80,443",
+			"--wf-tcp-out=80,443",
 			"--filter-tcp=80",
-			"--dpi-desync=fake",
+			"--lua-desync=fake",
 			"--new",
 			"--filter-tcp=443",
-			"--dpi-desync=fake,multidisorder",
+			"--lua-desync=multidisorder",
 			"--new",
 			"--filter-udp=443",
-			"--dpi-desync=fake",
+			"--lua-desync=fake",
 		},
 		[]string{"--hostlist=blocked.txt", "--ipset=blocked-ip.txt"},
 	)
@@ -1281,16 +1281,16 @@ func TestTransparentScopeArgsAreAppliedToEveryFilterProfile(t *testing.T) {
 func TestEnsureTransparentScopeArgsScopesManualProfileGaps(t *testing.T) {
 	args := ensureTransparentScopeArgs(
 		[]string{
-			"--wf-tcp=80,443",
+			"--wf-tcp-out=80,443",
 			"--filter-tcp=80",
-			"--dpi-desync=fake",
+			"--lua-desync=fake",
 			"--new",
 			"--filter-tcp=443",
 			"--hostlist=already-scoped.txt",
-			"--dpi-desync=fake,multidisorder",
+			"--lua-desync=multidisorder",
 			"--new",
 			"--filter-udp=443",
-			"--dpi-desync=fake",
+			"--lua-desync=fake",
 		},
 		[]string{"--hostlist=blocked.txt", "--ipset=blocked-ip.txt"},
 	)
@@ -1362,10 +1362,8 @@ func countString(values []string, want string) int {
 	return count
 }
 
-// The default transparent strategy reproduces the Flowseal zapret-discord-youtube
-// "general (ALT2)" preset (multisplit + split-seqovl), which is what clients run
-// successfully standalone. It must be self-contained on the bundled
-// www_google_com payloads so it is guaranteed to start.
+// The default transparent strategy preserves the Flowseal ALT2 split shape on
+// zapret2's Lua API and declares every bundled module/blob/filter it needs.
 func TestDefaultZapretStrategyMatchesFlowsealPresetShape(t *testing.T) {
 	if len(DefaultZapretTransparentStrategies) == 0 {
 		t.Fatal("expected at least one zapret strategy")
@@ -1377,12 +1375,14 @@ func TestDefaultZapretStrategyMatchesFlowsealPresetShape(t *testing.T) {
 	args := strings.Join(strategy.Args, " ")
 
 	for _, expected := range []string{
-		"--dpi-desync=multisplit",
-		"--dpi-desync-split-seqovl=652",
-		"--dpi-desync-split-seqovl-pattern=${BIN}tls_clienthello_www_google_com.bin",
-		"--dpi-desync-fake-quic=${BIN}quic_initial_www_google_com.bin",
-		"--filter-l7=discord,stun",
-		"--dpi-desync-fake-discord=${BIN}quic_initial_dbankcloud_ru.bin",
+		"--wf-tcp-out=80,443",
+		"--wf-raw-part=@${BIN}windivert_part.quic_initial_ietf.txt",
+		"--lua-init=@${BIN}zapret-lib.lua",
+		"--lua-init=@${BIN}zapret-antidpi.lua",
+		"--blob=google_tls:@${BIN}tls_clienthello_www_google_com.bin",
+		"--payload=tls_client_hello",
+		"--lua-desync=multisplit:pos=2:seqovl=652:seqovl_pattern=google_tls",
+		"--payload=discord_ip_discovery,stun",
 	} {
 		if !strings.Contains(args, expected) {
 			t.Fatalf("default zapret strategy does not contain %q: %s", expected, args)
@@ -1390,15 +1390,16 @@ func TestDefaultZapretStrategyMatchesFlowsealPresetShape(t *testing.T) {
 	}
 
 	// Every strategy must only reference payloads we actually bundle, otherwise
-	// winws fails to start and the reselection silently skips it.
+	// winws2 fails to start and the reselection silently skips it.
 	bundledBins := map[string]bool{
-		"quic_initial_www_google_com.bin":       true,
-		"quic_initial_dbankcloud_ru.bin":        true,
-		"tls_clienthello_www_google_com.bin":    true,
-		"discord-ip-discovery-without-port.bin": true,
-		"stun.bin":                              true,
-		"windivert_part.discord_media.txt":      true,
-		"windivert_part.stun.txt":               true,
+		googleQUICPayload:     true,
+		facebookQUICPayload:   true,
+		googleTLSPayload:      true,
+		zapretLuaLibrary:      true,
+		zapretLuaAntidpi:      true,
+		quicInitialRawFilter:  true,
+		discordMediaRawFilter: true,
+		discordSTUNRawFilter:  true,
 	}
 	for _, s := range DefaultZapretTransparentStrategies {
 		for _, arg := range s.Args {
@@ -1625,12 +1626,12 @@ func TestDeepWindowsDoesNotTreatInactiveTunAsProxySidecarCapture(t *testing.T) {
 	}
 	tags := []string{ByeDPIOutboundTag, "byedpi-sni"}
 
-	if app.freeProxySidecarsCapturedByActiveNetwork(config) {
-		t.Fatal("Deep Windows must ignore inactive TUN inbound when deciding whether sidecars are captured")
+	if !app.freeProxySidecarsCapturedByActiveNetwork(config) {
+		t.Fatal("Windows Unified always uses the active TUN runtime")
 	}
 	filtered, skipped := app.routeProbeFreeProxyTagsForActiveNetwork(config, tags)
-	if skipped || !sameStringSet(filtered, tags) {
-		t.Fatalf("Deep Windows active tags = %v skipped=%v, want original tags", filtered, skipped)
+	if !skipped || len(filtered) != 0 {
+		t.Fatalf("Windows Unified tags = %v skipped=%v, want legacy proxy methods skipped", filtered, skipped)
 	}
 }
 

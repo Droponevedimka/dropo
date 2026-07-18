@@ -631,7 +631,7 @@ func (a *App) transparentBypassRouteSummary(settings GlobalAppSettings, mode Rou
 		"running":       true,
 		"mode":          string(mode),
 		"foreignVpn":    mode == RoutingModeExceptRussia,
-		"networkEngine": "deep_windows_transparent",
+		"networkEngine": "windows_unified",
 		"services":      services,
 		"catchAll":      catchAll,
 	}

@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -97,7 +98,7 @@ func (a *App) runRouteProbeAndApply(configPath string, activeFreeAccessTags []st
 		freeTags = filteredFreeTags
 	}
 	transparentStrategies := []TransparentFreeAccessStrategy{}
-	if FreeMethodsAllowed(settings) && a.zapret != nil {
+	if runtime.GOOS != "windows" && FreeMethodsAllowed(settings) && a.zapret != nil {
 		transparentStrategies = a.zapret.AvailableStrategies()
 	}
 
@@ -553,7 +554,7 @@ func (a *App) newTransparentRouteProbeCandidate(strategy TransparentFreeAccessSt
 
 func (a *App) startTransparentProbe(strategy TransparentFreeAccessStrategy) (func(), error) {
 	if a.zapret == nil {
-		return nil, fmt.Errorf("zapret manager is not initialized")
+		return nil, fmt.Errorf("zapret2 manager is not initialized")
 	}
 	return a.zapret.StartForProbe(strategy)
 }
@@ -711,8 +712,8 @@ func applyRouteProbeSelectionsToConfig(config map[string]interface{}, results []
 				continue
 			}
 			// smart-bypass is the catch-all for blocked domains NOT covered by a
-			// per-service winws profile, so 'direct' would not desync them. If the
-			// aggregate winner is a transparent (winws) method and a VPN fallback
+			// per-service winws2 profile, so 'direct' would not desync them. If the
+			// aggregate winner is a transparent (winws2) method and a VPN fallback
 			// exists, leave the group on its built free-proxy+VPN form instead of
 			// pinning it to transparent-direct. A VPN/proxy winner is applied
 			// normally (prefer it).
@@ -768,7 +769,7 @@ func pinTransparentOutboundGroup(outboundMap map[string]interface{}) {
 
 	if len(filtered) > 1 {
 		// Hybrid (VPN subscription present): keep the service on a urltest of
-		// [direct, VPN]. winws desyncs the 'direct' path, so when the desync
+		// [direct, VPN]. winws2 desyncs the 'direct' path, so when the desync
 		// works direct wins the health probe (free); when it can't open the
 		// service, the probe over direct fails and the group auto-falls to the
 		// VPN. The probe keeps the service-specific health URL set by the
@@ -784,7 +785,7 @@ func pinTransparentOutboundGroup(outboundMap map[string]interface{}) {
 		return
 	}
 
-	// No VPN fallback: pin to direct (winws handles it; nothing else to try).
+	// No VPN fallback: pin to direct (winws2 handles it; nothing else to try).
 	outboundMap["type"] = "selector"
 	outboundMap["default"] = "direct"
 	deleteOutboundGroupHealthCheckFields(outboundMap)
@@ -1124,10 +1125,9 @@ func (a *App) applyTransparentRouteProbeSelection(results []routeProbeServiceRes
 	if a.zapret == nil {
 		return
 	}
-	// The per-service composed engine (startDeepWindowsPerServiceEngine in Deep
-	// Windows mode, startComposedTransparentEngine in hybrid TUN mode) is now the
-	// ONLY winws engine. Never start a competing single global strategy here —
-	// that caused a redundant winws start + restart at every connect.
+	// The Windows Unified per-service composed engine is now the
+	// ONLY winws2 engine. Never start a competing single global strategy here —
+	// that caused a redundant winws2 start + restart at every connect.
 }
 
 func (a *App) routeProbeResultsSnapshot() []routeProbeServiceResult {

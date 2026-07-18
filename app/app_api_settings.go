@@ -6,6 +6,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"runtime"
 	"time"
 )
 
@@ -446,13 +447,16 @@ func (a *App) GetFreeAccessConfig() map[string]interface{} {
 	for _, svc := range DefaultFreeAccessServices {
 		selectedMethod := FreeAccessServiceMethod(settings, svc.Tag)
 		effectiveMethod := selectedMethod
+		effectiveMethodLabel := FreeAccessOutboundLabel(selectedMethod)
 		effectiveSource := "manual"
 		if selectedMethod == FreeAccessMethodAuto {
 			effective := a.selectFreeAccessStrategyForService(settings, svc, storedStrategies, serviceFallbackCache, map[string]bool{}, transparentTags, hasVPNProxy)
 			effectiveMethod = effective.MethodTag
+			effectiveMethodLabel = effective.MethodLabel
 			effectiveSource = effective.Source
 			if effectiveMethod == "" {
 				effectiveMethod = FreeAccessMethodAuto
+				effectiveMethodLabel = FreeAccessOutboundLabel(FreeAccessMethodAuto)
 				effectiveSource = "auto"
 			}
 		}
@@ -466,14 +470,14 @@ func (a *App) GetFreeAccessConfig() map[string]interface{} {
 			"selectedMethod":       selectedMethod,
 			"methodLabel":          FreeAccessOutboundLabel(selectedMethod),
 			"effectiveMethod":      effectiveMethod,
-			"effectiveMethodLabel": FreeAccessOutboundLabel(effectiveMethod),
+			"effectiveMethodLabel": effectiveMethodLabel,
 			"effectiveSource":      effectiveSource,
 		})
 	}
 
 	byeDPIInstalled := false
 	byeDPIRunning := false
-	if a.byeDPI != nil {
+	if runtime.GOOS != "windows" && a.byeDPI != nil {
 		byeDPIInstalled = a.byeDPI.IsInstalled()
 		byeDPIRunning = a.byeDPI.IsRunning()
 	}

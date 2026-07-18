@@ -374,6 +374,7 @@ $SingBoxVersion = $VersionInfo.singbox.version
 $WireGuardVersion = $VersionInfo.wireguard.version
 $ByeDPIVersion = $VersionInfo.byedpi.version
 $ZapretVersion = $VersionInfo.zapret.version
+$ZapretArchiveSHA256 = ([string]$VersionInfo.zapret.archiveSha256).ToLowerInvariant()
 $XrayVersion = $VersionInfo.xray.version
 $TgWsProxyVersion = $VersionInfo.tgwsproxy.version
 $BuildTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
@@ -392,7 +393,7 @@ Write-Host "Build:     $BuildHash" -ForegroundColor Gray
 Write-Host "sing-box:  $SingBoxVersion" -ForegroundColor White
 Write-Host "WireGuard: $WireGuardVersion" -ForegroundColor White
 Write-Host "ByeDPI:    $ByeDPIVersion" -ForegroundColor White
-Write-Host "zapret:    $ZapretVersion" -ForegroundColor White
+Write-Host "zapret2:   $ZapretVersion" -ForegroundColor White
 Write-Host "Xray:      $XrayVersion" -ForegroundColor White
 Write-Host ""
 
@@ -405,11 +406,13 @@ $SingBoxDir = Join-Path $DepsDir "sing-box-v$SingBoxVersion"
 $SingBoxExe = Join-Path $SingBoxDir "windows-amd64\sing-box-$SingBoxVersion-windows-amd64\sing-box.exe"
 $XrayDir = Join-Path $DepsDir "xray-v$XrayVersion"
 $XrayExe = Join-Path $XrayDir "xray.exe"
-$ZapretRoot = Join-Path $DepsDir "zapret-v$ZapretVersion\zapret-v$ZapretVersion"
+$ZapretDir = Join-Path $DepsDir "zapret2-v$ZapretVersion"
+$ZapretRoot = Join-Path $ZapretDir "zapret2-v$ZapretVersion"
 $ZapretWinDir = Join-Path $ZapretRoot "binaries\windows-x86_64"
 $ReleasePlatform = "windows"
 $ReleaseArch = "x64"
-$RequiredDepFiles = @("sing-box.exe", "winws.exe", "WinDivert.dll")
+$RequiredDepFiles = @("sing-box.exe", "winws2.exe", "WinDivert.dll", "zapret-lib.lua", "zapret-antidpi.lua")
+$ForbiddenDepFiles = @("winws.exe")
 $WindowsPortableAsset = "dropo-Windows-Portable-x64.zip"
 $WindowsDepsAsset = "dropo-Windows-Dependencies-x64.zip"
 $AndroidReleaseArch = "arm64"
@@ -443,6 +446,40 @@ function Ensure-SingBoxWindowsDependency {
             throw "Downloaded archive did not contain expected file: $SingBoxExe"
         }
         Write-Host "[OK] Downloaded sing-box.exe v$SingBoxVersion" -ForegroundColor Green
+    } finally {
+        Remove-Item -LiteralPath $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Ensure-Zapret2WindowsDependency {
+    $expected = Join-Path $ZapretWinDir "winws2.exe"
+    if (Test-Path $expected) {
+        return
+    }
+    if ($ZapretArchiveSHA256 -notmatch '^[0-9a-f]{64}$') {
+        throw "version.json must pin zapret.archiveSha256 for zapret2 v$ZapretVersion."
+    }
+
+    Write-Host "[ZAPRET2] Downloading zapret2 v$ZapretVersion for Windows..." -ForegroundColor Yellow
+    $archiveUrl = "https://github.com/bol-van/zapret2/releases/download/v$ZapretVersion/zapret2-v$ZapretVersion.zip"
+    $tmpDir = Join-Path $env:TEMP ("dropo-zapret2-" + [Guid]::NewGuid().ToString("N"))
+    $zipPath = Join-Path $tmpDir "zapret2.zip"
+    New-Item -ItemType Directory -Path $tmpDir | Out-Null
+    try {
+        Download-File -Url $archiveUrl -Destination $zipPath
+        $actualHash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($actualHash -ne $ZapretArchiveSHA256) {
+            throw "zapret2 archive hash mismatch: expected $ZapretArchiveSHA256, got $actualHash"
+        }
+        if (Test-Path $ZapretDir) {
+            Remove-Item -LiteralPath $ZapretDir -Recurse -Force
+        }
+        New-Item -ItemType Directory -Path $ZapretDir | Out-Null
+        Expand-Archive -Path $zipPath -DestinationPath $ZapretDir -Force
+        if (-not (Test-Path $expected)) {
+            throw "Downloaded archive did not contain expected file: $expected"
+        }
+        Write-Host "[OK] Downloaded and verified zapret2 v$ZapretVersion" -ForegroundColor Green
     } finally {
         Remove-Item -LiteralPath $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
     }
@@ -626,6 +663,7 @@ function Build-Application {
     # are part of bin/, shipped in the dependencies archive.)
     if (-not $AppOnly) {
         Ensure-SingBoxWindowsDependency
+        Ensure-Zapret2WindowsDependency
         Update-BundledFilters
     }
 
@@ -861,30 +899,38 @@ function Build-Application {
         Write-Host "[WARNING] ciadpi.exe not found at: $ByeDPIExe" -ForegroundColor Yellow
     }
 
-    # Copy zapret/winws transparent DPI-bypass runtime to bin/ folder.
-    $ZapretFiles = @("winws.exe", "cygwin1.dll", "WinDivert.dll", "WinDivert64.sys")
+    # Copy the zapret2/winws2 transparent DPI-bypass runtime to bin/.
+    $ZapretFiles = @("winws2.exe", "cygwin1.dll", "WinDivert.dll", "WinDivert64.sys")
     foreach ($file in $ZapretFiles) {
         $src = Join-Path $ZapretWinDir $file
         $dst = Join-Path $binDir $file
         if (Test-Path $src) {
             Copy-Item $src $dst -Force
-            Write-Host "[OK] Copied bin/$file (zapret v$ZapretVersion)" -ForegroundColor Green
+            Write-Host "[OK] Copied bin/$file (zapret2 v$ZapretVersion)" -ForegroundColor Green
         } else {
             Write-Host "[WARNING] zapret file not found at: $src" -ForegroundColor Yellow
         }
     }
     $ZapretFakeDir = Join-Path $ZapretRoot "files\fake"
-    if (Test-Path $ZapretFakeDir) {
-        $fakeFiles = Get-ChildItem -Path $ZapretFakeDir -File -Filter "*.bin"
-        foreach ($fake in $fakeFiles) {
-            Copy-Item $fake.FullName (Join-Path $binDir $fake.Name) -Force
+    foreach ($fakeFile in @("tls_clienthello_www_google_com.bin", "quic_initial_www_google_com.bin", "quic_initial_facebook_com.bin")) {
+        $src = Join-Path $ZapretFakeDir $fakeFile
+        if (-not (Test-Path $src -PathType Leaf)) {
+            throw "Required zapret2 fake payload not found: $src"
         }
-        Write-Host "[OK] Copied $($fakeFiles.Count) zapret fake payload file(s)" -ForegroundColor Green
-    } else {
-        Write-Host "[WARNING] zapret fake payload folder not found at: $ZapretFakeDir" -ForegroundColor Yellow
+        Copy-Item $src (Join-Path $binDir $fakeFile) -Force
+        Write-Host "[OK] Copied bin/$fakeFile (zapret2 blob)" -ForegroundColor Green
+    }
+    foreach ($luaFile in @("zapret-lib.lua", "zapret-antidpi.lua")) {
+        $src = Join-Path (Join-Path $ZapretRoot "lua") $luaFile
+        if (-not (Test-Path $src -PathType Leaf)) {
+            throw "Required zapret2 Lua module not found: $src"
+        }
+        Copy-Item $src (Join-Path $binDir $luaFile) -Force
+        Write-Host "[OK] Copied bin/$luaFile" -ForegroundColor Green
     }
     $ZapretWinDivertFilterDir = Join-Path $ZapretRoot "init.d\windivert.filter.examples"
     $ZapretWinDivertFilterFiles = @(
+        "windivert_part.quic_initial_ietf.txt",
         "windivert_part.discord_media.txt",
         "windivert_part.stun.txt"
     )
@@ -943,7 +989,7 @@ function Build-Application {
     Copy-LicenseFile (Join-Path $XrayDir "LICENSE") $licensesDir "xray-LICENSE.txt"
     Copy-LicenseFile (Join-Path $WireGuardDir "LICENSE") $licensesDir "wireguard-windows-LICENSE.txt"
     Copy-LicenseFile (Join-Path $ByeDPIDir "LICENSE") $licensesDir "byedpi-LICENSE.txt"
-    Copy-LicenseFile (Join-Path $ZapretRoot "docs\LICENSE.txt") $licensesDir "zapret-LICENSE.txt"
+    Copy-LicenseFile (Join-Path $ZapretRoot "docs\LICENSE.txt") $licensesDir "zapret2-LICENSE.txt"
     # Copy template.json
     $templateSrc = Join-Path $AppDir "config\template.json"
     if (Test-Path $templateSrc) {
@@ -1031,6 +1077,16 @@ function Build-Application {
     # in release/ root. Names carry no version/hash (the container already does).
     $depsZip = Join-Path $VersionDir $DepsAsset
     if (Test-Path $depsZip) { Remove-Item $depsZip -Force }
+    foreach ($requiredFile in $RequiredDepFiles) {
+        if (-not (Test-Path (Join-Path $binDir $requiredFile) -PathType Leaf)) {
+            throw "Dependency staging is missing required zapret2 runtime file: $requiredFile"
+        }
+    }
+    foreach ($forbiddenFile in $ForbiddenDepFiles) {
+        if (Test-Path (Join-Path $binDir $forbiddenFile)) {
+            throw "Obsolete zapret1 runtime must not be packaged: $forbiddenFile"
+        }
+    }
     Compress-Archive -Path "$binDir\*" -DestinationPath $depsZip -CompressionLevel Optimal
     $depsZipSize = (Get-Item $depsZip).Length
     $depsZipSha = (Get-FileHash -Algorithm SHA256 $depsZip).Hash.ToLower()
@@ -1090,6 +1146,37 @@ function Build-Application {
     # json.Unmarshal rejects).
     [System.IO.File]::WriteAllText((Join-Path $RuntimeFolder "dependencies.json"), ($manifest | ConvertTo-Json), (New-Object System.Text.UTF8Encoding($false)))
     Write-Host "[OK] Wrote dependencies.json (depsVersion=$DepsVersion, tag=$depsTag)" -ForegroundColor Green
+
+    # The dependency archive identity is known only after bin/ has been staged
+    # and compressed. Rebuild the core and launcher once with that final lock so
+    # a one-pass full build cannot ship executables pinned to the previous
+    # dependency archive.
+    $finalRequired = $RequiredDepFiles -join ','
+    $finalLdflags = "-X 'main.trustedDepsVersion=$DepsVersion' -X 'main.trustedDepsAsset=$DepsAsset' -X 'main.trustedDepsSHA256=$depsSha' -X 'main.trustedDepsSize=$depsSize' -X 'main.trustedDepsRequired=$finalRequired' -X 'main.Version=$AppVersion' -X 'main.BuildTime=$BuildTime' -X 'main.BuildHash=$BuildHash' -X 'main.SingBoxVersion=$SingBoxVersion' -X 'main.WireGuardVersion=$WireGuardVersion' -s -w -H=windowsgui"
+    Push-Location $AppDir
+    try {
+        & go build -ldflags $finalLdflags -o $coreExe .
+        if ($LASTEXITCODE -ne 0) {
+            throw "Go core rebuild with final dependency lock failed."
+        }
+    } finally {
+        Pop-Location
+    }
+    Invoke-WindowsCodeSigning -Paths @($coreExe)
+    $coreSHA256 = (Get-FileHash -LiteralPath $coreExe -Algorithm SHA256).Hash.ToLowerInvariant()
+
+    Push-Location (Join-Path $ScriptRoot "launcher")
+    try {
+        $launcherLdflags = "-X 'main.expectedCoreSHA256=$coreSHA256' -X 'main.expectedUISHA256=$uiSHA256' -s -w -H=windowsgui"
+        & go build -ldflags $launcherLdflags -o (Join-Path $AppFolder "dropo.exe") .
+        if ($LASTEXITCODE -ne 0) {
+            throw "Launcher rebuild after dependency lock binding failed."
+        }
+    } finally {
+        Pop-Location
+    }
+    Invoke-WindowsCodeSigning -Paths @((Join-Path $AppFolder "dropo.exe"))
+    Write-Host "[OK] Rebuilt core and launcher with final dependency lock" -ForegroundColor Green
 
     # app archive = the dropo/ app folder WITHOUT bin/ (small, ships every release)
     $AppAsset = $WindowsPortableAsset

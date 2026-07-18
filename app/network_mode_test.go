@@ -13,11 +13,11 @@ func TestResolveNetworkModeAutoFallsBackToCompatTun(t *testing.T) {
 
 	status := app.resolveNetworkMode(NetworkModeAuto)
 
-	if status.Requested != NetworkModeAuto {
-		t.Fatalf("requested = %q, want %q", status.Requested, NetworkModeAuto)
+	if status.Requested != NetworkModeWindowsUnified {
+		t.Fatalf("requested = %q, want %q", status.Requested, NetworkModeWindowsUnified)
 	}
-	if status.Active != NetworkModeCompatTun {
-		t.Fatalf("active = %q, want %q", status.Active, NetworkModeCompatTun)
+	if status.Active != NetworkModeWindowsUnified {
+		t.Fatalf("active = %q, want %q", status.Active, NetworkModeWindowsUnified)
 	}
 	if !status.Fallback {
 		t.Fatal("auto mode must report fallback while Deep Windows engine is not shipped")
@@ -25,8 +25,8 @@ func TestResolveNetworkModeAutoFallsBackToCompatTun(t *testing.T) {
 	if status.FallbackReason == "" {
 		t.Fatal("fallback reason must be visible for logs and UI")
 	}
-	if status.Label != networkModeLabel(NetworkModeCompatTun) {
-		t.Fatalf("label = %q, want %q", status.Label, networkModeLabel(NetworkModeCompatTun))
+	if status.Label != networkModeLabel(NetworkModeWindowsUnified) {
+		t.Fatalf("label = %q, want %q", status.Label, networkModeLabel(NetworkModeWindowsUnified))
 	}
 }
 
@@ -35,11 +35,11 @@ func TestResolveNetworkModeExplicitCompatDoesNotWarn(t *testing.T) {
 
 	status := app.resolveNetworkMode(NetworkModeCompatTun)
 
-	if status.Requested != NetworkModeCompatTun || status.Active != NetworkModeCompatTun {
-		t.Fatalf("status = %+v, want compat requested and active", status)
+	if status.Requested != NetworkModeWindowsUnified || status.Active != NetworkModeWindowsUnified {
+		t.Fatalf("status = %+v, want legacy compat migrated to unified", status)
 	}
-	if status.Fallback {
-		t.Fatalf("explicit compat mode must not be treated as fallback: %+v", status)
+	if !status.Fallback {
+		t.Fatalf("missing winws2 payload must be visible in unified mode: %+v", status)
 	}
 }
 
@@ -51,17 +51,17 @@ func TestResolveNetworkModeExplicitCompatIsFallbackOnlyWhenDeepWindowsReady(t *t
 	app := newDeepWindowsReadyApp(t)
 	status := app.resolveNetworkMode(NetworkModeCompatTun)
 
-	if status.Requested != NetworkModeCompatTun {
-		t.Fatalf("requested = %q, want compat request preserved", status.Requested)
+	if status.Requested != NetworkModeWindowsUnified {
+		t.Fatalf("requested = %q, want legacy request migrated", status.Requested)
 	}
-	if status.Active != NetworkModeDeepWindows {
-		t.Fatalf("active = %q, want Deep Windows because compat is fallback-only", status.Active)
+	if status.Active != NetworkModeWindowsUnified {
+		t.Fatalf("active = %q, want Windows Unified", status.Active)
 	}
 	if status.Fallback {
 		t.Fatalf("fallback = true, want false while primary engine is available: %+v", status)
 	}
-	if status.FallbackReason == "" {
-		t.Fatal("status should explain that Compatibility TUN is fallback-only")
+	if status.FallbackReason != "" {
+		t.Fatalf("ready unified runtime must not report fallback reason: %q", status.FallbackReason)
 	}
 }
 
@@ -73,14 +73,14 @@ func TestResolveNetworkModeUsesDeepWindowsWhenWinwsIsBundled(t *testing.T) {
 	app := newDeepWindowsReadyApp(t)
 	status := app.resolveNetworkMode(NetworkModeAuto)
 
-	if status.Active != NetworkModeDeepWindows {
-		t.Fatalf("active = %q, want %q with bundled winws/WinDivert", status.Active, NetworkModeDeepWindows)
+	if status.Active != NetworkModeWindowsUnified {
+		t.Fatalf("active = %q, want %q with bundled winws2/WinDivert", status.Active, NetworkModeWindowsUnified)
 	}
 	if status.Fallback {
-		t.Fatalf("fallback = true, want false with bundled winws/WinDivert: %+v", status)
+		t.Fatalf("fallback = true, want false with bundled winws2/WinDivert: %+v", status)
 	}
 	if !status.DriverReady {
-		t.Fatal("driverReady must be true with bundled winws/WinDivert")
+		t.Fatal("driverReady must be true with bundled winws2/WinDivert")
 	}
 }
 
@@ -102,8 +102,8 @@ func TestResolveNetworkModeRequiresZapretPayloadFiles(t *testing.T) {
 
 	app := &App{basePath: basePath}
 	status := app.resolveNetworkMode(NetworkModeAuto)
-	if status.Active != NetworkModeCompatTun {
-		t.Fatalf("active = %q, want compat fallback without zapret payload files", status.Active)
+	if status.Active != NetworkModeWindowsUnified {
+		t.Fatalf("active = %q, want unified mode even when payload diagnostics fail", status.Active)
 	}
 	if !status.Fallback || status.DriverReady {
 		t.Fatalf("status = %+v, want fallback and driverReady=false without zapret payload files", status)
@@ -117,7 +117,7 @@ func TestNormalizeNetworkMode(t *testing.T) {
 	if got := NormalizeNetworkMode(NetworkMode("bad")); got != DefaultNetworkMode {
 		t.Fatalf("invalid mode normalized to %q, want %q", got, DefaultNetworkMode)
 	}
-	if got := NormalizeNetworkMode(NetworkModeDeepWindows); got != NetworkModeDeepWindows {
+	if got := NormalizeNetworkMode(NetworkModeDeepWindows); got != NetworkModeWindowsUnified {
 		t.Fatalf("deep mode normalized to %q", got)
 	}
 }
@@ -135,8 +135,8 @@ func TestDeepWindowsTransparentOnlySkipsTunWithoutSubscription(t *testing.T) {
 	})
 
 	ok, reason := app.shouldUseDeepWindowsPrimary(configPath, NetworkModeStatus{Active: NetworkModeDeepWindows})
-	if !ok {
-		t.Fatalf("transparent-only = false, want true; reason=%s", reason)
+	if ok || !strings.Contains(reason, "Windows Unified") {
+		t.Fatalf("legacy transparent-only branch must stay disabled; ok=%v reason=%s", ok, reason)
 	}
 }
 
@@ -157,8 +157,8 @@ func TestDeepWindowsFallsBackToTunWithSubscriptionProxyRoutes(t *testing.T) {
 	if ok {
 		t.Fatalf("Deep Windows primary = true, want TUN fallback for subscription proxy routes; reason=%s", reason)
 	}
-	if !strings.Contains(reason, "proxy redirector") || !strings.Contains(reason, "Compatibility TUN") {
-		t.Fatalf("reason = %q, want proxy redirector/TUN explanation", reason)
+	if !strings.Contains(reason, "Windows Unified") || !strings.Contains(reason, "sing-box TUN") {
+		t.Fatalf("reason = %q, want unified TUN explanation", reason)
 	}
 }
 
@@ -215,8 +215,8 @@ func TestDeepWindowsFallsBackToTunForAdvancedRoutingSettings(t *testing.T) {
 			if ok {
 				t.Fatalf("Deep Windows primary = true for %s, want TUN fallback; reason=%s", tc.name, reason)
 			}
-			if !strings.Contains(reason, "proxy redirector") || !strings.Contains(reason, "Compatibility TUN") {
-				t.Fatalf("reason = %q, want proxy redirector/TUN explanation", reason)
+			if !strings.Contains(reason, "Windows Unified") || !strings.Contains(reason, "sing-box TUN") {
+				t.Fatalf("reason = %q, want unified TUN explanation", reason)
 			}
 			plan := app.buildDeepWindowsRoutePlan(configPath)
 			if !plan.RequiresSingBoxProxy {
@@ -370,8 +370,8 @@ func TestDeepWindowsStartFallsBackToTunWhenProxyRedirectorRequired(t *testing.T)
 		t.Fatalf("Start() success = true, want failure when TUN fallback cannot start: %#v", result)
 	}
 	errText, _ := result["error"].(string)
-	if !strings.Contains(errText, "sing-box") || !strings.Contains(errText, "Compatibility TUN") {
-		t.Fatalf("Start() error = %q, want TUN fallback/sing-box error", errText)
+	if !strings.Contains(errText, "sing-box") || !strings.Contains(errText, "Windows Unified") {
+		t.Fatalf("Start() error = %q, want Windows Unified/sing-box error", errText)
 	}
 	if !app.hasError.Load() {
 		t.Fatal("app.hasError = false, want true after failed TUN fallback startup")
@@ -386,7 +386,7 @@ func newDeepWindowsTestApp(t *testing.T, config map[string]interface{}) (*App, s
 	if err := os.MkdirAll(binPath, 0755); err != nil {
 		t.Fatalf("create bin dir failed: %v", err)
 	}
-	for _, name := range []string{
+	for _, name := range append([]string{
 		ZapretProcessName,
 		"WinDivert.dll",
 		"WinDivert64.sys",
@@ -398,7 +398,7 @@ func newDeepWindowsTestApp(t *testing.T, config map[string]interface{}) (*App, s
 		"stun.bin",
 		"windivert_part.discord_media.txt",
 		"windivert_part.stun.txt",
-	} {
+	}, zapret2RequiredFiles...) {
 		if err := os.WriteFile(filepath.Join(binPath, name), []byte("test"), 0644); err != nil {
 			t.Fatalf("write %s failed: %v", name, err)
 		}
@@ -432,7 +432,7 @@ func newDeepWindowsReadyApp(t *testing.T) *App {
 	if err := os.MkdirAll(binPath, 0755); err != nil {
 		t.Fatalf("create bin dir failed: %v", err)
 	}
-	for _, name := range []string{
+	for _, name := range append([]string{
 		ZapretProcessName,
 		"WinDivert.dll",
 		"WinDivert64.sys",
@@ -444,7 +444,7 @@ func newDeepWindowsReadyApp(t *testing.T) *App {
 		"stun.bin",
 		"windivert_part.discord_media.txt",
 		"windivert_part.stun.txt",
-	} {
+	}, zapret2RequiredFiles...) {
 		if err := os.WriteFile(filepath.Join(binPath, name), []byte("test"), 0644); err != nil {
 			t.Fatalf("write %s failed: %v", name, err)
 		}

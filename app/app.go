@@ -420,9 +420,9 @@ func (a *App) initFreeAccess() {
 		a.writeLog("Free access (ByeDPI) binary not found - bundle ciadpi.exe in bin/ to enable")
 	}
 	if a.zapret.IsInstalled() {
-		a.writeLog("Free access (zapret/winws) binary found")
+		a.writeLog("Free access (zapret2/winws2) runtime found")
 	} else {
-		a.writeLog("Free access (zapret/winws) binary not found - transparent methods unavailable")
+		a.writeLog("Free access (zapret2/winws2) runtime not found - transparent methods unavailable")
 	}
 	if a.tgwsproxy.IsInstalled() {
 		a.writeLog("Telegram MTProto proxy (tg-ws-proxy) binary found")

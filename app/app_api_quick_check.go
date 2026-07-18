@@ -22,7 +22,7 @@ const (
 	clientQuickCheckTimeout        = 45 * time.Second
 	clientQuickCheckRequestTimeout = 5 * time.Second
 	clientQuickCheckConcurrency    = 16
-	// One cheap retry filters out single transient resets (winws desync can drop
+	// One cheap retry filters out single transient resets (winws2 desync can drop
 	// the very first packet of a connection) so a service isn't mislabeled as
 	// blocked — and so it doesn't spuriously trigger strategy maintenance.
 	clientQuickCheckRetryDelay   = 300 * time.Millisecond
@@ -252,24 +252,15 @@ func (a *App) ensureTransparentBypassForClientQuickCheck() {
 	if !running {
 		return
 	}
-	status := a.currentNetworkModeStatus()
-	if status.Active != NetworkModeDeepWindows {
-		return
-	}
 	settings := a.storage.GetAppSettings()
 	if !FreeMethodsAllowed(settings) || a.zapret.ActiveTag() != "" {
 		return
 	}
-	tag := defaultZapretStrategyTag(a.availableTransparentStrategyTags())
-	if tag == "" {
-		a.writeLog("[ClientCheck] Deep Windows quick check has no available transparent strategy")
+	if err := a.startComposedTransparentEngine(""); err != nil {
+		a.writeLog(fmt.Sprintf("[ClientCheck] failed to restore Windows Unified per-service engine before service check: %v", err))
 		return
 	}
-	if err := a.zapret.StartSelected(tag); err != nil {
-		a.writeLog(fmt.Sprintf("[ClientCheck] failed to start Deep Windows transparent strategy %s before service check: %v", tag, err))
-		return
-	}
-	a.writeLog(fmt.Sprintf("[ClientCheck] Deep Windows transparent strategy started before service check: %s", FreeAccessOutboundLabel(tag)))
+	a.writeLog("[ClientCheck] Windows Unified per-service engine checked before service test")
 }
 
 func runSingleClientQuickCheck(ctx context.Context, svc clientQuickCheckService, directClient *http.Client, proxyClient *http.Client) clientQuickCheckResult {

@@ -85,6 +85,10 @@ local censor lab used to reproduce these reports lives in `testlab/`.
 
 Manual quick client bundle script, for emergency support only:
 
+Windows diagnostics target only zapret2 `winws2.exe`. Since dropo 2.1.55 the
+old zapret1 `winws.exe` runtime is neither packaged nor started; its presence in
+a portable folder indicates stale files from an older build.
+
 ```powershell
 .\client-quick-check.ps1
 ```
@@ -97,7 +101,7 @@ For blocked-service failures, run the deeper method matrix:
 .\client-quick-check.ps1 -DeepMethodCheck
 ```
 
-This adds `free-method-results.csv` (and the legacy `byedpi-method-results.csv` copy), testing failed blocked URLs through each live ByeDPI SOCKS5 method (`18091..18094`). Transparent zapret/winws is selected by the app route-probe and appears in app logs plus the main route indicator rather than this SOCKS-only matrix.
+This adds `free-method-results.csv` (and the legacy `byedpi-method-results.csv` copy), testing failed blocked URLs through each live ByeDPI SOCKS5 method (`18091..18094`). Transparent zapret2/winws2 is selected by the app route-probe and appears in app logs plus the main route indicator rather than this SOCKS-only matrix.
 
 Dropo now cleans bundled sidecar processes automatically on startup, before VPN
 start, on failed starts, on stop, and on quit. It also scans sibling portable
@@ -111,7 +115,7 @@ cleanup command as an emergency fallback:
 ```
 
 `-CleanupDropoOrphans` kills only managed `sing-box.exe`, `ciadpi.exe`,
-`winws.exe` and `xray.exe` whose executable path is inside the
+`winws2.exe` and `xray.exe` whose executable path is inside the
 detected Dropo app root. It does not target other VPN applications.
 
 ## Практические сценарии

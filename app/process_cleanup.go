@@ -441,7 +441,7 @@ func killWindowsDropoManagedSidecars(paths []string, roots []string) ([]int, err
 	script := fmt.Sprintf(`
 $paths = @(%s)
 $roots = @(%s)
-$names = @('sing-box', 'ciadpi', 'winws', 'xray', 'tg-ws-proxy')
+$names = @('sing-box', 'ciadpi', 'winws2', 'xray', 'tg-ws-proxy')
 function Test-InsidePath($path, $root) {
   if (-not $path -or -not $root) { return $false }
   try {

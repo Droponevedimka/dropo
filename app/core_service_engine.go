@@ -1,10 +1,14 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -18,8 +22,9 @@ func isFreeAccessFallbackTag(tag string) bool {
 
 const (
 	serviceStrategyCacheFileName = "service_strategy_cache.json"
-	serviceStrategyCacheVersion  = 1
+	serviceStrategyCacheVersion  = 2
 	serviceHostlistDirName       = "service-hostlists"
+	serviceStrategyFallbackTTL   = 30 * time.Minute
 )
 
 type serviceStrategyCacheFile struct {
@@ -30,9 +35,49 @@ type serviceStrategyCacheFile struct {
 }
 
 type serviceStrategyCacheEntry struct {
-	MethodTag string    `json:"methodTag"`
-	Source    string    `json:"source"`
-	UpdatedAt time.Time `json:"updatedAt"`
+	MethodTag          string    `json:"methodTag"`
+	State              string    `json:"state"`
+	Source             string    `json:"source"`
+	UpdatedAt          time.Time `json:"updatedAt"`
+	RetryAfter         time.Time `json:"retryAfter,omitempty"`
+	NetworkFingerprint string    `json:"networkFingerprint,omitempty"`
+}
+
+const (
+	serviceStrategyStateWorking  = "working"
+	serviceStrategyStateFallback = "fallback"
+)
+
+// currentNetworkFingerprint invalidates selections when the active network
+// changes. A working DPI strategy is a property of the current network path.
+func currentNetworkFingerprint() string {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return ""
+	}
+	parts := make([]string, 0, len(interfaces))
+	for _, iface := range interfaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		name := strings.ToLower(iface.Name)
+		if strings.Contains(name, "singbox") || strings.Contains(name, "wintun") || strings.Contains(name, "wireguard") || strings.Contains(name, "dropo") {
+			continue
+		}
+		addrs, _ := iface.Addrs()
+		addrParts := make([]string, 0, len(addrs))
+		for _, addr := range addrs {
+			addrParts = append(addrParts, addr.String())
+		}
+		sort.Strings(addrParts)
+		parts = append(parts, iface.Name+"|"+strings.Join(addrParts, ","))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	sort.Strings(parts)
+	sum := sha256.Sum256([]byte(strings.Join(parts, "\n")))
+	return hex.EncodeToString(sum[:8])
 }
 
 func (a *App) serviceStrategyCachePath() string {
@@ -64,13 +109,25 @@ func (a *App) loadServiceStrategyCache() map[string]serviceStrategyCacheEntry {
 	if file.StrategiesVersion != serviceStrategiesVersion() {
 		return out
 	}
+	fingerprint := currentNetworkFingerprint()
+	now := time.Now()
 	for tag, entry := range file.Services {
 		if entry.MethodTag == "" {
 			continue
 		}
-		// Keep VPN/direct fallback decisions so a service that no transparent
-		// method could fix is not re-searched on every launch.
+		if entry.NetworkFingerprint != "" && fingerprint != "" && entry.NetworkFingerprint != fingerprint {
+			continue
+		}
+		// Negative results are short-lived. A temporary outage must not pin a
+		// service to VPN/direct until the next strategy database release.
 		if isFreeAccessFallbackTag(entry.MethodTag) {
+			retryAfter := entry.RetryAfter
+			if retryAfter.IsZero() {
+				retryAfter = entry.UpdatedAt.Add(serviceStrategyFallbackTTL)
+			}
+			if !now.Before(retryAfter) {
+				continue
+			}
 			out[tag] = entry
 			continue
 		}
@@ -99,8 +156,20 @@ func (a *App) cacheServiceMethod(serviceTag, methodTag, source string) {
 		}
 	}
 	file.StrategiesVersion = serviceStrategiesVersion()
-	file.Services[serviceTag] = serviceStrategyCacheEntry{MethodTag: methodTag, Source: source, UpdatedAt: time.Now()}
-	file.UpdatedAt = time.Now()
+	now := time.Now()
+	entry := serviceStrategyCacheEntry{
+		MethodTag:          methodTag,
+		State:              serviceStrategyStateWorking,
+		Source:             source,
+		UpdatedAt:          now,
+		NetworkFingerprint: currentNetworkFingerprint(),
+	}
+	if isFreeAccessFallbackTag(methodTag) {
+		entry.State = serviceStrategyStateFallback
+		entry.RetryAfter = now.Add(serviceStrategyFallbackTTL)
+	}
+	file.Services[serviceTag] = entry
+	file.UpdatedAt = now
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return
 	}
@@ -143,7 +212,15 @@ func (a *App) enabledTransparentServices() []FreeAccessService {
 func (a *App) resolveServiceSelections(dir string, cache map[string]serviceStrategyCacheEntry) (map[string]serviceWinwsSelection, []string) {
 	selections := map[string]serviceWinwsSelection{}
 	needSearch := []string{}
+	settings := GlobalAppSettings{}
+	if a.storage != nil {
+		settings = a.storage.GetAppSettings()
+	}
 	for _, svc := range a.enabledTransparentServices() {
+		methodSetting := FreeAccessServiceMethod(settings, svc.Tag)
+		if methodSetting == FreeAccessMethodVPN || methodSetting == FreeAccessMethodDirect {
+			continue
+		}
 		// Services with no free desync method (IP/protocol-blocked: Meta,
 		// WhatsApp) are never composed into the engine or searched — they rely
 		// on the VPN subscription (or stay direct). This is the "don't even try
@@ -181,7 +258,7 @@ func (a *App) resolveServiceSelections(dir string, cache map[string]serviceStrat
 }
 
 // orderedSelections returns selections in stable service order for deterministic
-// winws composition.
+// winws2 composition.
 func (a *App) orderedSelections(selections map[string]serviceWinwsSelection) []serviceWinwsSelection {
 	ordered := make([]serviceWinwsSelection, 0, len(selections))
 	for _, svc := range DefaultFreeAccessServices {
@@ -194,7 +271,7 @@ func (a *App) orderedSelections(selections map[string]serviceWinwsSelection) []s
 
 func (a *App) composeAndStartServiceEngine(selections map[string]serviceWinwsSelection) error {
 	if a.zapret == nil {
-		return fmt.Errorf("zapret manager is not initialized")
+		return fmt.Errorf("zapret2 manager is not initialized")
 	}
 	if !a.routeStrategyWorkAllowed() {
 		return fmt.Errorf("VPN is stopping")
@@ -202,23 +279,25 @@ func (a *App) composeAndStartServiceEngine(selections map[string]serviceWinwsSel
 	ordered := a.orderedSelections(selections)
 	args := composeServiceWinwsArgs(ordered, a.zapretBinDir())
 	if len(args) == 0 {
-		return fmt.Errorf("no per-service profiles to compose")
+		a.zapret.Stop()
+		a.writeLog("[FreeAccess] composed winws2 stopped: no services currently use a transparent strategy")
+		return nil
 	}
-	// Detailed per-connection winws diagnostics (hostlist matches, desync
+	// Detailed per-connection winws2 diagnostics (hostlist matches, desync
 	// decisions) are very noisy, so prefer a standalone file when possible.
 	if a.winwsDebugEnabled() {
 		if debugPath, err := a.prepareServiceWinwsDebugLog(); err == nil && debugPath != "" {
 			args = append([]string{"--debug=@" + debugPath}, args...)
-			a.writeLog(fmt.Sprintf("[FreeAccess] winws packet debug ENABLED: %s", debugPath))
+			a.writeLog(fmt.Sprintf("[FreeAccess] winws2 packet debug ENABLED: %s", debugPath))
 		} else {
 			args = append([]string{"--debug=1"}, args...)
-			a.writeLog(fmt.Sprintf("[FreeAccess] winws packet debug ENABLED in app log; debug file unavailable: %v", err))
+			a.writeLog(fmt.Sprintf("[FreeAccess] winws2 packet debug ENABLED in app log; debug file unavailable: %v", err))
 		}
 	}
 	return a.zapret.StartComposedStrategy("Per-service bypass", args)
 }
 
-// winwsDebugEnabled turns on verbose winws packet logging. It
+// winwsDebugEnabled turns on verbose winws2 packet logging. It
 // can be enabled by the developer (DROPO_ZAPRET_PACKET_DEBUG=1) or, for a
 // non-technical client, by dropping a file named "winws-debug.txt" next to the
 // app executable.
@@ -247,16 +326,16 @@ func (a *App) prepareServiceWinwsDebugLog() (string, error) {
 		return path, nil
 	}
 	if a.zapret == nil {
-		return "", fmt.Errorf("zapret manager is not initialized")
+		return "", fmt.Errorf("zapret2 manager is not initialized")
 	}
 	return a.zapret.prepareDebugLog("per-service")
 }
 
-// startDeepWindowsPerServiceEngine composes and starts the shared winws engine
+// startWindowsUnifiedServiceEngine composes and starts the shared winws2 engine
 // from the per-service selections (cache or top-ranked) and then, on first run,
 // searches the first working method for any service that has no cached choice.
 // Subsequent starts are instant because every service hits the cache.
-func (a *App) startDeepWindowsPerServiceEngine(busyID string) error {
+func (a *App) startWindowsUnifiedServiceEngine(busyID string) error {
 	if a == nil || a.zapret == nil || a.storage == nil {
 		return nil
 	}
@@ -270,7 +349,9 @@ func (a *App) startDeepWindowsPerServiceEngine(busyID string) error {
 	cache := a.loadServiceStrategyCache()
 	selections, needSearch := a.resolveServiceSelections(dir, cache)
 	if len(selections) == 0 {
-		return fmt.Errorf("no transparent services available to compose")
+		a.zapret.Stop()
+		a.logServiceStrategySummary("all services use a temporary fallback")
+		return nil
 	}
 
 	if err := a.composeAndStartServiceEngine(selections); err != nil {
@@ -280,14 +361,16 @@ func (a *App) startDeepWindowsPerServiceEngine(busyID string) error {
 		len(selections), len(needSearch)))
 	if !a.winwsDebugEnabled() {
 		if marker := a.winwsDebugMarkerPath(); marker != "" {
-			a.writeLog(fmt.Sprintf("[FreeAccess] for detailed winws diagnostics: create empty file %q next to dropo.exe, reconnect, then send %q", marker, filepath.Join(a.basePath, "winws-debug.log")))
+			a.writeLog(fmt.Sprintf("[FreeAccess] for detailed winws2 diagnostics: create empty file %q next to dropo.exe, reconnect, then send %q", marker, filepath.Join(a.basePath, "winws-debug.log")))
 		} else {
-			a.writeLog("[FreeAccess] for detailed winws diagnostics: set DROPO_ZAPRET_PACKET_DEBUG=1 and reconnect")
+			a.writeLog("[FreeAccess] for detailed winws2 diagnostics: set DROPO_ZAPRET_PACKET_DEBUG=1 and reconnect")
 		}
 	}
 
 	if len(needSearch) > 0 {
-		a.firstRunServiceSearch(busyID, selections, needSearch)
+		if err := a.firstRunServiceSearch(busyID, selections, needSearch); err != nil {
+			return err
+		}
 	} else {
 		a.logServiceStrategySummary("loaded from cache")
 	}
@@ -322,31 +405,20 @@ func serviceSearchStatusList(tags []string) string {
 	return strings.Join(names, ", ")
 }
 
-// startComposedTransparentEngine runs the per-service winws desync engine in
-// hybrid (Compatibility TUN + subscription) mode. sing-box owns routing and the
-// bypass groups are urltest [direct, VPN]; winws desyncs the 'direct' path so
-// desync-solvable services ride free and the rest auto-fall to the VPN. It does
-// NOT run the first-run search (that probes via a direct client, which under TUN
-// is ambiguous) — it composes from the cache or top-ranked method and lets the
-// urltest groups pick direct-vs-VPN per service.
-func (a *App) startComposedTransparentEngine() error {
-	if a == nil || a.zapret == nil || !a.zapret.IsInstalled() || a.storage == nil {
-		return nil
+// startComposedTransparentEngine starts the single Windows Unified winws2
+// process. Service selectors force probes through direct, so every uncached
+// service can run the same first-success search while sing-box TUN is active.
+func (a *App) startComposedTransparentEngine(busyID string) error {
+	if a == nil || a.storage == nil {
+		return fmt.Errorf("Windows Unified storage is not initialized")
 	}
 	if !FreeMethodsAllowed(a.storage.GetAppSettings()) {
 		return nil
 	}
-	dir := a.serviceHostlistDir()
-	cache := a.loadServiceStrategyCache()
-	selections, _ := a.resolveServiceSelections(dir, cache)
-	if len(selections) == 0 {
-		return nil
+	if a.zapret == nil || !a.zapret.IsInstalled() {
+		return fmt.Errorf("Windows Unified zapret2/winws2 runtime is not installed")
 	}
-	if err := a.composeAndStartServiceEngine(selections); err != nil {
-		return err
-	}
-	a.writeLog(fmt.Sprintf("[NetworkMode] hybrid: winws desync engine running alongside sing-box TUN for %d service(s)", len(selections)))
-	return nil
+	return a.startWindowsUnifiedServiceEngine(busyID)
 }
 
 // firstRunServiceSearch finds, for each uncached service, the first ranked
@@ -355,7 +427,7 @@ func (a *App) startComposedTransparentEngine() error {
 // parallel. So the whole search costs at most (ladder length) restarts — not
 // (services × methods) — keeping first enable bounded even with many services.
 // Round 0 reuses the already-running top-method engine without a restart.
-func (a *App) firstRunServiceSearch(busyID string, selections map[string]serviceWinwsSelection, needSearch []string) {
+func (a *App) firstRunServiceSearch(busyID string, selections map[string]serviceWinwsSelection, needSearch []string) error {
 	maxRounds := 0
 	for _, tag := range needSearch {
 		if n := len(rankedMethodsForService(tag)); n > maxRounds {
@@ -366,7 +438,7 @@ func (a *App) firstRunServiceSearch(busyID string, selections map[string]service
 	pending := append([]string{}, needSearch...)
 	for round := 0; round < maxRounds && len(pending) > 0; round++ {
 		if !a.routeStrategyWorkAllowed() {
-			return
+			return fmt.Errorf("first-run strategy search interrupted because VPN is stopping")
 		}
 		if busyID != "" {
 			a.updateBusy(busyID, fmt.Sprintf("Ищем рабочий обход блокировки: %s", serviceSearchStatusList(pending)))
@@ -380,7 +452,7 @@ func (a *App) firstRunServiceSearch(busyID string, selections map[string]service
 			}
 			if err := a.composeAndStartServiceEngine(selections); err != nil {
 				a.writeLog(fmt.Sprintf("[FreeAccess] first-run round %d recompose failed: %v", round, err))
-				return
+				return fmt.Errorf("first-run round %d recompose: %w", round, err)
 			}
 		}
 
@@ -397,6 +469,7 @@ func (a *App) firstRunServiceSearch(busyID string, selections map[string]service
 			} else {
 				a.writeLog(fmt.Sprintf("[FreeAccess] %s: no transparent method worked; using VPN/direct fallback", tag))
 				a.applyServiceFreeFallback(tag)
+				delete(selections, tag)
 			}
 		}
 		pending = next
@@ -404,12 +477,14 @@ func (a *App) firstRunServiceSearch(busyID string, selections map[string]service
 
 	// Lock in whatever each service ended on.
 	if !a.routeStrategyWorkAllowed() {
-		return
+		return fmt.Errorf("first-run strategy search interrupted before commit")
 	}
 	if err := a.composeAndStartServiceEngine(selections); err != nil {
 		a.writeLog(fmt.Sprintf("[FreeAccess] failed to re-compose engine after first-run search: %v", err))
+		return fmt.Errorf("commit first-run service selections: %w", err)
 	}
 	a.logServiceStrategySummary("first-run search complete")
+	return nil
 }
 
 // logServiceStrategySummary emits one line listing the chosen method per service
@@ -464,11 +539,25 @@ func (a *App) searchServiceStrategy(serviceTag string, selections map[string]ser
 // running engine (no restart) and returns the set that FAILED.
 func (a *App) probeServicesThroughEngine(serviceTags []string) map[string]bool {
 	failing := map[string]bool{}
+	if a.zapret == nil || a.zapret.ActiveTag() != composedStrategyTag {
+		for _, tag := range serviceTags {
+			failing[tag] = true
+		}
+		return failing
+	}
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	for _, tag := range serviceTags {
 		svc, ok := findFreeAccessService(tag)
 		if !ok || len(svc.ProbeTargets()) == 0 {
+			continue
+		}
+		// The service group is a selector in Windows Unified. Force the direct
+		// egress for this probe so VPN cannot create a false positive for winws2.
+		if !a.switchServiceRoute(tag, "direct") {
+			mu.Lock()
+			failing[tag] = true
+			mu.Unlock()
 			continue
 		}
 		wg.Add(1)
@@ -495,7 +584,7 @@ func (a *App) probeServicesThroughEngine(serviceTags []string) map[string]bool {
 
 // applyServiceFreeFallback routes a service that no transparent method can fix to
 // the VPN subscription when one exists, otherwise leaves it direct. In pure
-// Deep Windows mode without a subscription this means the service stays blocked
+// Windows Unified without a subscription this means the service stays blocked
 // (the honest state), which is surfaced to the user rather than hidden behind
 // endless strategy churn.
 func (a *App) applyServiceFreeFallback(serviceTag string) {
@@ -592,6 +681,7 @@ func (a *App) retunePerServiceStrategy(serviceTag, reason string) error {
 		a.writeLog(fmt.Sprintf("[FreeAccess] %s retuned to %s", serviceTag, method.Label))
 	} else {
 		a.applyServiceFreeFallback(serviceTag)
+		delete(selections, serviceTag)
 	}
 	if !a.routeStrategyWorkAllowed() {
 		return fmt.Errorf("VPN is stopping")

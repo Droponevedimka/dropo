@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -41,10 +42,12 @@ type TransparentBypassManager struct {
 	strategies   []TransparentFreeAccessStrategy
 	logger       func(string)
 
-	mu         sync.Mutex
-	activeTag  string
-	activeCmd  *exec.Cmd
-	activeStop chan struct{}
+	mu          sync.Mutex
+	activeTag   string
+	activeCmd   *exec.Cmd
+	activeStop  chan struct{}
+	activeLabel string
+	activeArgs  []string
 }
 
 func NewTransparentBypassManager(basePath string, strategies []TransparentFreeAccessStrategy, logger func(string)) *TransparentBypassManager {
@@ -59,7 +62,7 @@ func NewTransparentBypassManager(basePath string, strategies []TransparentFreeAc
 
 func (m *TransparentBypassManager) log(message string) {
 	if m.logger != nil {
-		m.logger(fmt.Sprintf("[Zapret] %s", message))
+		m.logger(fmt.Sprintf("[Zapret2] %s", message))
 	}
 }
 
@@ -110,58 +113,9 @@ func (m *TransparentBypassManager) AvailableStrategies() []TransparentFreeAccess
 	return result
 }
 
-func (m *TransparentBypassManager) StartSelected(tag string) error {
-	if tag == "" {
-		m.Stop()
-		return nil
-	}
-
-	var selected TransparentFreeAccessStrategy
-	found := false
-	for _, strategy := range m.AvailableStrategies() {
-		if strategy.Tag == tag {
-			selected = strategy
-			found = true
-			break
-		}
-	}
-	if !found {
-		return fmt.Errorf("transparent method %q is not available", tag)
-	}
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	if m.activeTag == tag && m.activeCmd != nil && m.activeCmd.Process != nil {
-		return nil
-	}
-	m.stopLocked()
-
-	m.logWinDivertStatus("before start")
-	cmd, exitCh, err := m.startStrategyProcess(selected)
-	if err != nil {
-		m.logWinDivertStatus("start failed")
-		return err
-	}
-	if err := waitForTransparentStartup(exitCh); err != nil {
-		terminateProcessTree(cmd)
-		m.logWinDivertStatus("startup failed")
-		return err
-	}
-	m.logWinDivertStatus("after start")
-
-	stopCh := make(chan struct{})
-	m.activeTag = tag
-	m.activeCmd = cmd
-	m.activeStop = stopCh
-	m.log(fmt.Sprintf("%s selected and started (pid=%d)", selected.Label, cmd.Process.Pid))
-	go m.watchPersistentStrategy(selected, cmd, exitCh, stopCh)
-	return nil
-}
-
 const composedStrategyTag = "per-service-composed"
 
-// StartComposedStrategy runs winws with a fully-formed, per-service composed
+// StartComposedStrategy runs winws2 with a fully-formed, per-service composed
 // argument list (see composeServiceWinwsArgs). Unlike StartSelected it does not
 // resolve placeholders or inject a combined hostlist/ipset — the args already
 // carry one --hostlist per service. Passing empty args stops the engine.
@@ -171,19 +125,33 @@ func (m *TransparentBypassManager) StartComposedStrategy(label string, args []st
 		return nil
 	}
 
+	exePath := filepath.Join(m.basePath, "bin", ZapretProcessName)
+	if !fileExists(exePath) {
+		return fmt.Errorf("%s not found: %s", ZapretProcessName, exePath)
+	}
+	// Validate before touching the currently working process.
+	if err := m.validateZapret2Args(exePath, args); err != nil {
+		return fmt.Errorf("%s configuration is invalid: %w", label, err)
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	previousLabel := m.activeLabel
+	previousArgs := append([]string(nil), m.activeArgs...)
+	previousWasComposed := m.activeTag == composedStrategyTag && len(previousArgs) > 0
 
 	// Composed args change as per-service selections change, so always restart.
 	m.stopLocked()
 	m.logWinDivertStatus("before composed start")
-	cmd, exitCh, err := m.startRawProcess(label, args)
+	cmd, exitCh, err := m.startRawProcessValidated(label, args)
 	if err != nil {
+		m.restoreComposedLocked(previousWasComposed, previousLabel, previousArgs)
 		m.logWinDivertStatus("composed start failed")
 		return err
 	}
 	if err := waitForTransparentStartup(exitCh); err != nil {
 		terminateProcessTree(cmd)
+		m.restoreComposedLocked(previousWasComposed, previousLabel, previousArgs)
 		m.logWinDivertStatus("composed startup failed")
 		return err
 	}
@@ -193,9 +161,35 @@ func (m *TransparentBypassManager) StartComposedStrategy(label string, args []st
 	m.activeTag = composedStrategyTag
 	m.activeCmd = cmd
 	m.activeStop = stopCh
+	m.activeLabel = label
+	m.activeArgs = append([]string(nil), args...)
 	m.log(fmt.Sprintf("%s selected and started (pid=%d)", label, cmd.Process.Pid))
 	go m.watchPersistentStrategy(TransparentFreeAccessStrategy{Tag: composedStrategyTag, Label: label}, cmd, exitCh, stopCh)
 	return nil
+}
+
+func (m *TransparentBypassManager) restoreComposedLocked(restore bool, label string, args []string) {
+	if !restore || len(args) == 0 {
+		return
+	}
+	cmd, exitCh, err := m.startRawProcessValidated(label, args)
+	if err != nil {
+		m.log(fmt.Sprintf("failed to restore previous composed strategy: %v", err))
+		return
+	}
+	if err := waitForTransparentStartup(exitCh); err != nil {
+		terminateProcessTree(cmd)
+		m.log(fmt.Sprintf("previous composed strategy did not recover: %v", err))
+		return
+	}
+	stopCh := make(chan struct{})
+	m.activeTag = composedStrategyTag
+	m.activeCmd = cmd
+	m.activeStop = stopCh
+	m.activeLabel = label
+	m.activeArgs = append([]string(nil), args...)
+	m.log(fmt.Sprintf("restored previous composed strategy (pid=%d)", cmd.Process.Pid))
+	go m.watchPersistentStrategy(TransparentFreeAccessStrategy{Tag: composedStrategyTag, Label: label}, cmd, exitCh, stopCh)
 }
 
 func (m *TransparentBypassManager) startRawProcess(label string, args []string) (*exec.Cmd, <-chan error, error) {
@@ -203,6 +197,14 @@ func (m *TransparentBypassManager) startRawProcess(label string, args []string) 
 	if !fileExists(exePath) {
 		return nil, nil, fmt.Errorf("%s not found: %s", ZapretProcessName, exePath)
 	}
+	if err := m.validateZapret2Args(exePath, args); err != nil {
+		return nil, nil, fmt.Errorf("%s configuration is invalid: %w", label, err)
+	}
+	return m.startRawProcessValidated(label, args)
+}
+
+func (m *TransparentBypassManager) startRawProcessValidated(label string, args []string) (*exec.Cmd, <-chan error, error) {
+	exePath := filepath.Join(m.basePath, "bin", ZapretProcessName)
 	m.log(fmt.Sprintf("starting %s: %s %s", label, exePath, formatProcessArgs(args)))
 	cmd := exec.Command(exePath, args...)
 	cmd.Dir = filepath.Dir(exePath)
@@ -287,6 +289,9 @@ func (m *TransparentBypassManager) startStrategyProcess(strategy TransparentFree
 			m.log(fmt.Sprintf("%s packet debug log disabled: %v", strategy.Label, err))
 		}
 	}
+	if err := m.validateZapret2Args(exePath, args); err != nil {
+		return nil, nil, fmt.Errorf("%s configuration is invalid: %w", strategy.Label, err)
+	}
 	m.log(fmt.Sprintf("starting %s: %s %s", strategy.Label, exePath, formatProcessArgs(args)))
 	cmd := exec.Command(exePath, args...)
 	cmd.Dir = filepath.Dir(exePath)
@@ -314,6 +319,30 @@ func (m *TransparentBypassManager) startStrategyProcess(strategy TransparentFree
 		exitCh <- cmd.Wait()
 	}()
 	return cmd, exitCh, nil
+}
+
+// validateZapret2Args asks winws2 to parse the complete generated command line
+// without installing a WinDivert filter or starting packet processing. Keeping
+// --dry-run last is required by zapret2's parser.
+func (m *TransparentBypassManager) validateZapret2Args(exePath string, args []string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	checkArgs := append(append([]string(nil), args...), "--dry-run")
+	cmd := exec.CommandContext(ctx, exePath, checkArgs...)
+	cmd.Dir = filepath.Dir(exePath)
+	configureBackgroundCommand(cmd)
+	output, err := cmd.CombinedOutput()
+	if ctx.Err() != nil {
+		return fmt.Errorf("dry-run timed out: %w", ctx.Err())
+	}
+	if err != nil {
+		detail := strings.TrimSpace(string(output))
+		if detail == "" {
+			return err
+		}
+		return fmt.Errorf("%v: %s", err, detail)
+	}
+	return nil
 }
 
 func (m *TransparentBypassManager) logWinDivertStatus(stage string) {
@@ -789,6 +818,8 @@ func (m *TransparentBypassManager) watchPersistentStrategy(strategy TransparentF
 		m.activeCmd = nil
 		m.activeTag = ""
 		m.activeStop = nil
+		m.activeLabel = ""
+		m.activeArgs = nil
 	}
 	m.mu.Unlock()
 	if err != nil {
@@ -803,6 +834,8 @@ func (m *TransparentBypassManager) Stop() {
 	m.mu.Lock()
 	cmd := m.activeCmd
 	m.stopLocked()
+	m.activeLabel = ""
+	m.activeArgs = nil
 	m.mu.Unlock()
 	if cmd != nil {
 		m.log("transparent method stopped")
@@ -818,6 +851,8 @@ func (m *TransparentBypassManager) stopLocked() {
 	m.activeCmd = nil
 	m.activeTag = ""
 	m.activeStop = nil
+	m.activeLabel = ""
+	m.activeArgs = nil
 	if stopCh != nil {
 		close(stopCh)
 	}

@@ -193,7 +193,7 @@ func freeProxySidecarsCapturedByTun(config map[string]interface{}) bool {
 	// Older generated configs did not route helper processes directly. With
 	// auto_route enabled those helpers were captured back into TUN and their
 	// bypass packets effectively degraded to plain direct traffic. Current
-	// configs add an early process_name -> direct rule for ciadpi/winws/etc.,
+	// configs add an early process_name -> direct rule for ciadpi/winws2/etc.,
 	// so proxy free methods are valid candidates again.
 	return !freeAccessProcessRuleRoutesDirect(config)
 }

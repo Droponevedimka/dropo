@@ -213,25 +213,32 @@ const DefaultRoutingMode = RoutingModeBlockedOnly
 type NetworkMode string
 
 const (
-	// NetworkModeAuto prefers the Windows transparent engine when winws/WinDivert
+	// NetworkModeWindowsUnified is the only supported Windows runtime: sing-box
+	// owns TUN routing while one composed winws2 process applies a separately
+	// selected zapret2 profile to every supported blocked service.
+	NetworkModeWindowsUnified NetworkMode = "windows_unified"
+
+	// Legacy values are retained only so existing app_config.json files and old
+	// frontends migrate without an error. They are never activated on Windows.
+	// NetworkModeAuto prefers the Windows transparent engine when winws2/WinDivert
 	// are bundled and falls back to the compatible TUN implementation on error.
 	NetworkModeAuto NetworkMode = "auto"
 
-	// NetworkModeDeepWindows requests the zapret/winws + WinDivert engine.
+	// NetworkModeDeepWindows requests the zapret2/winws2 + WinDivert engine.
 	NetworkModeDeepWindows NetworkMode = "deep_windows"
 
 	// NetworkModeCompatTun uses the current sing-box TUN based implementation.
 	NetworkModeCompatTun NetworkMode = "compat_tun"
 )
 
-// DefaultNetworkMode is the default network engine request.
-const DefaultNetworkMode = NetworkModeAuto
+// DefaultNetworkMode is the single supported Windows runtime.
+const DefaultNetworkMode = NetworkModeWindowsUnified
 
 // NormalizeNetworkMode returns a supported network mode.
 func NormalizeNetworkMode(mode NetworkMode) NetworkMode {
 	switch mode {
-	case NetworkModeAuto, NetworkModeDeepWindows, NetworkModeCompatTun:
-		return mode
+	case NetworkModeWindowsUnified, NetworkModeAuto, NetworkModeDeepWindows, NetworkModeCompatTun, "":
+		return NetworkModeWindowsUnified
 	default:
 		return DefaultNetworkMode
 	}

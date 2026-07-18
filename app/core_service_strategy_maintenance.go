@@ -112,13 +112,25 @@ func (a *App) switchServiceToVPNFallback(serviceTag string) bool {
 		return false
 	}
 
+	return a.switchServiceRoute(serviceTag, "auto-select")
+}
+
+func (a *App) switchServiceRoute(serviceTag, outboundTag string) bool {
 	client := &http.Client{Timeout: 2 * time.Second}
 	groupTag := ServiceBypassGroupTag(serviceTag)
+	deadline := time.Now().Add(5 * time.Second)
+	for !loopbackPortReady(ClashAPIPort, 250*time.Millisecond) && time.Now().Before(deadline) {
+		time.Sleep(100 * time.Millisecond)
+	}
 	if !loopbackPortReady(ClashAPIPort, 250*time.Millisecond) {
 		a.writeLog(fmt.Sprintf("[FreeAccess] cannot switch %s to VPN fallback: Clash API is not ready", groupTag))
 		return false
 	}
-	body := bytes.NewBufferString(`{"name":"auto-select"}`)
+	bodyData, err := json.Marshal(map[string]string{"name": outboundTag})
+	if err != nil {
+		return false
+	}
+	body := bytes.NewBuffer(bodyData)
 	endpoint := fmt.Sprintf("http://127.0.0.1:%d/proxies/%s", ClashAPIPort, url.PathEscape(groupTag))
 	req, err := http.NewRequest(http.MethodPut, endpoint, body)
 	if err != nil {
@@ -132,174 +144,10 @@ func (a *App) switchServiceToVPNFallback(serviceTag string) bool {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		a.writeLog(fmt.Sprintf("[FreeAccess] failed to switch %s to VPN fallback: HTTP %d", groupTag, resp.StatusCode))
+		a.writeLog(fmt.Sprintf("[FreeAccess] failed to switch %s to %s: HTTP %d", groupTag, outboundTag, resp.StatusCode))
 		return false
 	}
 	return true
-}
-
-func (a *App) runActiveServiceStrategyMaintenance(serviceTag, reason string) (*routeProbeServiceResult, error) {
-	if !a.tryBeginRouteProbeDiscovery() {
-		return nil, fmt.Errorf("route method discovery is already running")
-	}
-	defer a.finishRouteProbeDiscovery()
-
-	a.waitForInit()
-	if !a.routeStrategyWorkAllowed() {
-		return nil, fmt.Errorf("VPN is stopping")
-	}
-	if a.storage == nil {
-		return nil, fmt.Errorf("storage is not initialized")
-	}
-	settings := a.storage.GetAppSettings()
-	if !FreeMethodsAllowed(settings) {
-		return nil, fmt.Errorf("free methods are disabled")
-	}
-
-	service, ok := findFreeAccessService(serviceTag)
-	if !ok {
-		return nil, fmt.Errorf("unknown service tag %q", serviceTag)
-	}
-	if service.RequiresVPN {
-		return nil, fmt.Errorf("%s requires VPN and cannot be solved by free methods", service.DisplayName)
-	}
-
-	a.writeLog(fmt.Sprintf("[FreeAccess] service strategy maintenance started for %s: %s", service.DisplayName, reason))
-	previousTransparent := ""
-	if a.zapret != nil {
-		previousTransparent = a.zapret.ActiveTag()
-	}
-
-	// Don't tear down a transparent engine that is already running just to
-	// re-confirm it. Re-probe the service through the live engine first; the
-	// original failure may have been transient (a single reset connection), in
-	// which case we keep the current strategy and never restart winws.
-	if previousTransparent != "" {
-		if result, ok := a.probeServiceThroughActiveTransparent(service, previousTransparent); ok {
-			a.writeLog(fmt.Sprintf("[FreeAccess] %s already works through active %s (%d ms); keeping it",
-				service.DisplayName, result.MethodLabel, result.LatencyMS))
-			a.applyServiceStrategySelection(result)
-			return &result, nil
-		}
-	}
-
-	candidates := a.activeServiceMaintenanceCandidates()
-	serviceCandidates := candidatesForRouteProbeServiceWithSettings(service, candidates, settings)
-	if a.deepWindowsTransparentOnlyActive() {
-		serviceCandidates = transparentRouteProbeCandidatesOnly(serviceCandidates)
-	}
-	if len(serviceCandidates) == 0 {
-		return nil, fmt.Errorf("no active free candidates are available")
-	}
-
-	result := a.probeServiceCandidates(service, serviceCandidates)
-	if result.Success {
-		if !a.routeStrategyWorkAllowed() {
-			return nil, fmt.Errorf("VPN is stopping")
-		}
-		a.applyServiceStrategySelection(result)
-		return &result, nil
-	}
-	if previousTransparent != "" && a.zapret != nil && a.routeStrategyWorkAllowed() {
-		if err := a.zapret.StartSelected(previousTransparent); err != nil {
-			a.writeLog(fmt.Sprintf("[FreeAccess] failed to restore previous transparent method %s: %v", previousTransparent, err))
-		}
-	}
-	return nil, fmt.Errorf("no working free strategy found for %s: %s", service.DisplayName, result.Error)
-}
-
-// probeServiceThroughActiveTransparent tests the service against the transparent
-// engine that is already running, without restarting it (no Start/Stop on the
-// candidate). It returns a successful result only if every probe target passes,
-// which lets the caller keep a working winws instance instead of tearing it down.
-func (a *App) probeServiceThroughActiveTransparent(service FreeAccessService, tag string) (routeProbeServiceResult, bool) {
-	if a.zapret == nil || tag == "" || a.zapret.ActiveTag() != tag {
-		return routeProbeServiceResult{}, false
-	}
-	label := FreeAccessOutboundLabel(tag)
-	candidate := routeProbeCandidate{
-		Tag:       tag,
-		Label:     label,
-		Kind:      "transparent",
-		Client:    newDirectHTTPClient(),
-		Available: true,
-		// Deliberately no Start/Stop: the engine is already up and must stay up.
-	}
-	item := a.probeSingleCandidate(service, candidate)
-	if !item.Success {
-		return routeProbeServiceResult{}, false
-	}
-	return routeProbeServiceResult{
-		Tag:          service.Tag,
-		Name:         service.DisplayName,
-		MethodTag:    tag,
-		MethodLabel:  label,
-		MethodKind:   "transparent",
-		LatencyMS:    item.LatencyMS,
-		Success:      true,
-		CandidateNum: 1,
-	}, true
-}
-
-func (a *App) deepWindowsTransparentOnlyActive() bool {
-	if a == nil {
-		return false
-	}
-	status := a.currentNetworkModeStatus()
-	if status.Active != NetworkModeDeepWindows {
-		return false
-	}
-	a.mu.Lock()
-	running := (a.isRunning || a.isStarting) && !a.stoppedManually && !a.vpnStopping.Load()
-	hasLocalProxyEndpoint := a.cmd != nil
-	a.mu.Unlock()
-	return running && !hasLocalProxyEndpoint
-}
-
-func transparentRouteProbeCandidatesOnly(candidates []routeProbeCandidate) []routeProbeCandidate {
-	filtered := make([]routeProbeCandidate, 0, len(candidates))
-	for _, candidate := range candidates {
-		if candidate.Kind == "transparent" {
-			filtered = append(filtered, candidate)
-		}
-	}
-	return filtered
-}
-
-func (a *App) activeServiceMaintenanceCandidates() []routeProbeCandidate {
-	candidates := []routeProbeCandidate{}
-	activeTags := []string{}
-	if a.byeDPI != nil {
-		activeTags = append(activeTags, a.byeDPI.ActiveTags()...)
-	}
-	for _, tag := range uniqueStrings(activeTags) {
-		candidate, err := newFreeRouteProbeCandidate(tag)
-		if err != nil {
-			a.writeLog(fmt.Sprintf("[FreeAccess] %s is not available for service maintenance: %v", tag, err))
-			continue
-		}
-		candidates = append(candidates, candidate)
-	}
-
-	if a.zapret != nil {
-		for _, strategy := range a.zapret.AvailableStrategies() {
-			strategy := strategy
-			candidates = append(candidates, routeProbeCandidate{
-				Tag:       strategy.Tag,
-				Label:     strategy.Label,
-				Kind:      "transparent",
-				Client:    newDirectHTTPClient(),
-				Available: true,
-				Start: func() error {
-					if !a.routeStrategyWorkAllowed() {
-						return fmt.Errorf("VPN is stopping")
-					}
-					return a.zapret.StartSelected(strategy.Tag)
-				},
-			})
-		}
-	}
-	return candidates
 }
 
 func (a *App) applyServiceStrategySelection(result routeProbeServiceResult) {

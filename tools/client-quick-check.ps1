@@ -316,8 +316,8 @@ function Test-PathInside {
 
 function Get-DropoProcessDetails {
     param([string]$Root)
-    $names = @("dropo.exe", "sing-box.exe", "ciadpi.exe", "winws.exe", "xray.exe")
-    $managedNames = @("sing-box.exe", "ciadpi.exe", "winws.exe", "xray.exe")
+    $names = @("dropo.exe", "sing-box.exe", "ciadpi.exe", "winws2.exe", "xray.exe")
+    $managedNames = @("sing-box.exe", "ciadpi.exe", "winws2.exe", "xray.exe")
     Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
         Where-Object { $names -contains $_.Name } |
         ForEach-Object {
@@ -580,7 +580,7 @@ Write-Host "  Blocked failed:$($summary.BlockedFailed)"
 if ($summary.BlockedFailed -gt 0 -and $DeepMethodCheck -and $summary.MethodRecovered -eq 0 -and $configSummary -and -not $configSummary.HasVpnCandidate) {
     Write-Host ""
     Write-Host "Blocked services failed through every live free proxy method and active config has no VPN/VLESS candidate." -ForegroundColor Yellow
-    Write-Host "If winws/zapret is running, send the full output folder; transparent-method results are visible in route-probe logs." -ForegroundColor Yellow
+    Write-Host "If winws2/zapret2 is running, send the full output folder; transparent-method results are visible in route-probe logs." -ForegroundColor Yellow
 }
 Write-Host ""
 Write-Host "Send this folder back for analysis:" -ForegroundColor Yellow

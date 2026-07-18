@@ -9937,22 +9937,11 @@ class _SettingsDialogState extends State<_SettingsDialog> {
                 body: 'Сетевой режим: Android VpnService + sing-box libbox.',
               )
             else
-              _SelectSetting(
-                title: 'Сетевой режим',
-                description: _networkModeDescription(config.networkMode),
-                value: config.networkMode,
-                stacked: true,
-                options: const {
-                  'auto': 'Auto',
-                  'deep_windows': 'Deep Windows',
-                  'compat_tun': 'Compatibility TUN',
-                },
-                onChanged: canChangeRuntime
-                    ? (value) => _applySpecial(
-                        () => widget.bridge.setNetworkMode(value),
-                        config.copyWith(networkMode: value),
-                      )
-                    : null,
+              const _InfoBand(
+                icon: Icons.hub,
+                title: 'Windows Unified',
+                body:
+                    'Единый режим: sing-box TUN маршрутизирует трафик, а один winws2 подбирает отдельную стратегию для каждого сервиса.',
               ),
           ],
         ),
@@ -12121,17 +12110,6 @@ String _routingModeDescription(String mode) {
       'Весь трафик через VPN. Максимальная приватность, высокая нагрузка.',
     _ =>
       'Через VPN идут только заблокированные сайты. Минимальная нагрузка на VPN.',
-  };
-}
-
-String _networkModeDescription(String mode) {
-  return switch (mode) {
-    'deep_windows' =>
-      'WinDivert/zapret transparent engine без лишнего TUN там, где это возможно.',
-    'compat_tun' =>
-      'Классический sing-box TUN fallback для совместимости с подписками.',
-    _ =>
-      'Auto использует Deep Windows, если компоненты доступны, иначе Compatibility TUN.',
   };
 }
 

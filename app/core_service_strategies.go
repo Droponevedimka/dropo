@@ -11,7 +11,7 @@ import (
 )
 
 // ServiceBypassMethod is one ranked DPI-bypass technique for a single service.
-// It is composed into the shared winws instance as TCP and UDP profiles scoped
+// It is composed into the shared winws2 instance as TCP and UDP profiles scoped
 // to that service's own hostlist, so different services can run different
 // methods simultaneously inside one WinDivert filter. Discord additionally gets
 // raw media profiles because desktop voice uses direct UDP packets, not only
@@ -20,7 +20,7 @@ import (
 //
 // Discord/YouTube methods mirror the Flowseal zapret-discord-youtube bundle
 // (https://github.com/Flowseal/zapret-discord-youtube). Other services seed
-// from the same broadly-effective zapret techniques, ranked most→least likely
+// from the same broadly-effective zapret2 techniques, ranked most→least likely
 // to work; the ranking is refined per service over time and at build via the
 // service-strategy update check.
 type ServiceBypassMethod struct {
@@ -32,15 +32,26 @@ type ServiceBypassMethod struct {
 }
 
 const (
-	googleTLSPayload       = "tls_clienthello_www_google_com.bin"
-	googleQUICPayload      = "quic_initial_www_google_com.bin"
-	facebookQUICPayload    = "quic_initial_facebook_com.bin"
-	discordQUICFakePayload = "quic_initial_dbankcloud_ru.bin"
-	discordFakePayload     = "discord-ip-discovery-without-port.bin"
-	stunFakePayload        = "stun.bin"
-	discordMediaRawFilter  = "windivert_part.discord_media.txt"
-	discordSTUNRawFilter   = "windivert_part.stun.txt"
+	googleTLSPayload      = "tls_clienthello_www_google_com.bin"
+	googleQUICPayload     = "quic_initial_www_google_com.bin"
+	facebookQUICPayload   = "quic_initial_facebook_com.bin"
+	zapretLuaLibrary      = "zapret-lib.lua"
+	zapretLuaAntidpi      = "zapret-antidpi.lua"
+	quicInitialRawFilter  = "windivert_part.quic_initial_ietf.txt"
+	discordMediaRawFilter = "windivert_part.discord_media.txt"
+	discordSTUNRawFilter  = "windivert_part.stun.txt"
 )
+
+var zapret2RequiredFiles = []string{
+	zapretLuaLibrary,
+	zapretLuaAntidpi,
+	googleTLSPayload,
+	googleQUICPayload,
+	facebookQUICPayload,
+	quicInitialRawFilter,
+	discordMediaRawFilter,
+	discordSTUNRawFilter,
+}
 
 // quicPayloadFile maps a service's "quic" hint to a bundled QUIC-initial payload.
 // Meta/WhatsApp use the Facebook QUIC initial; everything else uses Google's.
@@ -55,9 +66,19 @@ func quicPayloadFile(name string) string {
 
 func fakeQUICArgs(quicFile string) []string {
 	return []string{
-		"--dpi-desync=fake",
-		"--dpi-desync-repeats=6",
-		"--dpi-desync-fake-quic=${BIN}" + quicFile,
+		"--payload=quic_initial",
+		"--lua-desync=fake:blob=" + zapret2BlobName(quicFile) + ":repeats=6",
+	}
+}
+
+func zapret2BlobName(payload string) string {
+	switch payload {
+	case facebookQUICPayload:
+		return "facebook_quic"
+	case googleQUICPayload:
+		return "google_quic"
+	default:
+		return "google_tls"
 	}
 }
 
@@ -66,10 +87,8 @@ func methodMultisplit(tag, label string, seqovl, pos int, quicFile string) Servi
 		Tag:   tag,
 		Label: label,
 		TCPArgs: []string{
-			"--dpi-desync=multisplit",
-			fmt.Sprintf("--dpi-desync-split-seqovl=%d", seqovl),
-			fmt.Sprintf("--dpi-desync-split-pos=%d", pos),
-			"--dpi-desync-split-seqovl-pattern=${BIN}" + googleTLSPayload,
+			"--payload=tls_client_hello",
+			fmt.Sprintf("--lua-desync=multisplit:pos=%d:seqovl=%d:seqovl_pattern=google_tls", pos, seqovl),
 		},
 		UDPArgs:  fakeQUICArgs(quicFile),
 		Required: []string{googleTLSPayload, quicFile},
@@ -84,18 +103,14 @@ func methodFakeMultisplit(tag, label string, seqovl, pos, repeats int, fakeTLSMo
 	if repeats <= 0 {
 		repeats = 8
 	}
-	tcp := []string{
-		"--dpi-desync=fake,multisplit",
-		fmt.Sprintf("--dpi-desync-split-seqovl=%d", seqovl),
-		fmt.Sprintf("--dpi-desync-split-pos=%d", pos),
-		"--dpi-desync-fooling=ts",
-		fmt.Sprintf("--dpi-desync-repeats=%d", repeats),
-		"--dpi-desync-split-seqovl-pattern=${BIN}" + googleTLSPayload,
-	}
+	fake := fmt.Sprintf("--lua-desync=fake:blob=google_tls:tcp_ts=-600000:repeats=%d", repeats)
 	if fakeTLSMod {
-		tcp = append(tcp, "--dpi-desync-fake-tls-mod=rnd,dupsid,sni=www.google.com")
-	} else {
-		tcp = append(tcp, "--dpi-desync-fake-tls=${BIN}"+googleTLSPayload)
+		fake += ":tls_mod=rnd,dupsid,sni=www.google.com"
+	}
+	tcp := []string{
+		"--payload=tls_client_hello",
+		fake,
+		fmt.Sprintf("--lua-desync=multisplit:pos=%d:seqovl=%d:seqovl_pattern=google_tls", pos, seqovl),
 	}
 	return ServiceBypassMethod{
 		Tag:      tag,
@@ -111,11 +126,9 @@ func methodFakedsplitTS(tag, label, quicFile string) ServiceBypassMethod {
 		Tag:   tag,
 		Label: label,
 		TCPArgs: []string{
-			"--dpi-desync=fake,fakedsplit",
-			"--dpi-desync-repeats=6",
-			"--dpi-desync-fooling=ts",
-			"--dpi-desync-fakedsplit-pattern=0x00",
-			"--dpi-desync-fake-tls=${BIN}" + googleTLSPayload,
+			"--payload=tls_client_hello",
+			"--lua-desync=fake:blob=google_tls:tcp_ts=-600000:repeats=6",
+			"--lua-desync=fakedsplit:pos=2:pattern=0x00:tcp_ts=-600000",
 		},
 		UDPArgs:  fakeQUICArgs(quicFile),
 		Required: []string{googleTLSPayload, quicFile},
@@ -127,11 +140,9 @@ func methodMultidisorder(tag, label, quicFile string) ServiceBypassMethod {
 		Tag:   tag,
 		Label: label,
 		TCPArgs: []string{
-			"--dpi-desync=fake,multidisorder",
-			"--dpi-desync-split-pos=1,midsld",
-			"--dpi-desync-repeats=6",
-			"--dpi-desync-fooling=badseq",
-			"--dpi-desync-fake-tls=${BIN}" + googleTLSPayload,
+			"--payload=tls_client_hello",
+			"--lua-desync=fake:blob=google_tls:tcp_seq=-10000:repeats=6",
+			"--lua-desync=multidisorder:pos=1,midsld",
 		},
 		UDPArgs:  fakeQUICArgs(quicFile),
 		Required: []string{googleTLSPayload, quicFile},
@@ -143,11 +154,9 @@ func methodSplitAutottl(tag, label, quicFile string) ServiceBypassMethod {
 		Tag:   tag,
 		Label: label,
 		TCPArgs: []string{
-			"--dpi-desync=fake,split",
-			"--dpi-desync-autottl=5",
-			"--dpi-desync-repeats=6",
-			"--dpi-desync-fooling=badseq",
-			"--dpi-desync-fake-tls=${BIN}" + googleTLSPayload,
+			"--payload=tls_client_hello",
+			"--lua-desync=fake:blob=google_tls:ip_autottl=-2,3-20:ip6_autottl=-2,3-20:tcp_seq=-10000:repeats=6",
+			"--lua-desync=multisplit:pos=2",
 		},
 		UDPArgs:  fakeQUICArgs(quicFile),
 		Required: []string{googleTLSPayload, quicFile},
@@ -168,11 +177,8 @@ func methodFakeTTL(tag, label string, ttl, repeats int, quicFile string) Service
 		Tag:   tag,
 		Label: label,
 		TCPArgs: []string{
-			"--dpi-desync=fake",
-			fmt.Sprintf("--dpi-desync-ttl=%d", ttl),
-			"--dpi-desync-fooling=md5sig",
-			fmt.Sprintf("--dpi-desync-repeats=%d", repeats),
-			"--dpi-desync-fake-tls=${BIN}" + googleTLSPayload,
+			"--payload=tls_client_hello",
+			fmt.Sprintf("--lua-desync=fake:blob=google_tls:ip_ttl=%d:ip6_ttl=%d:tcp_md5:repeats=%d", ttl, ttl, repeats),
 		},
 		UDPArgs:  fakeQUICArgs(quicFile),
 		Required: []string{googleTLSPayload, quicFile},
@@ -184,26 +190,12 @@ func methodFakeSplitMd5(tag, label, quicFile string) ServiceBypassMethod {
 		Tag:   tag,
 		Label: label,
 		TCPArgs: []string{
-			"--dpi-desync=fake,split",
-			"--dpi-desync-autottl=2",
-			"--dpi-desync-fooling=md5sig",
-			"--dpi-desync-repeats=6",
-			"--dpi-desync-fake-tls=${BIN}" + googleTLSPayload,
+			"--payload=tls_client_hello",
+			"--lua-desync=fake:blob=google_tls:ip_autottl=-2,3-20:ip6_autottl=-2,3-20:tcp_md5:repeats=6",
+			"--lua-desync=multisplit:pos=2:tcp_md5",
 		},
 		UDPArgs:  fakeQUICArgs(quicFile),
 		Required: []string{googleTLSPayload, quicFile},
-	}
-}
-
-// methodSyndata injects fake data into the TCP SYN so the DPI classifier locks
-// onto the decoy. Distinct from ClientHello splitting.
-func methodSyndata(tag, label, quicFile string) ServiceBypassMethod {
-	return ServiceBypassMethod{
-		Tag:      tag,
-		Label:    label,
-		TCPArgs:  []string{"--dpi-desync=syndata"},
-		UDPArgs:  fakeQUICArgs(quicFile),
-		Required: []string{quicFile},
 	}
 }
 
@@ -234,9 +226,9 @@ type serviceStrategyDoc struct {
 type serviceStrategyDef struct {
 	Source string `json:"source"`
 	// BlockType classifies HOW the service is blocked, which determines whether
-	// desync (winws) can help at all: "dpi" = SNI/DPI block (desync works),
+	// desync (winws2) can help at all: "dpi" = SNI/DPI block (desync works),
 	// "ip" = IP-address block, "protocol" = protocol block (MTProto). Only "dpi"
-	// is solvable by winws; "ip"/"protocol" lean on the VPN/direct fallback.
+	// is solvable by winws2; "ip"/"protocol" lean on the VPN/direct fallback.
 	BlockType string                      `json:"blockType"`
 	Methods   []serviceStrategyMethodSpec `json:"methods"`
 }
@@ -250,8 +242,8 @@ type serviceStrategyMethodSpec struct {
 	Pos        int    `json:"pos"`
 	Repeats    int    `json:"repeats"`
 	Ttl        int    `json:"ttl"`
-	FakeTLSMod bool   `json:"fakeTlsMod"` // use --dpi-desync-fake-tls-mod=rnd,dupsid,sni=www.google.com
-	IPIDZero   bool   `json:"ipIdZero"`   // prepend --ip-id=zero (Flowseal Google/YouTube profile)
+	FakeTLSMod bool   `json:"fakeTlsMod"` // add tls_mod=rnd,dupsid,sni=www.google.com to zapret2 fake()
+	IPIDZero   bool   `json:"ipIdZero"`   // add ip_id=zero to each zapret2 Lua desync call
 }
 
 var (
@@ -303,13 +295,19 @@ func buildMethodFromSpec(spec serviceStrategyMethodSpec) (ServiceBypassMethod, b
 	case "fake-split-md5sig":
 		method = methodFakeSplitMd5(spec.Tag, label, quic)
 	case "syndata":
-		method = methodSyndata(spec.Tag, label, quic)
+		// SYN packets do not carry SNI/Host, so a hostlist-scoped per-service
+		// profile cannot safely apply syndata. Reject it instead of widening the
+		// interception scope to unrelated traffic.
+		return ServiceBypassMethod{}, false
 	default:
 		return ServiceBypassMethod{}, false
 	}
 	if spec.IPIDZero {
-		// --ip-id=zero must precede --dpi-desync in the profile.
-		method.TCPArgs = append([]string{"--ip-id=zero"}, method.TCPArgs...)
+		for i, arg := range method.TCPArgs {
+			if strings.HasPrefix(arg, "--lua-desync=") {
+				method.TCPArgs[i] = arg + ":ip_id=zero"
+			}
+		}
 	}
 	return method, true
 }
@@ -340,7 +338,7 @@ func loadServiceStrategies() {
 		loadedServiceBlockType[tag] = blockType
 		// IP/protocol blocking cannot be fixed by desync → prefer VPN fallback.
 		// "proxy" services are handled by a dedicated sidecar (tg-ws-proxy) and
-		// "dpi" by winws, so neither prefers the VPN fallback.
+		// "dpi" by winws2, so neither prefers the VPN fallback.
 		loadedServiceVPNPref[tag] = blockType == "ip" || blockType == "protocol" || blockType == "vpn"
 	}
 }
@@ -381,7 +379,7 @@ func serviceVpnPreferred(serviceTag string) bool {
 // and return nil so they are never searched; they rely on the VPN/direct route.
 func rankedMethodsForService(serviceTag string) []ServiceBypassMethod {
 	// "vpn" (no free bypass) and "proxy" (handled by the tg-ws-proxy sidecar)
-	// services have no winws methods and are never composed into the engine.
+	// services have no winws2 methods and are never composed into the engine.
 	if bt := serviceBlockType(serviceTag); bt == "vpn" || bt == "proxy" {
 		return nil
 	}
@@ -412,7 +410,7 @@ func findServiceBypassMethod(serviceTag, methodTag string) (ServiceBypassMethod,
 }
 
 // serviceWinwsSelection binds a service's hostlist file to the method that will
-// handle its traffic in the composed winws instance.
+// handle its traffic in the composed winws2 instance.
 type serviceWinwsSelection struct {
 	ServiceTag   string
 	HostlistPath string
@@ -422,7 +420,7 @@ type serviceWinwsSelection struct {
 const (
 	// Discord voice gateway endpoints are commonly returned as
 	// *.discord.media:2048; keep it with the alternate media TCP ports so voice
-	// channel join handshakes do not bypass winws while regular Discord works.
+	// channel join handshakes do not bypass winws2 while regular Discord works.
 	discordMediaTCPPorts = "2048,2053,2083,2087,2096,8443"
 	discordVoiceUDPPorts = "19294-19344,50000-50100"
 )
@@ -436,10 +434,10 @@ func hasDiscordSelection(selections []serviceWinwsSelection) bool {
 	return false
 }
 
-// composeServiceWinwsArgs builds a single winws argument list where each service
-// is its own pair of profiles (tcp 80,443 and udp 443) scoped to its hostlist.
+// composeServiceWinwsArgs builds a single winws2 argument list where each service
+// has HTTP/TLS/QUIC profiles scoped to its hostlist.
 // Discord also contributes voice/media profiles for raw UDP and discord.media
-// alternate TCP ports, matching the standalone zapret Discord preset. winws
+// alternate TCP ports, matching the standalone zapret Discord preset. winws2
 // matches a packet against the first profile whose filter+scope match, and the
 // per-service scopes are disjoint, so every service is handled by its own method
 // without conflicting with the others.
@@ -457,37 +455,33 @@ func composeServiceWinwsArgs(selections []serviceWinwsSelection, binDir string) 
 	}
 
 	discordSelected := hasDiscordSelection(selections)
-	tcpPorts := "80,443"
-	udpPorts := "443"
-	if discordSelected {
-		tcpPorts += "," + discordMediaTCPPorts
-		udpPorts += "," + discordVoiceUDPPorts
-	}
 
-	profiles := make([][]string, 0, len(selections)*2+2)
+	profiles := make([][]string, 0, len(selections)*3+2)
 	for _, sel := range selections {
 		if sel.HostlistPath == "" {
 			continue
 		}
-		tcp := append([]string{"--filter-tcp=80,443", "--hostlist=" + sel.HostlistPath}, resolve(sel.Method.TCPArgs)...)
+		http := []string{
+			"--filter-tcp=80",
+			"--hostlist=" + sel.HostlistPath,
+			"--payload=http_req",
+			"--lua-desync=fake:blob=fake_default_http:ip_autottl=-2,3-20:ip6_autottl=-2,3-20:tcp_md5",
+			"--lua-desync=multisplit:pos=method+2",
+		}
+		tcp := append([]string{"--filter-tcp=443", "--hostlist=" + sel.HostlistPath}, resolve(sel.Method.TCPArgs)...)
 		udp := append([]string{"--filter-udp=443", "--hostlist=" + sel.HostlistPath}, resolve(sel.Method.UDPArgs)...)
-		profiles = append(profiles, tcp, udp)
+		profiles = append(profiles, http, tcp, udp)
 		if strings.EqualFold(sel.ServiceTag, "discord") {
 			mediaTCP := []string{
 				"--filter-tcp=" + discordMediaTCPPorts,
 				"--hostlist-domains=discord.media",
-				"--dpi-desync=multisplit",
-				"--dpi-desync-split-seqovl=681",
-				"--dpi-desync-split-pos=1",
-				"--dpi-desync-split-seqovl-pattern=" + binPrefix + googleTLSPayload,
+				"--payload=tls_client_hello",
+				"--lua-desync=multisplit:pos=1:seqovl=681:seqovl_pattern=google_tls",
 			}
 			voiceUDP := []string{
 				"--filter-udp=" + discordVoiceUDPPorts,
-				"--filter-l7=discord,stun",
-				"--dpi-desync=fake",
-				"--dpi-desync-fake-discord=" + binPrefix + discordQUICFakePayload,
-				"--dpi-desync-fake-stun=" + binPrefix + discordQUICFakePayload,
-				"--dpi-desync-repeats=6",
+				"--payload=discord_ip_discovery,stun",
+				"--lua-desync=fake:blob=0x00000000000000000000000000000000:repeats=6",
 			}
 			profiles = append(profiles, mediaTCP, voiceUDP)
 		}
@@ -496,12 +490,85 @@ func composeServiceWinwsArgs(selections []serviceWinwsSelection, binDir string) 
 		return nil
 	}
 
-	args := []string{"--wf-tcp=" + tcpPorts, "--wf-udp=" + udpPorts}
-	if discordSelected {
+	args := zapret2BootstrapArgs(binPrefix, discordSelected)
+	for i, profile := range profiles {
+		if i > 0 {
+			args = append(args, "--new")
+		}
+		args = append(args, profile...)
+	}
+	return args
+}
+
+func zapret2BootstrapArgs(binPrefix string, discord bool) []string {
+	tcpPorts := "80,443"
+	if discord {
+		tcpPorts += "," + discordMediaTCPPorts
+	}
+	args := []string{
+		"--wf-tcp-out=" + tcpPorts,
+		"--wf-raw-part=@" + binPrefix + quicInitialRawFilter,
+		"--lua-init=@" + binPrefix + zapretLuaLibrary,
+		"--lua-init=@" + binPrefix + zapretLuaAntidpi,
+		"--blob=google_tls:@" + binPrefix + googleTLSPayload,
+		"--blob=google_quic:@" + binPrefix + googleQUICPayload,
+		"--blob=facebook_quic:@" + binPrefix + facebookQUICPayload,
+	}
+	if discord {
 		args = append(args,
 			"--wf-raw-part=@"+binPrefix+discordMediaRawFilter,
 			"--wf-raw-part=@"+binPrefix+discordSTUNRawFilter,
 		)
+	}
+	return args
+}
+
+func defaultZapret2TransparentStrategies() []TransparentFreeAccessStrategy {
+	definitions := []struct {
+		tag    string
+		label  string
+		method ServiceBypassMethod
+	}{
+		{"flowseal-general-alt2", "zapret2 general ALT2", methodMultisplit("", "", 652, 2, googleQUICPayload)},
+		{"flowseal-general", "zapret2 general", methodMultisplit("", "", 568, 1, googleQUICPayload)},
+		{"flowseal-general-alt", "zapret2 general ALT", methodFakedsplitTS("", "", googleQUICPayload)},
+		{"flowseal-multidisorder", "zapret2 multidisorder", methodMultidisorder("", "", googleQUICPayload)},
+	}
+	strategies := make([]TransparentFreeAccessStrategy, 0, len(definitions))
+	for _, def := range definitions {
+		strategies = append(strategies, TransparentFreeAccessStrategy{
+			Tag:           def.tag,
+			Label:         def.label,
+			ExeName:       ZapretProcessName,
+			Args:          composeZapret2GlobalArgs(def.method),
+			Platforms:     []string{"windows"},
+			ManualScope:   true,
+			RequiredFiles: append([]string(nil), zapret2RequiredFiles...),
+		})
+	}
+	return strategies
+}
+
+func composeZapret2GlobalArgs(method ServiceBypassMethod) []string {
+	args := zapret2BootstrapArgs("${BIN}", true)
+	profiles := [][]string{
+		{
+			"--filter-tcp=80", "--payload=http_req", "--hostlist=${HOSTLIST}",
+			"--lua-desync=fake:blob=fake_default_http:ip_autottl=-2,3-20:ip6_autottl=-2,3-20:tcp_md5",
+			"--lua-desync=multisplit:pos=method+2",
+		},
+		append([]string{"--filter-tcp=443", "--hostlist=${HOSTLIST}"}, method.TCPArgs...),
+		append([]string{"--filter-udp=443", "--hostlist=${HOSTLIST}"}, method.UDPArgs...),
+		{
+			"--filter-tcp=" + discordMediaTCPPorts, "--hostlist-domains=discord.media", "--payload=tls_client_hello",
+			"--lua-desync=multisplit:pos=1:seqovl=681:seqovl_pattern=google_tls",
+		},
+		{
+			"--filter-udp=" + discordVoiceUDPPorts, "--payload=discord_ip_discovery,stun",
+			"--lua-desync=fake:blob=0x00000000000000000000000000000000:repeats=6",
+		},
+		append([]string{"--filter-tcp=443", "--ipset=${IPSET}"}, method.TCPArgs...),
+		append([]string{"--filter-udp=443", "--ipset=${IPSET}"}, method.UDPArgs...),
 	}
 	for i, profile := range profiles {
 		if i > 0 {

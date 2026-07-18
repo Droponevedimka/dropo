@@ -175,31 +175,31 @@ func TestDeepWindowsRoutePlanManualDirectOverridesSubscriptionFallback(t *testin
 	}
 }
 
-func TestDeepWindowsRoutePlanManualTransparentMethodUsesZapret(t *testing.T) {
+func TestWindowsUnifiedMigratesLegacyGlobalZapretMethodToAutomatic(t *testing.T) {
 	settings := defaultDeepWindowsPlanSettings()
 	settings.FreeAccessMethods["telegram"] = DefaultZapretTransparentStrategies[0].Tag
 
 	plan := buildDeepWindowsRoutePlanForSettings(settings, true, true, true)
 
-	if !planContainsString(plan.TransparentServices, "telegram") {
-		t.Fatalf("transparent services = %v, want telegram through manual zapret strategy", plan.TransparentServices)
+	if !planContainsString(plan.ProxyServices, "telegram") {
+		t.Fatalf("proxy services = %v, want Telegram automatic VPN fallback", plan.ProxyServices)
 	}
-	if planContainsString(plan.ProxyServices, "telegram") {
-		t.Fatalf("telegram should not use proxy while manual zapret strategy is available: %+v", plan)
+	if planContainsString(plan.TransparentServices, "telegram") {
+		t.Fatalf("legacy global zapret choice must not create a separate transparent strategy: %+v", plan)
 	}
 }
 
-func TestDeepWindowsRoutePlanManualProxyMethodRequiresLocalProxyEndpoint(t *testing.T) {
+func TestWindowsUnifiedMigratesLegacyByeDPIMethodToAutomatic(t *testing.T) {
 	settings := defaultDeepWindowsPlanSettings()
 	settings.FreeAccessMethods["telegram"] = DefaultByeDPIStrategies[0].Tag
 
 	plan := buildDeepWindowsRoutePlanForSettings(settings, false, true, true)
 
-	if !planContainsString(plan.ProxyServices, "telegram") {
-		t.Fatalf("proxy services = %v, want telegram through manual local proxy method", plan.ProxyServices)
+	if !planContainsString(plan.DirectServices, "telegram") {
+		t.Fatalf("direct services = %v, want automatic no-subscription route", plan.DirectServices)
 	}
-	if !plan.RequiresSingBoxProxy || !plan.RequiresRedirector {
-		t.Fatalf("manual local proxy method should require local proxy endpoint and redirector: %+v", plan)
+	if planContainsString(plan.TransparentServices, "telegram") {
+		t.Fatalf("legacy ByeDPI choice must not create a second Windows strategy engine: %+v", plan)
 	}
 }
 

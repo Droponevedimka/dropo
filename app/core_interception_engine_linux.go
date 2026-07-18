@@ -3,13 +3,13 @@
 package main
 
 // Linux interception engine: nfqws/NFQUEUE (the zapret family's Linux desync
-// engine, the direct analogue of Windows winws). Not yet wired into the runtime.
+// engine, the direct analogue of Windows winws2). Not yet wired into the runtime.
 //
 // Roadmap to implement:
 //   - Ship nfqws (+ optional tpws) in the Linux dependency archive.
 //   - Acquire CAP_NET_ADMIN/CAP_NET_RAW (or a privileged helper) and install the
 //     NFQUEUE iptables/nftables rules the composed profiles need.
-//   - Translate the per-service composed winws args into nfqws args. The
+//   - Translate the per-service composed winws2 args into nfqws2 args. The
 //     Flowseal-compatible multisplit+seqovl strategies map almost 1:1.
 //   - Implement StartComposedStrategy to launch one nfqws instance from the
 //     composed per-service profiles, mirroring the Windows hot path.

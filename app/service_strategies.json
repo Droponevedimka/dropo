@@ -1,5 +1,5 @@
 {
-  "version": 6,
+  "version": 7,
   "updated": "2026-06-26",
   "note": "Per-service DPI-bypass ladders. blockType: 'dpi' (desync works), 'ip'/'protocol' (desync may help, prefer VPN fallback), 'vpn' (NO free bypass — never searched, needs a VPN/VLESS subscription). After the May-2026 ТСПУ update, the working Google/YouTube technique is fake,multisplit + fooling=ts + repeats=8 + fake-tls (Flowseal ALT11 / FAKE TLS AUTO), not plain multisplit. Most general DPI services are solved by fakedsplit-ts (empirically the winner). Techniques: fake-multisplit(seqovl,pos,repeats,fakeTlsMod[,ipIdZero]), multisplit(seqovl,pos[,ipIdZero]), fakedsplit-ts, multidisorder, split-autottl. quic: google|facebook.",
   "services": {
@@ -25,12 +25,12 @@
       ]
     },
     "telegram": {
-      "source": "Local tg-ws-proxy sidecar — MTProto/IP block; handled by the local MTProto-over-WebSocket proxy, not winws desync",
+      "source": "Local tg-ws-proxy sidecar — MTProto/IP block; handled by the local MTProto-over-WebSocket proxy, not winws2 desync",
       "blockType": "proxy",
       "methods": []
     },
     "meta": {
-      "source": "bol-van/zapret #1134 — Meta is IP-blocked; no free desync, needs VPN",
+      "source": "Provider fingerprint — Meta is IP-blocked; no free desync, needs VPN",
       "blockType": "vpn",
       "methods": []
     },

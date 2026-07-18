@@ -16,7 +16,7 @@ import (
 // TgWsProxyProcessName is the bundled tg-ws-proxy executable. It runs a
 // local MTProto proxy (default 127.0.0.1:1443) that tunnels Telegram's MTProto
 // inside WebSocket/TLS to the datacenters — bypassing the IP/protocol block that
-// pure desync (winws) cannot. It is auto-started as a background sidecar; the
+// pure desync (winws2) cannot. It is auto-started as a background sidecar; the
 // Telegram app connects to it via the tg://proxy link (one in-Telegram confirm,
 // which is Telegram's own security and cannot be bypassed from outside).
 const (

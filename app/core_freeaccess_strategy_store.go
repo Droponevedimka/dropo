@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"time"
 )
 
@@ -186,6 +187,18 @@ func (a *App) selectFreeAccessStrategyForService(settings GlobalAppSettings, svc
 		}
 		a.writeLog(fmt.Sprintf("[FreeAccess] manual method %s for %s is unavailable, falling back to automatic strategy", manual, svc.DisplayName))
 	}
+	if cached, ok := serviceFallbackCache[svc.Tag]; ok && !isFreeAccessFallbackTag(cached.MethodTag) {
+		if method, exists := findServiceBypassMethod(svc.Tag, cached.MethodTag); exists {
+			return freeAccessStrategySelection{
+				Tag:         svc.Tag,
+				Name:        svc.DisplayName,
+				MethodTag:   method.Tag,
+				MethodLabel: method.Label,
+				MethodKind:  "transparent",
+				Source:      "service-cache-" + cached.Source,
+			}
+		}
+	}
 	if cached, ok := serviceFallbackCache[svc.Tag]; ok && isFreeAccessFallbackTag(cached.MethodTag) &&
 		strategyMethodAvailable(cached.MethodTag, activeProxyTags, transparentTags, hasVPNProxy) {
 		return makeFreeAccessStrategySelection(svc, cached.MethodTag, "service-cache-"+cached.Source, 0)
@@ -201,13 +214,26 @@ func (a *App) selectFreeAccessStrategyForService(settings GlobalAppSettings, svc
 		return makeFreeAccessStrategySelection(svc, FreeAccessMethodVPN, "default-vpn", 0)
 	}
 	// Only services that actually have a free desync/proxy method (blockType
-	// "dpi") may use winws/ByeDPI here. blockType "vpn"/"proxy" services (meta,
+	// "dpi") may use winws2/ByeDPI here. blockType "vpn"/"proxy" services (meta,
 	// whatsapp, telegram) have NO working free route through sing-box: giving
 	// them a transparent zapret default sent them to a DEAD 'direct' path under
-	// the hybrid urltest (winws never desyncs them), so they appeared blocked
+	// the hybrid urltest (winws2 never desyncs them), so they appeared blocked
 	// instead of falling back to the VPN. They must go straight to the VPN.
 	// (Telegram's free path is the separate tg-ws-proxy sidecar, not this group.)
 	hasFreeBypass := serviceHasFreeBypass(svc.Tag)
+	if runtime.GOOS == "windows" && hasFreeBypass {
+		methods := rankedMethodsForService(svc.Tag)
+		if len(methods) > 0 {
+			return freeAccessStrategySelection{
+				Tag:         svc.Tag,
+				Name:        svc.DisplayName,
+				MethodTag:   methods[0].Tag,
+				MethodLabel: methods[0].Label,
+				MethodKind:  "transparent",
+				Source:      "pending-first-success-search",
+			}
+		}
+	}
 
 	var storedVPNFallback *freeAccessStrategySelection
 	var storedFreeFallback *freeAccessStrategySelection

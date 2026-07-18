@@ -1,9 +1,6 @@
 package main
 
-import (
-	"runtime"
-	"testing"
-)
+import "testing"
 
 func TestDefaultStorageSettingsMatchCurrentNetworkPolicy(t *testing.T) {
 	app := newInitializedSettingsScenarioApp(t)
@@ -12,8 +9,8 @@ func TestDefaultStorageSettingsMatchCurrentNetworkPolicy(t *testing.T) {
 	if settings.RoutingMode != RoutingModeBlockedOnly {
 		t.Fatalf("default routing mode = %q, want blocked_only", settings.RoutingMode)
 	}
-	if settings.NetworkMode != NetworkModeAuto {
-		t.Fatalf("default network mode = %q, want auto", settings.NetworkMode)
+	if settings.NetworkMode != NetworkModeWindowsUnified {
+		t.Fatalf("default network mode = %q, want windows_unified", settings.NetworkMode)
 	}
 	if settings.DisableFreeAccess {
 		t.Fatal("free methods must be allowed by default")
@@ -61,17 +58,13 @@ func TestSettingsAPIsPersistRoutingAndNetworkMode(t *testing.T) {
 	networkResult := app.SetNetworkMode(string(NetworkModeCompatTun))
 	requireAPISuccess(t, networkResult)
 	settings = app.storage.GetAppSettings()
-	if settings.NetworkMode != NetworkModeCompatTun {
-		t.Fatalf("stored network mode = %q, want compat_tun request", settings.NetworkMode)
+	if settings.NetworkMode != NetworkModeWindowsUnified {
+		t.Fatalf("stored network mode = %q, want legacy request migrated to windows_unified", settings.NetworkMode)
 	}
 	status := networkResult["status"].(map[string]interface{})
 	active := status["active"].(string)
-	if runtime.GOOS == "windows" {
-		if active != string(NetworkModeDeepWindows) {
-			t.Fatalf("active network mode = %q, want Deep Windows while engine files are available", active)
-		}
-	} else if active != string(NetworkModeCompatTun) {
-		t.Fatalf("active network mode = %q, want compat fallback on non-Windows", active)
+	if active != string(NetworkModeWindowsUnified) {
+		t.Fatalf("active network mode = %q, want Windows Unified", active)
 	}
 
 	invalidResult := app.SetRoutingMode("bad-mode")
@@ -112,12 +105,8 @@ func TestSettingsAPIsPersistFreeAccessPolicy(t *testing.T) {
 	requireAPISuccess(t, result)
 	settings = app.storage.GetAppSettings()
 	plan = buildDeepWindowsRoutePlanForSettings(settings, true, true, true)
-	if interceptionEngineSupported() {
-		if !planContainsString(plan.TransparentServices, "telegram") {
-			t.Fatalf("manual zapret plan = %+v, want telegram transparent", plan)
-		}
-	} else if !planContainsString(plan.ProxyServices, "telegram") {
-		t.Fatalf("manual zapret plan = %+v, want proxy fallback without a platform interception engine", plan)
+	if !planContainsString(plan.ProxyServices, "telegram") || planContainsString(plan.TransparentServices, "telegram") {
+		t.Fatalf("legacy manual zapret plan = %+v, want migration to automatic Telegram VPN fallback", plan)
 	}
 
 	invalidResult := app.SetFreeAccessServiceMethod("unknown-service", FreeAccessMethodDirect)

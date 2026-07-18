@@ -310,7 +310,7 @@ func TestManualSubscriptionRuntimeFromEnv(t *testing.T) {
 	}
 }
 
-func TestManualDeepWindowsAppRuntimeFromEnv(t *testing.T) {
+func TestManualWindowsUnifiedAppRuntimeFromEnv(t *testing.T) {
 	if os.Getenv("DROPO_TEST_DEEP_WINDOWS_LIVE") != "1" {
 		t.Skip("DROPO_TEST_DEEP_WINDOWS_LIVE is not set")
 	}
@@ -352,30 +352,27 @@ func TestManualDeepWindowsAppRuntimeFromEnv(t *testing.T) {
 		}
 	}()
 
-	configPath := prepareManualLiveConfig(t, app, "", func(settings *GlobalAppSettings) {
+	prepareManualLiveConfig(t, app, "", func(settings *GlobalAppSettings) {
 		settings.RoutingMode = RoutingModeBlockedOnly
-		settings.NetworkMode = NetworkModeAuto
+		settings.NetworkMode = NetworkModeWindowsUnified
 		settings.DisableFreeAccess = false
 		settings.HideRuTraffic = false
 	})
 	status := app.currentNetworkModeStatus()
-	if status.Active != NetworkModeDeepWindows || !status.DriverReady {
-		t.Fatalf("network mode = %+v, want ready Deep Windows", status)
-	}
-	plan := app.buildDeepWindowsRoutePlan(configPath)
-	if plan.RequiresSingBoxProxy || !planContainsString(plan.TransparentServices, "youtube") {
-		t.Fatalf("free default plan = %+v, want transparent Deep Windows without proxy endpoint", plan)
+	if status.Active != NetworkModeWindowsUnified || !status.DriverReady {
+		t.Fatalf("network mode = %+v, want ready Windows Unified", status)
 	}
 
 	startResult := app.Start()
 	requireAPISuccess(t, startResult)
-	if !waitForRuntimeProcessName(t, basePath, "winws.exe", 12*time.Second) {
-		t.Fatalf("winws.exe did not start; runtime processes: %v", mustRuntimeProcessSnapshot(t, basePath))
+	if !waitForRuntimeProcessName(t, basePath, ZapretProcessName, 12*time.Second) {
+		t.Fatalf("%s did not start; runtime processes: %v", ZapretProcessName, mustRuntimeProcessSnapshot(t, basePath))
 	}
-	if runtimeProcessNamePresent(t, basePath, "sing-box.exe") {
-		t.Fatalf("free default Deep Windows must not start sing-box/TUN; processes: %v", mustRuntimeProcessSnapshot(t, basePath))
+	if !waitForRuntimeProcessName(t, basePath, "sing-box.exe", 20*time.Second) {
+		t.Fatalf("Windows Unified must start sing-box/TUN; processes: %v", mustRuntimeProcessSnapshot(t, basePath))
 	}
-	t.Logf("Deep Windows free mode processes: %v", mustRuntimeProcessSnapshot(t, basePath))
+	assertActiveConfigHasTun(t, app)
+	t.Logf("Windows Unified free mode processes: %v", mustRuntimeProcessSnapshot(t, basePath))
 	stopResult := app.Stop()
 	requireAPISuccess(t, stopResult)
 	waitForNoRuntimeProcesses(t, basePath, 12*time.Second)
@@ -387,21 +384,16 @@ func TestManualDeepWindowsAppRuntimeFromEnv(t *testing.T) {
 		return
 	}
 
-	configPath = prepareManualLiveConfig(t, app, subscriptionURL, func(settings *GlobalAppSettings) {
+	prepareManualLiveConfig(t, app, subscriptionURL, func(settings *GlobalAppSettings) {
 		settings.RoutingMode = RoutingModeBlockedOnly
-		settings.NetworkMode = NetworkModeAuto
+		settings.NetworkMode = NetworkModeWindowsUnified
 		settings.DisableFreeAccess = false
 		settings.HideRuTraffic = false
 	})
-	plan = app.buildDeepWindowsRoutePlan(configPath)
-	if !plan.RequiresSingBoxProxy || !planContainsString(plan.TransparentServices, "youtube") || !planContainsString(plan.ProxyServices, "openai") {
-		t.Fatalf("subscription fallback plan = %+v, want transparent free services and proxy endpoint for VPN-only services", plan)
-	}
-
 	startResult = app.Start()
 	requireAPISuccess(t, startResult)
-	if !waitForRuntimeProcessName(t, basePath, "winws.exe", 12*time.Second) {
-		t.Fatalf("winws.exe did not start with subscription; runtime processes: %v", mustRuntimeProcessSnapshot(t, basePath))
+	if !waitForRuntimeProcessName(t, basePath, ZapretProcessName, 12*time.Second) {
+		t.Fatalf("%s did not start with subscription; runtime processes: %v", ZapretProcessName, mustRuntimeProcessSnapshot(t, basePath))
 	}
 	if !waitForRuntimeProcessName(t, basePath, "sing-box.exe", 20*time.Second) {
 		t.Fatalf("sing-box TUN runtime did not start with subscription; runtime processes: %v", mustRuntimeProcessSnapshot(t, basePath))
@@ -416,7 +408,6 @@ func TestManualDeepWindowsAppRuntimeFromEnv(t *testing.T) {
 	waitForNoRuntimeProcesses(t, basePath, 15*time.Second)
 	assertWinDivertNotOwnedByRuntime(t, basePath)
 
-	assertDeepWindowsSettingsMatrix(t, app, subscriptionURL)
 }
 
 func httpGetBody(url string) (string, error) {
@@ -520,7 +511,9 @@ func requireManualLiveRuntimeFiles(t *testing.T, basePath string) {
 	for _, rel := range []string{
 		"bin/sing-box.exe",
 		"bin/xray.exe",
-		"bin/winws.exe",
+		"bin/winws2.exe",
+		"bin/zapret-lib.lua",
+		"bin/zapret-antidpi.lua",
 		"bin/cygwin1.dll",
 		"bin/WinDivert.dll",
 		"bin/WinDivert64.sys",

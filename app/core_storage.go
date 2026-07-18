@@ -53,7 +53,7 @@ type GlobalAppSettings struct {
 
 	// Routing settings
 	RoutingMode RoutingMode `json:"routing_mode"` // How traffic is routed: blocked_only, except_russia, all_traffic
-	NetworkMode NetworkMode `json:"network_mode"` // Network engine request: auto, deep_windows, compat_tun
+	NetworkMode NetworkMode `json:"network_mode"` // Windows desktop always migrates to windows_unified
 
 	// Free access settings — opening blocked-in-RF
 	// services without a VPN key, via local DPI-bypass methods (ByeDPI).
@@ -1859,7 +1859,7 @@ func (b *ConfigBuilderForStorage) addFreeAccessOutbounds(template map[string]int
 					}
 					continue
 				}
-				outbounds = append(outbounds, BuildResilientGroupWithURL(ServiceBypassGroupTag(svc.Tag), serviceCandidates, svc.HealthURL))
+				outbounds = append(outbounds, BuildServiceRouteGroup(ServiceBypassGroupTag(svc.Tag), serviceCandidates))
 			}
 			if needsNoRouteOutbound {
 				outbounds = append(outbounds, map[string]interface{}{
@@ -1944,7 +1944,7 @@ func buildFreeAccessProcessRules(settings GlobalAppSettings) []interface{} {
 }
 
 func freeAccessProcessNames() []string {
-	return []string{ByeDPIProcessName, ZapretProcessName, "winws2.exe"}
+	return []string{ByeDPIProcessName, ZapretProcessName}
 }
 
 func uniqueStrings(items []string) []string {

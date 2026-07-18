@@ -20,25 +20,11 @@ type NetworkModeStatus struct {
 }
 
 func networkModeLabel(mode NetworkMode) string {
-	switch NormalizeNetworkMode(mode) {
-	case NetworkModeDeepWindows:
-		return "Deep Windows"
-	case NetworkModeCompatTun:
-		return "Compatibility TUN"
-	default:
-		return "Auto"
-	}
+	return "Windows Unified"
 }
 
 func networkModeDescription(mode NetworkMode) string {
-	switch NormalizeNetworkMode(mode) {
-	case NetworkModeDeepWindows:
-		return "Deep Windows uses the bundled zapret/winws + WinDivert engine as the primary Windows traffic layer."
-	case NetworkModeCompatTun:
-		return "Compatibility TUN is a fallback path used only when the Deep Windows engine cannot be activated."
-	default:
-		return "Auto selects Deep Windows when winws/WinDivert are available and falls back to Compatibility TUN only on error."
-	}
+	return "A single Windows runtime: sing-box TUN routes traffic and one composed zapret2/winws2 process keeps an independent first-working strategy for each blocked service."
 }
 
 func networkModeStatusPayload(status NetworkModeStatus) map[string]interface{} {
@@ -67,25 +53,15 @@ func (a *App) resolveNetworkMode(requested NetworkMode) NetworkModeStatus {
 	requested = NormalizeNetworkMode(requested)
 	status := NetworkModeStatus{
 		Requested:   requested,
-		Active:      NetworkModeCompatTun,
-		Label:       networkModeLabel(NetworkModeCompatTun),
-		Description: networkModeDescription(NetworkModeCompatTun),
+		Active:      NetworkModeWindowsUnified,
+		Label:       networkModeLabel(NetworkModeWindowsUnified),
+		Description: networkModeDescription(NetworkModeWindowsUnified),
 	}
 
 	ready, helperPath, reason := a.deepWindowsEngineReady()
 	status.HelperPath = helperPath
 	status.DriverReady = ready
-	if ready {
-		status.Active = NetworkModeDeepWindows
-		status.Label = networkModeLabel(NetworkModeDeepWindows)
-		status.Description = networkModeDescription(NetworkModeDeepWindows)
-		if requested == NetworkModeCompatTun {
-			status.FallbackReason = "Compatibility TUN is fallback-only while Deep Windows is available"
-		}
-		return status
-	}
-
-	if requested != NetworkModeCompatTun {
+	if !ready {
 		status.Fallback = true
 		status.FallbackReason = reason
 	}
@@ -98,7 +74,7 @@ func (a *App) deepWindowsEngineReady() (bool, string, string) {
 		helperPath = filepath.Join(a.binDir(), ZapretProcessName)
 	}
 	if !interceptionEngineSupported() {
-		return false, helperPath, fmt.Sprintf("transparent interception engine (%s) is unavailable on this platform; active mode is %s", interceptionEngineKind(), networkModeLabel(NetworkModeCompatTun))
+		return false, helperPath, fmt.Sprintf("transparent interception engine (%s) is unavailable on this platform", interceptionEngineKind())
 	}
 
 	if a != nil && a.zapret != nil {
@@ -112,8 +88,7 @@ func (a *App) deepWindowsEngineReady() (bool, string, string) {
 	if len(missing) == 0 {
 		return true, helperPath, ""
 	}
-	return false, helperPath, fmt.Sprintf("Deep Windows engine is unavailable: missing %s; active mode is %s",
-		strings.Join(missing, ", "), networkModeLabel(NetworkModeCompatTun))
+	return false, helperPath, fmt.Sprintf("Windows Unified runtime is incomplete: missing %s", strings.Join(missing, ", "))
 }
 
 func (a *App) missingDeepWindowsFiles() []string {
@@ -140,40 +115,8 @@ func (a *App) missingDeepWindowsFiles() []string {
 	return missing
 }
 
-func (a *App) logDeepWindowsError(message string) {
-	if a == nil {
-		return
-	}
-	status := a.currentNetworkModeStatus()
-	if status.Requested == NetworkModeCompatTun {
-		return
-	}
-	a.writeLog(fmt.Sprintf("[NetworkMode] ERROR: Deep Windows engine failed: %s; fallback/compat routes will be used where available", message))
-}
-
 func (a *App) shouldUseDeepWindowsPrimary(configPath string, status NetworkModeStatus) (bool, string) {
-	if !interceptionEngineSupported() {
-		return false, fmt.Sprintf("transparent interception engine (%s) is unavailable on this platform", interceptionEngineKind())
-	}
-	if status.Active != NetworkModeDeepWindows {
-		return false, fmt.Sprintf("active network mode is %s", status.Active)
-	}
-	if a == nil || a.zapret == nil || !a.zapret.IsInstalled() {
-		return false, "zapret/winws transparent engine is not available"
-	}
-	if a.storage == nil {
-		return false, "storage is not initialized"
-	}
-
-	if _, err := readJSONConfig(configPath); err != nil {
-		return false, fmt.Sprintf("failed to read active config: %v", err)
-	}
-	plan := a.buildDeepWindowsRoutePlan(configPath)
-	if plan.RequiresRedirector {
-		return false, "Deep Windows plan requires proxy redirector; using Compatibility TUN so subscription/proxy routes are enforced"
-	}
-
-	return true, "Deep Windows is primary; transparent routes do not require sing-box TUN"
+	return false, "Windows Unified always uses sing-box TUN routing with one composed winws2 engine"
 }
 
 // GetNetworkMode returns the current network engine state and supported modes.
@@ -192,9 +135,7 @@ func (a *App) GetNetworkMode() map[string]interface{} {
 		"success": true,
 		"status":  networkModeStatusPayload(status),
 		"modes": []map[string]string{
-			{"value": string(NetworkModeAuto), "label": "Auto", "description": networkModeDescription(NetworkModeAuto)},
-			{"value": string(NetworkModeDeepWindows), "label": networkModeLabel(NetworkModeDeepWindows), "description": networkModeDescription(NetworkModeDeepWindows)},
-			{"value": string(NetworkModeCompatTun), "label": networkModeLabel(NetworkModeCompatTun), "description": networkModeDescription(NetworkModeCompatTun)},
+			{"value": string(NetworkModeWindowsUnified), "label": networkModeLabel(NetworkModeWindowsUnified), "description": networkModeDescription(NetworkModeWindowsUnified)},
 		},
 	}
 }
@@ -212,7 +153,7 @@ func (a *App) SetNetworkMode(mode string) map[string]interface{} {
 	}
 
 	networkMode := NetworkMode(mode)
-	if NormalizeNetworkMode(networkMode) != networkMode {
+	if networkMode != NetworkModeWindowsUnified && networkMode != NetworkModeAuto && networkMode != NetworkModeDeepWindows && networkMode != NetworkModeCompatTun {
 		return map[string]interface{}{
 			"success": false,
 			"error":   fmt.Sprintf("Неизвестный сетевой режим: %s", mode),
@@ -230,7 +171,7 @@ func (a *App) SetNetworkMode(mode string) map[string]interface{} {
 	}
 
 	settings := a.storage.GetAppSettings()
-	settings.NetworkMode = networkMode
+	settings.NetworkMode = NetworkModeWindowsUnified
 	if err := a.storage.UpdateAppSettings(settings); err != nil {
 		return map[string]interface{}{
 			"success": false,
