@@ -357,12 +357,6 @@ func (a *App) Start() map[string]interface{} {
 	go a.logOutput(stdout, "sing-box/out")
 	go a.logOutput(stderr, "sing-box/log")
 
-	// Start Native WireGuard tunnels (internal/corporate VPNs)
-	if a.nativeWG != nil && a.nativeWG.IsInstalled() {
-		a.updateBusy(busyID, "Запускаем рабочие WireGuard-сети...")
-		a.startNativeWireGuardTunnels()
-	}
-
 	// Start tracking traffic statistics
 	if a.trafficStats != nil {
 		a.trafficStats.StartSession()
@@ -372,6 +366,9 @@ func (a *App) Start() map[string]interface{} {
 	// Windows Unified: sing-box owns TUN routing and one composed winws2 owns
 	// every per-service zapret2 profile. Uncached services are tested in ranked
 	// order and stop at the first successful strategy.
+	// Camouflage must be installed before native WireGuard sends its first
+	// initiation packet. It remains a sidecar; WireGuard owns the tunnel.
+	a.resetWireGuardCamouflageSession()
 	a.updateBusy(busyID, "Подбираем стратегии для заблокированных сервисов...")
 	if err := a.startComposedTransparentEngine(busyID); err != nil {
 		a.writeLog(fmt.Sprintf("[NetworkMode] Windows Unified winws2 engine failed to start: %v", err))
@@ -390,6 +387,13 @@ func (a *App) Start() map[string]interface{} {
 			"success": false,
 			"error":   fmt.Sprintf("Windows Unified: не удалось запустить подбор стратегий winws2: %v", err),
 		}
+	}
+
+	// Start Native WireGuard tunnels only after the strictly-scoped zapret2
+	// handshake profiles are active.
+	if a.nativeWG != nil && a.nativeWG.IsInstalled() {
+		a.updateBusy(busyID, "Запускаем рабочие WireGuard-сети...")
+		a.startNativeWireGuardTunnels()
 	}
 
 	// Monitor process in goroutine
@@ -780,6 +784,14 @@ func (a *App) ensureActiveConfigForStart() error {
 	if a.configBuilder == nil {
 		return fmt.Errorf("config builder not initialized")
 	}
+	// Allocate the endpoint immediately before generating the config. Keeping a
+	// port chosen at application initialization would leave a long window in
+	// which another process could claim it before sing-box starts listening.
+	access := newClashAPIAccess()
+	if err := access.validate(); err != nil {
+		return err
+	}
+	a.configBuilder.clashAPI = access
 
 	profile, err := a.storage.GetActiveProfile()
 	if err != nil || profile == nil {
@@ -816,7 +828,13 @@ func (a *App) ensureActiveConfigForStart() error {
 		if needsRebuild {
 			return a.configBuilder.BuildConfigForProfile(profile.ID, subscriptionURL, profile.WireGuardConfigs)
 		}
-		return nil
+		// Clash API credentials are intentionally start-local. Refresh a cached
+		// profile on every sing-box launch so the server and in-process clients use
+		// the same newly allocated endpoint and bearer secret.
+		if err := a.configBuilder.addExperimentalAPI(config); err != nil {
+			return fmt.Errorf("refresh local Clash API access: %w", err)
+		}
+		return a.storage.UpdateProfileConfig(profile.ID, config)
 	}
 
 	a.writeLog("Active profile has no generated config, building it before start")
@@ -1007,9 +1025,7 @@ func (a *App) Stop() map[string]interface{} {
 	// Terminate sing-box first so the TUN interface releases traffic quickly.
 	if runtime.GOOS == "windows" {
 		a.updateBusy(busyID, "Завершаем sing-box и освобождаем TUN-интерфейс...")
-		if err := runBackgroundCommandWithTimeout(4*time.Second, "taskkill", "/F", "/T", "/PID", fmt.Sprintf("%d", cmd.Process.Pid)); err != nil {
-			a.writeLog(fmt.Sprintf("taskkill sing-box failed or timed out: %v", err))
-		}
+		terminateProcessTree(cmd)
 	} else {
 		a.updateBusy(busyID, "Завершаем sing-box...")
 		cmd.Process.Signal(syscall.SIGTERM)
@@ -1367,6 +1383,9 @@ func (a *App) startNativeWireGuardTunnels() {
 		a.AddToLogBuffer(fmt.Sprintf("WireGuard туннель %d: переподключен", configID))
 		// Emit event to frontend
 		a.emitEvent("wireguard-tunnel-restarted", configID)
+	})
+	a.nativeWG.SetTunnelUnhealthyCallback(func(configID int) {
+		a.disableWireGuardCamouflageForSession(configID)
 	})
 
 	started := 0

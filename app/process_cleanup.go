@@ -166,6 +166,16 @@ func resetWindowsSystemProxyForPorts(ports []int) (bool, string, error) {
 	if runtime.GOOS != "windows" || len(ports) == 0 {
 		return false, "", nil
 	}
+	return resetWindowsSystemProxyNativeForPorts(ports)
+}
+
+// resetWindowsSystemProxyForPortsPowerShell is kept only as a diagnostic
+// fallback reference for older Windows builds. Runtime cleanup uses the native
+// registry/WinINet implementation above and never spawns PowerShell.
+func resetWindowsSystemProxyForPortsPowerShell(ports []int) (bool, string, error) {
+	if runtime.GOOS != "windows" || len(ports) == 0 {
+		return false, "", nil
+	}
 	values := make([]string, 0, len(ports))
 	for _, port := range ports {
 		if port > 0 {
@@ -425,6 +435,16 @@ func pathIsInside(path, basePath string) bool {
 }
 
 func killWindowsDropoManagedSidecars(paths []string, roots []string) ([]int, error) {
+	if runtime.GOOS != "windows" || len(paths) == 0 && len(roots) == 0 {
+		return nil, nil
+	}
+	return killWindowsDropoManagedSidecarsNative(paths, roots)
+}
+
+// killWindowsDropoManagedSidecarsPowerShell remains as a non-runtime fallback
+// reference. The normal cleanup path enumerates and terminates owned processes
+// with Win32 APIs and therefore does not trigger a PowerShell/taskkill chain.
+func killWindowsDropoManagedSidecarsPowerShell(paths []string, roots []string) ([]int, error) {
 	if len(paths) == 0 && len(roots) == 0 {
 		return nil, nil
 	}

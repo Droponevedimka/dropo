@@ -25,6 +25,7 @@ type ConfigBuilder struct {
 	routingMode     RoutingMode    // Current routing mode
 	filterManager   *FilterManager // Filter manager for rule-sets
 	fetcher         *SubscriptionFetcher
+	clashAPI        *clashAPIAccess
 }
 
 // NewConfigBuilder создаёт новый ConfigBuilder
@@ -36,6 +37,7 @@ func NewConfigBuilder(basePath string) *ConfigBuilder {
 		routingMode:     DefaultRoutingMode,
 		filterManager:   NewFilterManager(filepath.Dir(basePath)), // bin/filters is sibling to resources
 		fetcher:         NewSubscriptionFetcher(),
+		clashAPI:        newClashAPIAccess(),
 	}
 	return cb
 }
@@ -308,7 +310,9 @@ func (b *ConfigBuilder) BuildConfigFull(subscriptionURL string, wireGuardConfigs
 	b.applyRoutingMode(template)
 
 	// Добавляем experimental секцию с clash_api для статистики трафика
-	b.addExperimentalAPI(template)
+	if err := b.addExperimentalAPI(template); err != nil {
+		return err
+	}
 
 	// Удаляем служебные поля из template
 	delete(template, "outbounds_template")
@@ -698,25 +702,11 @@ func copyMap(m map[string]interface{}) map[string]interface{} {
 }
 
 // addExperimentalAPI добавляет clash_api в experimental секцию для статистики трафика
-func (b *ConfigBuilder) addExperimentalAPI(template map[string]interface{}) {
-	// Clash API для получения статистики трафика и пинга
-	clashAPI := map[string]interface{}{
-		"external_controller": "127.0.0.1:9090",
-		"secret":              "",
+func (b *ConfigBuilder) addExperimentalAPI(template map[string]interface{}) error {
+	if b.clashAPI == nil {
+		b.clashAPI = newClashAPIAccess()
 	}
-
-	// Получаем существующую experimental секцию или создаём новую
-	var experimental map[string]interface{}
-	if existing, ok := template["experimental"].(map[string]interface{}); ok {
-		experimental = existing
-	} else {
-		experimental = make(map[string]interface{})
-	}
-
-	// Добавляем clash_api
-	experimental["clash_api"] = clashAPI
-
-	template["experimental"] = experimental
+	return b.clashAPI.apply(template)
 }
 
 // applyRoutingMode applies routing rules based on the selected routing mode.

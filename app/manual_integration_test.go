@@ -135,12 +135,13 @@ func TestManualFreeAccessRuntimeFromEnv(t *testing.T) {
 	}
 	defer stopProcessTree(cmd.Process.Pid)
 
-	if !waitForHTTP("http://127.0.0.1:9090/proxies", 12*time.Second) {
+	clashURL := builder.clashAPI.baseURL() + "/proxies"
+	if !waitForHTTP(clashURL, builder.clashAPI.secret, 12*time.Second) {
 		stopProcessTree(cmd.Process.Pid)
 		t.Fatalf("clash api did not become ready\nstdout:\n%s\nstderr:\n%s", stdout.String(), stderr.String())
 	}
 
-	proxiesBody, err := httpGetBody("http://127.0.0.1:9090/proxies")
+	proxiesBody, err := httpGetBody(clashURL, builder.clashAPI.secret)
 	if err != nil {
 		t.Fatalf("failed to query proxies: %v", err)
 	}
@@ -281,12 +282,13 @@ func TestManualSubscriptionRuntimeFromEnv(t *testing.T) {
 	}
 	defer stopProcessTree(cmd.Process.Pid)
 
-	if !waitForHTTP("http://127.0.0.1:9090/proxies", 12*time.Second) {
+	clashURL := builder.clashAPI.baseURL() + "/proxies"
+	if !waitForHTTP(clashURL, builder.clashAPI.secret, 12*time.Second) {
 		stopProcessTree(cmd.Process.Pid)
 		t.Fatalf("clash api did not become ready\nstdout:\n%s\nstderr:\n%s", stdout.String(), stderr.String())
 	}
 
-	proxiesBody, err := httpGetBody("http://127.0.0.1:9090/proxies")
+	proxiesBody, err := httpGetBody(clashURL, builder.clashAPI.secret)
 	if err != nil {
 		t.Fatalf("failed to query proxies: %v", err)
 	}
@@ -410,9 +412,14 @@ func TestManualWindowsUnifiedAppRuntimeFromEnv(t *testing.T) {
 
 }
 
-func httpGetBody(url string) (string, error) {
+func httpGetBody(url, secret string) (string, error) {
 	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Get(url)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+secret)
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -425,10 +432,15 @@ func httpGetBody(url string) (string, error) {
 	return body.String(), nil
 }
 
-func waitForHTTP(url string, timeout time.Duration) bool {
+func waitForHTTP(url, secret string, timeout time.Duration) bool {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		resp, err := http.Get(url)
+		req, err := http.NewRequest(http.MethodGet, url, nil)
+		if err != nil {
+			return false
+		}
+		req.Header.Set("Authorization", "Bearer "+secret)
+		resp, err := http.DefaultClient.Do(req)
 		if err == nil {
 			resp.Body.Close()
 			return true

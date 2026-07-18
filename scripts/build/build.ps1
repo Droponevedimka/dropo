@@ -370,6 +370,18 @@ function Update-BundledFilters {
 
 $VersionInfo = Get-VersionInfo
 $AppVersion = if ($Version) { $Version } else { $VersionInfo.version }
+$PubspecPath = Join-Path $ScriptRoot "flutter_app\pubspec.yaml"
+if (-not (Test-Path -LiteralPath $PubspecPath -PathType Leaf)) {
+    throw "Flutter pubspec not found: $PubspecPath"
+}
+$PubspecVersionLine = Get-Content -LiteralPath $PubspecPath | Where-Object { $_ -match '^version:\s*' } | Select-Object -First 1
+if ($PubspecVersionLine -notmatch '^version:\s*([0-9]+\.[0-9]+\.[0-9]+)(?:\+[0-9]+)?\s*$') {
+    throw "flutter_app/pubspec.yaml has no valid semantic version."
+}
+$PubspecAppVersion = $Matches[1]
+if ($PubspecAppVersion -ne [string]$VersionInfo.version) {
+    throw "Version mismatch: version.json=$($VersionInfo.version), flutter_app/pubspec.yaml=$PubspecAppVersion. Keep version.json as the release source of truth."
+}
 $SingBoxVersion = $VersionInfo.singbox.version
 $WireGuardVersion = $VersionInfo.wireguard.version
 $ByeDPIVersion = $VersionInfo.byedpi.version

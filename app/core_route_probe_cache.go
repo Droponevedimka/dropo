@@ -11,9 +11,10 @@ import (
 )
 
 const (
-	routeProbeCacheFileName = "route_probe_cache.json"
-	routeProbeCacheVersion  = 1
-	routeProbeCacheTTL      = 24 * time.Hour
+	routeProbeCacheFileName          = "route_probe_cache.json"
+	routeProbeCacheVersion           = 1
+	routeProbeCacheTTL               = 24 * time.Hour
+	serviceStrategyRetryPollInterval = time.Minute
 )
 
 type routeProbeCacheFile struct {
@@ -30,6 +31,7 @@ func (a *App) startRouteStrategyMaintenanceListener() {
 	if !a.routeStrategyLoop.CompareAndSwap(false, true) {
 		return
 	}
+	go a.runServiceStrategyRetryTimer()
 	go func() {
 		a.writeLog("[FreeAccess] strategy maintenance listener started")
 		for reason := range a.routeStrategyJobs {
@@ -86,6 +88,26 @@ func (a *App) startRouteStrategyMaintenanceListener() {
 			}
 		}
 	}()
+}
+
+func (a *App) runServiceStrategyRetryTimer() {
+	ticker := time.NewTicker(serviceStrategyRetryPollInterval)
+	defer ticker.Stop()
+	var done <-chan struct{}
+	if a.ctx != nil {
+		done = a.ctx.Done()
+	}
+	for {
+		select {
+		case <-done:
+			return
+		case <-ticker.C:
+			if a.isShuttingDown() {
+				return
+			}
+			a.retryDueServiceStrategies()
+		}
+	}
 }
 
 func (a *App) requestRouteStrategyMaintenance(reason string) {

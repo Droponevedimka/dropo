@@ -58,24 +58,29 @@ type App struct {
 	// service for the lifetime of one VPN session: once a service has been
 	// searched (regardless of outcome) it is not searched again until the next
 	// VPN start. routeStrategyQueued de-duplicates jobs that are still pending.
-	routeStrategyMu            sync.Mutex
-	routeStrategyAttempted     map[string]bool
-	routeStrategyQueued        map[string]bool
-	transparentReselectionDone bool
-	serviceStrategyCacheMu     sync.Mutex
-	tgProxyStartedSession      atomic.Bool // tg-ws-proxy sidecar was started this session (gates the exit notice)
-	tgProxyPromptedSession     atomic.Bool // tg://proxy was opened at most once per VPN session
-	busySeq                    uint64
-	vpnStopping                atomic.Bool
-	frontendQuitRequested      atomic.Bool
-	initializedReady           atomic.Bool
-	shutdownRequested          atomic.Bool
-	windowVisibleFlag          atomic.Bool
-	initDone                   chan struct{} // closed once initialization finishes
-	initDoneOnce               sync.Once     // guards the single close of initDone
-	logBuffer                  []string      // Log buffer for UI
-	logBufferMu                sync.RWMutex
-	events                     *EventHub
+	routeStrategyMu             sync.Mutex
+	routeStrategyAttempted      map[string]bool
+	routeStrategyQueued         map[string]bool
+	transparentReselectionDone  bool
+	serviceStrategyCacheMu      sync.Mutex
+	serviceEngineComposeMu      sync.Mutex
+	wireGuardCamouflageMu       sync.RWMutex
+	wireGuardCamouflageReady    bool
+	wireGuardCamouflageTargets  []wireGuardCamouflageTarget
+	wireGuardCamouflageDisabled map[int]bool
+	tgProxyStartedSession       atomic.Bool // tg-ws-proxy sidecar was started this session (gates the exit notice)
+	tgProxyPromptedSession      atomic.Bool // tg://proxy was opened at most once per VPN session
+	busySeq                     uint64
+	vpnStopping                 atomic.Bool
+	frontendQuitRequested       atomic.Bool
+	initializedReady            atomic.Bool
+	shutdownRequested           atomic.Bool
+	windowVisibleFlag           atomic.Bool
+	initDone                    chan struct{} // closed once initialization finishes
+	initDoneOnce                sync.Once     // guards the single close of initDone
+	logBuffer                   []string      // Log buffer for UI
+	logBufferMu                 sync.RWMutex
+	events                      *EventHub
 }
 
 // NewApp creates a new App application struct.

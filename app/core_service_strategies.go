@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -417,6 +419,16 @@ type serviceWinwsSelection struct {
 	Method       ServiceBypassMethod
 }
 
+// wireGuardCamouflageTarget is deliberately limited to resolved peer
+// addresses and its UDP port. This prevents the experimental profile from
+// changing unrelated UDP traffic.
+type wireGuardCamouflageTarget struct {
+	ConfigID int
+	Tag      string
+	Port     int
+	IPs      []string
+}
+
 const (
 	// Discord voice gateway endpoints are commonly returned as
 	// *.discord.media:2048; keep it with the alternate media TCP ports so voice
@@ -442,6 +454,10 @@ func hasDiscordSelection(selections []serviceWinwsSelection) bool {
 // per-service scopes are disjoint, so every service is handled by its own method
 // without conflicting with the others.
 func composeServiceWinwsArgs(selections []serviceWinwsSelection, binDir string) []string {
+	return composeServiceAndWireGuardWinwsArgs(selections, nil, binDir)
+}
+
+func composeServiceAndWireGuardWinwsArgs(selections []serviceWinwsSelection, wireGuardTargets []wireGuardCamouflageTarget, binDir string) []string {
 	binPrefix := binDir
 	if binPrefix != "" && !strings.HasSuffix(binPrefix, string(os.PathSeparator)) {
 		binPrefix += string(os.PathSeparator)
@@ -456,7 +472,7 @@ func composeServiceWinwsArgs(selections []serviceWinwsSelection, binDir string) 
 
 	discordSelected := hasDiscordSelection(selections)
 
-	profiles := make([][]string, 0, len(selections)*3+2)
+	profiles := make([][]string, 0, len(selections)*3+len(wireGuardTargets)+2)
 	for _, sel := range selections {
 		if sel.HostlistPath == "" {
 			continue
@@ -486,11 +502,32 @@ func composeServiceWinwsArgs(selections []serviceWinwsSelection, binDir string) 
 			profiles = append(profiles, mediaTCP, voiceUDP)
 		}
 	}
+	udpPorts := make(map[int]struct{}, len(wireGuardTargets))
+	for _, target := range wireGuardTargets {
+		if target.Port <= 0 || target.Port > 65535 || len(target.IPs) == 0 {
+			continue
+		}
+		ips := append([]string(nil), target.IPs...)
+		sort.Strings(ips)
+		profiles = append(profiles, []string{
+			"--filter-udp=" + strconv.Itoa(target.Port),
+			"--filter-l7=wireguard",
+			"--ipset-ip=" + strings.Join(ips, ","),
+			"--payload=wireguard_initiation,wireguard_cookie",
+			"--lua-desync=fake:blob=0x00000000000000000000000000000000:repeats=2",
+		})
+		udpPorts[target.Port] = struct{}{}
+	}
 	if len(profiles) == 0 {
 		return nil
 	}
 
-	args := zapret2BootstrapArgs(binPrefix, discordSelected)
+	ports := make([]int, 0, len(udpPorts))
+	for port := range udpPorts {
+		ports = append(ports, port)
+	}
+	sort.Ints(ports)
+	args := zapret2BootstrapArgsWithUDP(binPrefix, discordSelected, ports)
 	for i, profile := range profiles {
 		if i > 0 {
 			args = append(args, "--new")
@@ -501,6 +538,10 @@ func composeServiceWinwsArgs(selections []serviceWinwsSelection, binDir string) 
 }
 
 func zapret2BootstrapArgs(binPrefix string, discord bool) []string {
+	return zapret2BootstrapArgsWithUDP(binPrefix, discord, nil)
+}
+
+func zapret2BootstrapArgsWithUDP(binPrefix string, discord bool, wireGuardPorts []int) []string {
 	tcpPorts := "80,443"
 	if discord {
 		tcpPorts += "," + discordMediaTCPPorts
@@ -513,6 +554,13 @@ func zapret2BootstrapArgs(binPrefix string, discord bool) []string {
 		"--blob=google_tls:@" + binPrefix + googleTLSPayload,
 		"--blob=google_quic:@" + binPrefix + googleQUICPayload,
 		"--blob=facebook_quic:@" + binPrefix + facebookQUICPayload,
+	}
+	if len(wireGuardPorts) > 0 {
+		ports := make([]string, 0, len(wireGuardPorts))
+		for _, port := range wireGuardPorts {
+			ports = append(ports, strconv.Itoa(port))
+		}
+		args = append(args, "--wf-udp-out="+strings.Join(ports, ","))
 	}
 	if discord {
 		args = append(args,

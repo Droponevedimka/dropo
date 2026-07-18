@@ -21,10 +21,11 @@ func isFreeAccessFallbackTag(tag string) bool {
 }
 
 const (
-	serviceStrategyCacheFileName = "service_strategy_cache.json"
-	serviceStrategyCacheVersion  = 2
-	serviceHostlistDirName       = "service-hostlists"
-	serviceStrategyFallbackTTL   = 30 * time.Minute
+	serviceStrategyCacheFileName   = "service_strategy_cache.json"
+	serviceStrategyCacheVersion    = 2
+	serviceHostlistDirName         = "service-hostlists"
+	serviceStrategyFallbackTTL     = 30 * time.Minute
+	serviceStrategyProbeRetryDelay = 300 * time.Millisecond
 )
 
 type serviceStrategyCacheFile struct {
@@ -67,10 +68,15 @@ func currentNetworkFingerprint() string {
 		addrs, _ := iface.Addrs()
 		addrParts := make([]string, 0, len(addrs))
 		for _, addr := range addrs {
-			addrParts = append(addrParts, addr.String())
+			if prefix := networkPrefixForFingerprint(addr); prefix != "" {
+				addrParts = append(addrParts, prefix)
+			}
+		}
+		if len(addrParts) == 0 {
+			continue
 		}
 		sort.Strings(addrParts)
-		parts = append(parts, iface.Name+"|"+strings.Join(addrParts, ","))
+		parts = append(parts, name+"|"+strings.Join(addrParts, ","))
 	}
 	if len(parts) == 0 {
 		return ""
@@ -78,6 +84,46 @@ func currentNetworkFingerprint() string {
 	sort.Strings(parts)
 	sum := sha256.Sum256([]byte(strings.Join(parts, "\n")))
 	return hex.EncodeToString(sum[:8])
+}
+
+func networkPrefixForFingerprint(addr net.Addr) string {
+	var ip net.IP
+	var mask net.IPMask
+	switch value := addr.(type) {
+	case *net.IPNet:
+		ip, mask = value.IP, value.Mask
+	case *net.IPAddr:
+		ip = value.IP
+		if ip.To4() != nil {
+			mask = net.CIDRMask(32, 32)
+		} else {
+			mask = net.CIDRMask(64, 128)
+		}
+	default:
+		parsedIP, parsedNet, err := net.ParseCIDR(addr.String())
+		if err != nil {
+			return ""
+		}
+		ip, mask = parsedIP, parsedNet.Mask
+	}
+	if ip == nil || ip.IsUnspecified() || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsMulticast() {
+		return ""
+	}
+	ones, bits := mask.Size()
+	if ones < 0 || bits == 0 {
+		return ""
+	}
+	if bits == 128 && ones > 64 {
+		// RFC 4941 temporary IPv6 addresses rotate their interface identifier.
+		// Fingerprint the stable network prefix, never the temporary host bits.
+		ones = 64
+		mask = net.CIDRMask(ones, bits)
+	}
+	networkIP := ip.Mask(mask)
+	if networkIP == nil {
+		return ""
+	}
+	return (&net.IPNet{IP: networkIP, Mask: mask}).String()
 }
 
 func (a *App) serviceStrategyCachePath() string {
@@ -138,6 +184,63 @@ func (a *App) loadServiceStrategyCache() map[string]serviceStrategyCacheEntry {
 		out[tag] = entry
 	}
 	return out
+}
+
+func (a *App) serviceStrategiesDueForRetry(now time.Time, fingerprint string) []string {
+	path := a.serviceStrategyCachePath()
+	if path == "" {
+		return nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var file serviceStrategyCacheFile
+	if json.Unmarshal(data, &file) != nil || file.Version != serviceStrategyCacheVersion || file.StrategiesVersion != serviceStrategiesVersion() {
+		return nil
+	}
+	due := make([]string, 0)
+	for tag, entry := range file.Services {
+		if entry.MethodTag == "" {
+			continue
+		}
+		if entry.NetworkFingerprint != "" && fingerprint != "" && entry.NetworkFingerprint != fingerprint {
+			due = append(due, tag)
+			continue
+		}
+		if !isFreeAccessFallbackTag(entry.MethodTag) {
+			continue
+		}
+		retryAfter := entry.RetryAfter
+		if retryAfter.IsZero() {
+			retryAfter = entry.UpdatedAt.Add(serviceStrategyFallbackTTL)
+		}
+		if !now.Before(retryAfter) {
+			due = append(due, tag)
+		}
+	}
+	sort.Strings(due)
+	return due
+}
+
+func (a *App) retryDueServiceStrategies() {
+	if a == nil || !a.routeStrategyWorkAllowed() {
+		return
+	}
+	a.mu.Lock()
+	running := a.isRunning && !a.stoppedManually
+	a.mu.Unlock()
+	if !running {
+		return
+	}
+	due := a.serviceStrategiesDueForRetry(time.Now(), currentNetworkFingerprint())
+	if len(due) == 0 {
+		return
+	}
+	a.writeLog(fmt.Sprintf("[FreeAccess] retrying service strategies after fallback TTL/network change: %s", strings.Join(due, ",")))
+	if err := a.startWindowsUnifiedServiceEngine(""); err != nil {
+		a.writeLog(fmt.Sprintf("[FreeAccess] scheduled service strategy retry failed: %v", err))
+	}
 }
 
 func (a *App) cacheServiceMethod(serviceTag, methodTag, source string) {
@@ -276,12 +379,23 @@ func (a *App) composeAndStartServiceEngine(selections map[string]serviceWinwsSel
 	if !a.routeStrategyWorkAllowed() {
 		return fmt.Errorf("VPN is stopping")
 	}
+	a.serviceEngineComposeMu.Lock()
+	defer a.serviceEngineComposeMu.Unlock()
 	ordered := a.orderedSelections(selections)
-	args := composeServiceWinwsArgs(ordered, a.zapretBinDir())
+	for _, selection := range ordered {
+		if strings.TrimSpace(selection.HostlistPath) == "" {
+			a.writeLog(fmt.Sprintf("[FreeAccess] %s omitted from composed winws2: hostlist path is empty", selection.ServiceTag))
+		}
+	}
+	wireGuardTargets := a.wireGuardCamouflageTargetsForSession()
+	args := composeServiceAndWireGuardWinwsArgs(ordered, wireGuardTargets, a.zapretBinDir())
 	if len(args) == 0 {
 		a.zapret.Stop()
 		a.writeLog("[FreeAccess] composed winws2 stopped: no services currently use a transparent strategy")
 		return nil
+	}
+	if len(wireGuardTargets) > 0 {
+		a.writeLog(fmt.Sprintf("[WireGuard] zapret2 handshake camouflage active for %d endpoint(s), scoped by resolved IP and UDP port", len(wireGuardTargets)))
 	}
 	// Detailed per-connection winws2 diagnostics (hostlist matches, desync
 	// decisions) are very noisy, so prefer a standalone file when possible.
@@ -340,10 +454,16 @@ func (a *App) startWindowsUnifiedServiceEngine(busyID string) error {
 		return nil
 	}
 	settings := a.storage.GetAppSettings()
-	if !FreeMethodsAllowed(settings) {
-		a.writeLog("[FreeAccess] per-service engine skipped: free methods disabled")
+	freeMethodsAllowed := FreeMethodsAllowed(settings)
+	if !freeMethodsAllowed {
+		a.writeLog("[FreeAccess] per-service methods disabled; evaluating WireGuard camouflage only")
+		return a.composeAndStartServiceEngine(map[string]serviceWinwsSelection{})
+	}
+	if !a.tryBeginRouteProbeDiscovery() {
+		a.writeLog("[FreeAccess] per-service engine start deferred: strategy discovery is already running")
 		return nil
 	}
+	defer a.finishRouteProbeDiscovery()
 
 	dir := a.serviceHostlistDir()
 	cache := a.loadServiceStrategyCache()
@@ -369,7 +489,12 @@ func (a *App) startWindowsUnifiedServiceEngine(busyID string) error {
 
 	if len(needSearch) > 0 {
 		if err := a.firstRunServiceSearch(busyID, selections, needSearch); err != nil {
-			return err
+			// The initial composed engine was already started successfully above.
+			// A transient probe/recomposition failure must not tear down sing-box
+			// and an otherwise usable VPN session; the manager restores the last
+			// working composed arguments and maintenance can retry later.
+			a.writeLog(fmt.Sprintf("[FreeAccess] first-run strategy search deferred after error: %v", err))
+			return nil
 		}
 	} else {
 		a.logServiceStrategySummary("loaded from cache")
@@ -412,10 +537,16 @@ func (a *App) startComposedTransparentEngine(busyID string) error {
 	if a == nil || a.storage == nil {
 		return fmt.Errorf("Windows Unified storage is not initialized")
 	}
-	if !FreeMethodsAllowed(a.storage.GetAppSettings()) {
+	freeMethodsAllowed := FreeMethodsAllowed(a.storage.GetAppSettings())
+	wireGuardRequested := a.wireGuardCamouflageRequested()
+	if !freeMethodsAllowed && !wireGuardRequested {
 		return nil
 	}
 	if a.zapret == nil || !a.zapret.IsInstalled() {
+		if wireGuardRequested && !freeMethodsAllowed {
+			a.writeLog("[WireGuard] camouflage unavailable because zapret2/winws2 runtime is not installed; continuing with native WireGuard")
+			return nil
+		}
 		return fmt.Errorf("Windows Unified zapret2/winws2 runtime is not installed")
 	}
 	return a.startWindowsUnifiedServiceEngine(busyID)
@@ -554,6 +685,13 @@ func (a *App) probeServicesThroughEngine(serviceTags []string) map[string]bool {
 		}
 		// The service group is a selector in Windows Unified. Force the direct
 		// egress for this probe so VPN cannot create a false positive for winws2.
+		previousRoute := a.currentServiceRoute(tag)
+		if previousRoute == "" {
+			mu.Lock()
+			failing[tag] = true
+			mu.Unlock()
+			continue
+		}
 		if !a.switchServiceRoute(tag, "direct") {
 			mu.Lock()
 			failing[tag] = true
@@ -561,8 +699,15 @@ func (a *App) probeServicesThroughEngine(serviceTags []string) map[string]bool {
 			continue
 		}
 		wg.Add(1)
-		go func(service FreeAccessService) {
+		go func(service FreeAccessService, restoreRoute string) {
 			defer wg.Done()
+			if restoreRoute != "" && restoreRoute != "direct" {
+				defer func() {
+					if !a.switchServiceRoute(service.Tag, restoreRoute) {
+						a.writeLog(fmt.Sprintf("[FreeAccess] failed to restore %s selector to %s after probe", service.Tag, restoreRoute))
+					}
+				}()
+			}
 			candidate := routeProbeCandidate{
 				Tag:       composedStrategyTag,
 				Label:     "per-service",
@@ -571,12 +716,16 @@ func (a *App) probeServicesThroughEngine(serviceTags []string) map[string]bool {
 				Available: true,
 			}
 			item := a.probeSingleCandidate(service, candidate)
+			if !item.Success && a.routeStrategyWorkAllowed() {
+				time.Sleep(serviceStrategyProbeRetryDelay)
+				item = a.probeSingleCandidate(service, candidate)
+			}
 			if !item.Success {
 				mu.Lock()
 				failing[service.Tag] = true
 				mu.Unlock()
 			}
-		}(svc)
+		}(svc, previousRoute)
 	}
 	wg.Wait()
 	return failing

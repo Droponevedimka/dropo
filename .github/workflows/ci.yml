@@ -28,6 +28,12 @@ jobs:
       - name: Validate UTF-8 text and reject mojibake
         shell: pwsh
         run: ./tools/check-text-encoding.ps1
+      - name: Validate release version synchronization
+        shell: bash
+        run: bash ./tools/check-version-sync.sh
+      - name: Validate PowerShell script syntax
+        shell: pwsh
+        run: ./tools/check-powershell-syntax.ps1
 
   windows-tests:
     runs-on: windows-latest

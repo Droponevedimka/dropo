@@ -99,16 +99,6 @@ const (
 	ClashAPITimeout = 5 * time.Second
 )
 
-// Clash API configuration
-const (
-	// ClashAPIHost is the host for Clash API.
-	ClashAPIHost = "127.0.0.1"
-	// ClashAPIPort is the port for Clash API.
-	ClashAPIPort = 9090
-	// ClashAPISecret is the secret for Clash API (empty = no auth).
-	ClashAPISecret = ""
-)
-
 // Log configuration
 const (
 	// MaxLogSize is the maximum log file size before rotation.

@@ -145,12 +145,14 @@ abstract class CoreBridge {
     String tag,
     String name,
     String config,
+    bool camouflageEnabled,
   );
   Future<Map<String, dynamic>> updateWireGuard(
     String oldTag,
     String tag,
     String name,
     String config,
+    bool camouflageEnabled,
   );
   Future<Map<String, dynamic>> deleteWireGuard(String tag);
   Future<Map<String, dynamic>> testSubscription(String value);
@@ -499,8 +501,12 @@ class HttpCoreBridge implements CoreBridge {
     String tag,
     String name,
     String config,
+    bool camouflageEnabled,
   ) {
-    return callMap('AddWireGuard', args: [tag, name, config]);
+    return callMap(
+      'AddWireGuard',
+      args: [tag, name, config, camouflageEnabled],
+    );
   }
 
   @override
@@ -509,8 +515,12 @@ class HttpCoreBridge implements CoreBridge {
     String tag,
     String name,
     String config,
+    bool camouflageEnabled,
   ) {
-    return callMap('UpdateWireGuard', args: [oldTag, tag, name, config]);
+    return callMap(
+      'UpdateWireGuard',
+      args: [oldTag, tag, name, config, camouflageEnabled],
+    );
   }
 
   @override
@@ -1061,8 +1071,12 @@ class ChannelCoreBridge implements CoreBridge {
     String tag,
     String name,
     String config,
+    bool camouflageEnabled,
   ) {
-    return callMap('AddWireGuard', args: [tag, name, config]);
+    return callMap(
+      'AddWireGuard',
+      args: [tag, name, config, camouflageEnabled],
+    );
   }
 
   @override
@@ -1071,8 +1085,12 @@ class ChannelCoreBridge implements CoreBridge {
     String tag,
     String name,
     String config,
+    bool camouflageEnabled,
   ) {
-    return callMap('UpdateWireGuard', args: [oldTag, tag, name, config]);
+    return callMap(
+      'UpdateWireGuard',
+      args: [oldTag, tag, name, config, camouflageEnabled],
+    );
   }
 
   @override
@@ -1649,6 +1667,7 @@ class MockCoreBridge implements CoreBridge {
     String tag,
     String name,
     String config,
+    bool camouflageEnabled,
   ) async {
     return {'success': true, 'tag': tag, 'name': name};
   }
@@ -1659,6 +1678,7 @@ class MockCoreBridge implements CoreBridge {
     String tag,
     String name,
     String config,
+    bool camouflageEnabled,
   ) async {
     return {'success': true, 'tag': tag, 'name': name};
   }
@@ -2594,6 +2614,7 @@ class WireGuardInfo {
     required this.publicKey,
     required this.presharedKey,
     required this.persistentKeepalive,
+    required this.camouflageEnabled,
   });
 
   final String tag;
@@ -2608,6 +2629,7 @@ class WireGuardInfo {
   final String publicKey;
   final String presharedKey;
   final int persistentKeepalive;
+  final bool camouflageEnabled;
 
   factory WireGuardInfo.fromJson(Map<String, dynamic> json) {
     final info = WireGuardInfo(
@@ -2624,6 +2646,7 @@ class WireGuardInfo {
       publicKey: json['public_key']?.toString() ?? '',
       presharedKey: json['preshared_key']?.toString() ?? '',
       persistentKeepalive: _asInt(json['persistent_keepalive']),
+      camouflageEnabled: json['camouflage_enabled'] == true,
     );
     if (info.config.isNotEmpty || info.privateKey.isEmpty) {
       return info;
@@ -2641,6 +2664,7 @@ class WireGuardInfo {
       publicKey: info.publicKey,
       presharedKey: info.presharedKey,
       persistentKeepalive: info.persistentKeepalive,
+      camouflageEnabled: info.camouflageEnabled,
     );
   }
 
@@ -11415,6 +11439,7 @@ class _WireGuardEditDialogState extends State<_WireGuardEditDialog> {
   String statusKind = '';
   bool busy = false;
   bool parsedOk = false;
+  late bool camouflageEnabled = widget.config?.camouflageEnabled ?? false;
 
   bool get editing => widget.config != null;
 
@@ -11479,8 +11504,14 @@ class _WireGuardEditDialogState extends State<_WireGuardEditDialog> {
             tag,
             name,
             configText,
+            camouflageEnabled,
           )
-        : await widget.bridge.addWireGuard(tag, name, configText);
+        : await widget.bridge.addWireGuard(
+            tag,
+            name,
+            configText,
+            camouflageEnabled,
+          );
     if (!mounted) {
       return;
     }
@@ -11551,6 +11582,24 @@ class _WireGuardEditDialogState extends State<_WireGuardEditDialog> {
             maxLines: 14,
             onPaste: () => _paste(configController),
           ),
+          if (Platform.isWindows) ...[
+            const SizedBox(height: 10),
+            SwitchListTile.adaptive(
+              contentPadding: EdgeInsets.zero,
+              value: camouflageEnabled,
+              onChanged: busy
+                  ? null
+                  : (value) => setState(() => camouflageEnabled = value),
+              title: const Text(
+                'Маскировать handshake через zapret2',
+                style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
+              ),
+              subtitle: const Text(
+                'Экспериментально: только endpoint этого WireGuard. При проблеме функция автоматически отключится на текущую сессию.',
+                style: TextStyle(color: Color(0xFF8892B0), fontSize: 10),
+              ),
+            ),
+          ],
           if (statusText.isNotEmpty) ...[
             const SizedBox(height: 12),
             _StatusBox(kind: statusKind, text: statusText),
@@ -11856,6 +11905,15 @@ class _WireGuardTile extends StatelessWidget {
                         fontSize: 13,
                       ),
                     ),
+                    if (item.camouflageEnabled)
+                      const Text(
+                        'zapret2 handshake',
+                        style: TextStyle(
+                          color: Color(0xFF86EFAC),
+                          fontSize: 9,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
                     const SizedBox(height: 2),
                     Text(
                       item.endpoint.isEmpty ? item.tag : item.endpoint,

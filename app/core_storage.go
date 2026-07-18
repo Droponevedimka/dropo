@@ -1237,6 +1237,7 @@ type ConfigBuilderForStorage struct {
 	templateOnce  sync.Once
 	templateData  []byte
 	templateErr   error
+	clashAPI      *clashAPIAccess
 }
 
 // NewConfigBuilderForStorage creates a config builder that works with Storage.
@@ -1252,6 +1253,7 @@ func NewConfigBuilderForStorageWithRuntime(storage *Storage, runtimeBasePath str
 		fetcher:       NewSubscriptionFetcher(),
 		routingMode:   DefaultRoutingMode,
 		filterManager: NewFilterManager(runtimeBasePath),
+		clashAPI:      newClashAPIAccess(),
 	}
 }
 
@@ -1435,7 +1437,9 @@ func (b *ConfigBuilderForStorage) BuildConfigForProfile(profileID int, subscript
 	b.applyRoutingMode(template)
 
 	// Add experimental section
-	b.addExperimentalAPI(template)
+	if err := b.addExperimentalAPI(template); err != nil {
+		return err
+	}
 
 	// Remove template fields
 	delete(template, "outbounds_template")
@@ -1733,23 +1737,11 @@ func (b *ConfigBuilderForStorage) updateRouteRulesForWireGuard(template map[stri
 }
 
 // addExperimentalAPI adds experimental section for traffic stats.
-func (b *ConfigBuilderForStorage) addExperimentalAPI(template map[string]interface{}) {
-	experimental, ok := template["experimental"].(map[string]interface{})
-	if !ok {
-		experimental = map[string]interface{}{}
-		template["experimental"] = experimental
+func (b *ConfigBuilderForStorage) addExperimentalAPI(template map[string]interface{}) error {
+	if b.clashAPI == nil {
+		b.clashAPI = newClashAPIAccess()
 	}
-
-	clashAPI, ok := experimental["clash_api"].(map[string]interface{})
-	if !ok {
-		experimental["clash_api"] = map[string]interface{}{
-			"external_controller": "127.0.0.1:9090",
-		}
-	} else {
-		if _, exists := clashAPI["external_controller"]; !exists {
-			clashAPI["external_controller"] = "127.0.0.1:9090"
-		}
-	}
+	return b.clashAPI.apply(template)
 }
 
 // applyRoutingMode applies routing rules based on the selected routing mode.

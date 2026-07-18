@@ -97,7 +97,7 @@ func (a *App) ParseWireGuardConfigAPI(configText string) map[string]interface{} 
 }
 
 // AddWireGuard добавляет новый WireGuard конфиг
-func (a *App) AddWireGuard(tag string, name string, configText string) map[string]interface{} {
+func (a *App) AddWireGuard(tag string, name string, configText string, camouflageEnabled bool) map[string]interface{} {
 	a.waitForInit()
 
 	// Проверяем что VPN выключен
@@ -145,6 +145,7 @@ func (a *App) AddWireGuard(tag string, name string, configText string) map[strin
 
 	wg.Tag = tag
 	wg.Name = name
+	wg.CamouflageEnabled = camouflageEnabled
 	if wg.Name == "" {
 		wg.Name = tag
 	}
@@ -194,7 +195,7 @@ func (a *App) AddWireGuard(tag string, name string, configText string) map[strin
 }
 
 // UpdateWireGuard обновляет существующий WireGuard конфиг
-func (a *App) UpdateWireGuard(oldTag string, tag string, name string, configText string) map[string]interface{} {
+func (a *App) UpdateWireGuard(oldTag string, tag string, name string, configText string, camouflageEnabled bool) map[string]interface{} {
 	a.waitForInit()
 
 	// Проверяем что VPN выключен
@@ -242,6 +243,7 @@ func (a *App) UpdateWireGuard(oldTag string, tag string, name string, configText
 
 	wg.Tag = tag
 	wg.Name = name
+	wg.CamouflageEnabled = camouflageEnabled
 	if wg.Name == "" {
 		wg.Name = tag
 	}
@@ -392,7 +394,7 @@ func (a *App) GetWireGuardConfig(tag string) map[string]interface{} {
 				"tag":                  wg.Tag,
 				"name":                 wg.Name,
 				"private_key":          wg.PrivateKey,
-				"local_address":        wg.LocalAddress,
+				"local_address":        strings.Join(wg.LocalAddress, ", "),
 				"dns":                  wg.DNS,
 				"mtu":                  wg.MTU,
 				"public_key":           wg.PublicKey,
@@ -401,6 +403,7 @@ func (a *App) GetWireGuardConfig(tag string) map[string]interface{} {
 				"endpoint":             endpoint,
 				"persistent_keepalive": wg.PersistentKeepalive,
 				"internal_domains":     wg.InternalDomains,
+				"camouflage_enabled":   wg.CamouflageEnabled,
 			}
 		}
 	}

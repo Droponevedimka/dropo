@@ -93,7 +93,7 @@ a portable folder indicates stale files from an older build.
 .\client-quick-check.ps1
 ```
 
-Run it while dropo is connected. It writes a Desktop folder with service-results, active_config, ports, adapters, routes and Clash API data. If normal checks fail but proxy checks pass, the problem is likely TUN/default-route handling on the client machine.
+Run it while dropo is connected. It writes a Desktop folder with service results, a redacted configuration summary, ports, adapters, routes and authenticated Clash API data. The raw `active_config.json` is deliberately excluded because it can contain VPN credentials and the process-local Clash API secret. If normal checks fail but proxy checks pass, the problem is likely TUN/default-route handling on the client machine.
 
 For blocked-service failures, run the deeper method matrix:
 

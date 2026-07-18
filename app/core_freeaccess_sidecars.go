@@ -3,6 +3,8 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net"
@@ -10,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -48,15 +51,19 @@ type TransparentBypassManager struct {
 	activeStop  chan struct{}
 	activeLabel string
 	activeArgs  []string
+
+	validationMu    sync.Mutex
+	validatedArgSet map[string]struct{}
 }
 
 func NewTransparentBypassManager(basePath string, strategies []TransparentFreeAccessStrategy, logger func(string)) *TransparentBypassManager {
 	return &TransparentBypassManager{
-		basePath:     basePath,
-		hostlistPath: filepath.Join(basePath, ResourcesFolder, "zapret-hostlist.txt"),
-		ipsetPath:    filepath.Join(basePath, ResourcesFolder, "zapret-ipset.txt"),
-		strategies:   strategies,
-		logger:       logger,
+		basePath:        basePath,
+		hostlistPath:    filepath.Join(basePath, ResourcesFolder, "zapret-hostlist.txt"),
+		ipsetPath:       filepath.Join(basePath, ResourcesFolder, "zapret-ipset.txt"),
+		strategies:      strategies,
+		logger:          logger,
+		validatedArgSet: make(map[string]struct{}),
 	}
 }
 
@@ -128,6 +135,13 @@ func (m *TransparentBypassManager) StartComposedStrategy(label string, args []st
 	exePath := filepath.Join(m.basePath, "bin", ZapretProcessName)
 	if !fileExists(exePath) {
 		return fmt.Errorf("%s not found: %s", ZapretProcessName, exePath)
+	}
+	m.mu.Lock()
+	alreadyRunning := m.activeTag == composedStrategyTag && m.activeCmd != nil && slices.Equal(m.activeArgs, args)
+	m.mu.Unlock()
+	if alreadyRunning {
+		m.log(fmt.Sprintf("%s already uses the requested composed arguments; restart skipped", label))
+		return nil
 	}
 	// Validate before touching the currently working process.
 	if err := m.validateZapret2Args(exePath, args); err != nil {
@@ -325,6 +339,14 @@ func (m *TransparentBypassManager) startStrategyProcess(strategy TransparentFree
 // without installing a WinDivert filter or starting packet processing. Keeping
 // --dry-run last is required by zapret2's parser.
 func (m *TransparentBypassManager) validateZapret2Args(exePath string, args []string) error {
+	cacheKey := zapret2ValidationKey(exePath, args)
+	m.validationMu.Lock()
+	_, cached := m.validatedArgSet[cacheKey]
+	m.validationMu.Unlock()
+	if cached {
+		return nil
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	checkArgs := append(append([]string(nil), args...), "--dry-run")
@@ -342,20 +364,34 @@ func (m *TransparentBypassManager) validateZapret2Args(exePath string, args []st
 		}
 		return fmt.Errorf("%v: %s", err, detail)
 	}
+	m.validationMu.Lock()
+	if len(m.validatedArgSet) >= 256 {
+		clear(m.validatedArgSet)
+	}
+	m.validatedArgSet[cacheKey] = struct{}{}
+	m.validationMu.Unlock()
 	return nil
+}
+
+func zapret2ValidationKey(exePath string, args []string) string {
+	hash := sha256.New()
+	_, _ = io.WriteString(hash, filepath.Clean(exePath))
+	if info, err := os.Stat(exePath); err == nil {
+		_, _ = io.WriteString(hash, fmt.Sprintf("\x00%d\x00%d", info.Size(), info.ModTime().UnixNano()))
+	}
+	for _, arg := range args {
+		_, _ = io.WriteString(hash, "\x00"+arg)
+	}
+	return hex.EncodeToString(hash.Sum(nil))
 }
 
 func (m *TransparentBypassManager) logWinDivertStatus(stage string) {
 	if runtime.GOOS != "windows" {
 		return
 	}
-	output, err := serviceControlOutput("query", winDivertServiceName)
-	status := compactServiceControlOutput(string(output))
-	if status == "" {
-		status = "no service output"
-	}
+	status, err := nativeWinDivertServiceStatus()
 	if err != nil {
-		m.log(fmt.Sprintf("WinDivert status %s: %v; %s", stage, err, status))
+		m.log(fmt.Sprintf("WinDivert status %s: %v", stage, err))
 		return
 	}
 	m.log(fmt.Sprintf("WinDivert status %s: %s", stage, status))
@@ -364,6 +400,16 @@ func (m *TransparentBypassManager) logWinDivertStatus(stage string) {
 const winDivertServiceName = "WinDivert"
 
 func cleanupWinDivertServiceIfOwned(roots []string, reason string, logger func(string)) {
+	if runtime.GOOS != "windows" {
+		return
+	}
+	cleanupWinDivertServiceNative(roots, reason, logger)
+}
+
+// cleanupWinDivertServiceIfOwnedExternal documents the previous sc.exe/reg.exe
+// implementation for compatibility investigations. Runtime cleanup uses the
+// native service-manager implementation above.
+func cleanupWinDivertServiceIfOwnedExternal(roots []string, reason string, logger func(string)) {
 	if runtime.GOOS != "windows" {
 		return
 	}
@@ -888,9 +934,11 @@ func terminateProcessTree(cmd *exec.Cmd) {
 	if cmd == nil || cmd.Process == nil {
 		return
 	}
-	pid := cmd.Process.Pid
 	if runtime.GOOS == "windows" {
-		_ = runBackgroundCommandWithTimeout(4*time.Second, "taskkill", "/F", "/T", "/PID", fmt.Sprintf("%d", pid))
+		// os.Process.Kill maps to TerminateProcess on Windows. Managed children
+		// are also attached to the process-wide kill-on-close job, so spawning a
+		// separate taskkill.exe for every strategy restart is unnecessary.
+		_ = cmd.Process.Kill()
 		return
 	}
 	_ = cmd.Process.Signal(syscall.SIGTERM)

@@ -41,17 +41,18 @@ const (
 
 // NativeWireGuardManager manages WireGuard tunnels via native OS integration
 type NativeWireGuardManager struct {
-	basePath        string                  // Application base path (where exe is)
-	configDir       string                  // Directory for .conf files
-	wireguardPath   string                  // Path to wireguard executable
-	wgPath          string                  // Path to wg tool (for status)
-	wintunPath      string                  // Path to wintun.dll (Windows only)
-	tunnels         map[string]*TunnelState // Active tunnels
-	mu              sync.RWMutex
-	logger          func(string)       // Logging function
-	healthCheckStop chan struct{}      // Stop signal for health check
-	healthCheckWg   sync.WaitGroup     // Wait group for health check goroutine
-	onTunnelRestart func(configID int) // Callback when tunnel is restarted
+	basePath          string                  // Application base path (where exe is)
+	configDir         string                  // Directory for .conf files
+	wireguardPath     string                  // Path to wireguard executable
+	wgPath            string                  // Path to wg tool (for status)
+	wintunPath        string                  // Path to wintun.dll (Windows only)
+	tunnels           map[string]*TunnelState // Active tunnels
+	mu                sync.RWMutex
+	logger            func(string)       // Logging function
+	healthCheckStop   chan struct{}      // Stop signal for health check
+	healthCheckWg     sync.WaitGroup     // Wait group for health check goroutine
+	onTunnelRestart   func(configID int) // Callback when tunnel is restarted
+	onTunnelUnhealthy func(configID int) // Callback before the first restart
 }
 
 // TunnelState tracks the state of a WireGuard tunnel
@@ -580,6 +581,14 @@ func (m *NativeWireGuardManager) SetTunnelRestartCallback(callback func(configID
 	m.onTunnelRestart = callback
 }
 
+// SetTunnelUnhealthyCallback sets the fail-safe callback invoked outside the
+// manager lock before an unhealthy tunnel is restarted.
+func (m *NativeWireGuardManager) SetTunnelUnhealthyCallback(callback func(configID int)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.onTunnelUnhealthy = callback
+}
+
 // StartHealthCheck starts a background goroutine that monitors tunnel health
 func (m *NativeWireGuardManager) StartHealthCheck() {
 	m.mu.Lock()
@@ -639,7 +648,18 @@ func (m *NativeWireGuardManager) checkAllTunnels() {
 	m.mu.RUnlock()
 
 	for _, state := range tunnelsToCheck {
-		healthy, lastHandshake := m.checkTunnelHealth(state.ConfigID)
+		healthy, lastHandshake, healthErr := m.checkTunnelHealth(state.ConfigID)
+		expectsPeriodicHandshake := wireGuardConfigExpectsPeriodicHandshake(state.Config)
+		// A peer without PersistentKeepalive is allowed to be completely idle;
+		// WireGuard does not handshake until traffic is sent. Treating "never"
+		// or a stale handshake as failure caused needless 30-second restart loops.
+		if healthErr == nil && !expectsPeriodicHandshake {
+			healthy = true
+		} else if healthErr == nil && lastHandshake.IsZero() && time.Since(state.StartedAt) < HandshakeTimeout {
+			// Give keepalive-enabled peers a full handshake window after start.
+			healthy = true
+		}
+		rollbackCamouflage := healthErr == nil && expectsPeriodicHandshake && !healthy
 
 		m.mu.Lock()
 		if tunnelState, exists := m.tunnels[state.Name]; exists {
@@ -655,17 +675,25 @@ func (m *NativeWireGuardManager) checkAllTunnels() {
 			// Attempt restart if unhealthy and under max attempts
 			if !healthy && tunnelState.RestartCount < MaxRestartAttempts && tunnelState.Config != nil {
 				tunnelState.RestartCount++
+				restartCount := tunnelState.RestartCount
+				configID := tunnelState.ConfigID
+				config := tunnelState.Config
+				onUnhealthy := m.onTunnelUnhealthy
+				onRestart := m.onTunnelRestart
 				m.mu.Unlock()
 
 				m.log(fmt.Sprintf("Attempting to restart tunnel %s (attempt %d/%d)",
-					state.Name, tunnelState.RestartCount, MaxRestartAttempts))
+					state.Name, restartCount, MaxRestartAttempts))
+				if restartCount == 1 && rollbackCamouflage && onUnhealthy != nil {
+					onUnhealthy(configID)
+				}
 
-				if err := m.restartTunnel(state.ConfigID, tunnelState.Config); err != nil {
+				if err := m.restartTunnel(configID, config); err != nil {
 					m.log(fmt.Sprintf("Failed to restart tunnel %s: %v", state.Name, err))
 				} else {
 					m.log(fmt.Sprintf("Tunnel %s restarted successfully", state.Name))
-					if m.onTunnelRestart != nil {
-						m.onTunnelRestart(state.ConfigID)
+					if onRestart != nil {
+						onRestart(configID)
 					}
 				}
 				continue
@@ -675,28 +703,40 @@ func (m *NativeWireGuardManager) checkAllTunnels() {
 	}
 }
 
+func wireGuardConfigExpectsPeriodicHandshake(config *WireGuardConfig) bool {
+	if config == nil {
+		return false
+	}
+	for _, peer := range config.Peers {
+		if peer.PersistentKeepalive > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // checkTunnelHealth checks if a tunnel is healthy based on handshake time
-func (m *NativeWireGuardManager) checkTunnelHealth(configID int) (bool, time.Time) {
+func (m *NativeWireGuardManager) checkTunnelHealth(configID int) (bool, time.Time, error) {
 	stats, err := m.GetTunnelStats(configID)
 	if err != nil {
-		return false, time.Time{}
+		return false, time.Time{}, err
 	}
 
 	// Parse last handshake time
 	handshakeStr, _ := stats["last_handshake"].(string)
 	if handshakeStr == "" || handshakeStr == "never" {
-		return false, time.Time{}
+		return false, time.Time{}, nil
 	}
 
 	// Parse relative time like "1 minute, 30 seconds ago"
 	lastHandshake := m.parseHandshakeTime(handshakeStr)
 	if lastHandshake.IsZero() {
-		return false, time.Time{}
+		return false, time.Time{}, nil
 	}
 
 	// Check if handshake is within timeout
 	healthy := time.Since(lastHandshake) < HandshakeTimeout
-	return healthy, lastHandshake
+	return healthy, lastHandshake, nil
 }
 
 // parseHandshakeTime parses the handshake time string from wg show output

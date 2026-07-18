@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -119,10 +118,10 @@ func (a *App) switchServiceRoute(serviceTag, outboundTag string) bool {
 	client := &http.Client{Timeout: 2 * time.Second}
 	groupTag := ServiceBypassGroupTag(serviceTag)
 	deadline := time.Now().Add(5 * time.Second)
-	for !loopbackPortReady(ClashAPIPort, 250*time.Millisecond) && time.Now().Before(deadline) {
+	for !a.clashAPIPortReady(250*time.Millisecond) && time.Now().Before(deadline) {
 		time.Sleep(100 * time.Millisecond)
 	}
-	if !loopbackPortReady(ClashAPIPort, 250*time.Millisecond) {
+	if !a.clashAPIPortReady(250 * time.Millisecond) {
 		a.writeLog(fmt.Sprintf("[FreeAccess] cannot switch %s to VPN fallback: Clash API is not ready", groupTag))
 		return false
 	}
@@ -131,8 +130,7 @@ func (a *App) switchServiceRoute(serviceTag, outboundTag string) bool {
 		return false
 	}
 	body := bytes.NewBuffer(bodyData)
-	endpoint := fmt.Sprintf("http://127.0.0.1:%d/proxies/%s", ClashAPIPort, url.PathEscape(groupTag))
-	req, err := http.NewRequest(http.MethodPut, endpoint, body)
+	req, err := a.newClashAPIRequest(http.MethodPut, clashProxyAPIPath(groupTag), body)
 	if err != nil {
 		return false
 	}
@@ -148,6 +146,29 @@ func (a *App) switchServiceRoute(serviceTag, outboundTag string) bool {
 		return false
 	}
 	return true
+}
+
+func (a *App) currentServiceRoute(serviceTag string) string {
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := a.clashAPIGet(client, clashProxyAPIPath(ServiceBypassGroupTag(serviceTag)))
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return ""
+	}
+	body, err := readHTTPBodyLimited(resp.Body, defaultMaxHTTPResponseBytes)
+	if err != nil {
+		return ""
+	}
+	var selector struct {
+		Now string `json:"now"`
+	}
+	if json.Unmarshal(body, &selector) != nil {
+		return ""
+	}
+	return strings.TrimSpace(selector.Now)
 }
 
 func (a *App) applyServiceStrategySelection(result routeProbeServiceResult) {

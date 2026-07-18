@@ -51,7 +51,7 @@ func (a *App) GetProxiesWithDelay() map[string]interface{} {
 	client := &http.Client{Timeout: 5 * time.Second}
 
 	// Get list of proxies
-	resp, err := client.Get("http://127.0.0.1:9090/proxies")
+	resp, err := a.clashAPIGet(client, "/proxies")
 	if err != nil {
 		return map[string]interface{}{
 			"success": false,
@@ -124,8 +124,8 @@ func (a *App) TestProxyDelay(proxyName string) map[string]interface{} {
 	client := &http.Client{Timeout: 10 * time.Second}
 
 	// Test proxy delay
-	url := fmt.Sprintf("http://127.0.0.1:9090/proxies/%s/delay?timeout=5000&url=http://www.gstatic.com/generate_204", proxyName)
-	resp, err := client.Get(url)
+	path := clashProxyAPIPath(proxyName) + "/delay?timeout=5000&url=http://www.gstatic.com/generate_204"
+	resp, err := a.clashAPIGet(client, path)
 	if err != nil {
 		return map[string]interface{}{
 			"success": false,
@@ -182,7 +182,7 @@ func (a *App) TestAllProxiesDelay() map[string]interface{} {
 	client := &http.Client{Timeout: 5 * time.Second}
 
 	// Get list of proxies from selector proxy
-	resp, err := client.Get("http://127.0.0.1:9090/proxies/proxy")
+	resp, err := a.clashAPIGet(client, "/proxies/proxy")
 	if err != nil {
 		return map[string]interface{}{
 			"success": false,
@@ -291,7 +291,7 @@ func (a *App) TestAllProxiesDelay() map[string]interface{} {
 			proxyType := ""
 
 			// Get proxy info
-			infoResp, err := client.Get(fmt.Sprintf("http://127.0.0.1:9090/proxies/%s", name))
+			infoResp, err := a.clashAPIGet(client, clashProxyAPIPath(name))
 			if err == nil {
 				defer infoResp.Body.Close()
 				infoBody, _ := readHTTPBodyLimited(infoResp.Body, defaultMaxHTTPResponseBytes)
@@ -311,7 +311,7 @@ func (a *App) TestAllProxiesDelay() map[string]interface{} {
 
 			// If no history, test delay
 			if delay == 0 {
-				delayResp, err := client.Get(fmt.Sprintf("http://127.0.0.1:9090/proxies/%s/delay?timeout=3000&url=http://www.gstatic.com/generate_204", name))
+				delayResp, err := a.clashAPIGet(client, clashProxyAPIPath(name)+"/delay?timeout=3000&url=http://www.gstatic.com/generate_204")
 				if err == nil {
 					defer delayResp.Body.Close()
 					delayBody, _ := readHTTPBodyLimited(delayResp.Body, defaultMaxHTTPResponseBytes)
@@ -338,7 +338,7 @@ func (a *App) TestAllProxiesDelay() map[string]interface{} {
 			}
 
 			// Check that WireGuard endpoint is accessible in Clash API
-			infoResp, err := client.Get(fmt.Sprintf("http://127.0.0.1:9090/proxies/%s", tag))
+			infoResp, err := a.clashAPIGet(client, clashProxyAPIPath(tag))
 			if err == nil {
 				defer infoResp.Body.Close()
 				infoBody, _ := readHTTPBodyLimited(infoResp.Body, defaultMaxHTTPResponseBytes)
@@ -360,7 +360,7 @@ func (a *App) TestAllProxiesDelay() map[string]interface{} {
 			delay := 0
 			active := ""
 
-			infoResp, err := client.Get(fmt.Sprintf("http://127.0.0.1:9090/proxies/%s", tag))
+			infoResp, err := a.clashAPIGet(client, clashProxyAPIPath(tag))
 			if err == nil {
 				defer infoResp.Body.Close()
 				infoBody, _ := readHTTPBodyLimited(infoResp.Body, defaultMaxHTTPResponseBytes)
@@ -440,12 +440,10 @@ func (a *App) GetBypassRouteSummary() map[string]interface{} {
 	}
 
 	client := &http.Client{Timeout: 5 * time.Second}
-	proxies, err := fetchClashProxies(client)
+	proxies, err := a.fetchClashProxies(client)
 	if err != nil {
 		a.mu.Lock()
-		a.mu.Lock()
 		transparentOnly := a.isRunning && a.cmd == nil
-		a.mu.Unlock()
 		a.mu.Unlock()
 		if transparentOnly {
 			return a.transparentBypassRouteSummary(settings, mode)
@@ -753,8 +751,8 @@ func (a *App) RefreshFreeAccessMethods() map[string]interface{} {
 	}
 }
 
-func fetchClashProxies(client *http.Client) (map[string]clashProxyInfo, error) {
-	resp, err := client.Get("http://127.0.0.1:9090/proxies")
+func (a *App) fetchClashProxies(client *http.Client) (map[string]clashProxyInfo, error) {
+	resp, err := a.clashAPIGet(client, "/proxies")
 	if err != nil {
 		return nil, fmt.Errorf("не удалось подключиться к API: %w", err)
 	}
@@ -813,7 +811,7 @@ func (a *App) GetCurrentProxy() map[string]interface{} {
 	client := &http.Client{Timeout: 5 * time.Second}
 
 	// Get info about proxy selector
-	resp, err := client.Get("http://127.0.0.1:9090/proxies/proxy")
+	resp, err := a.clashAPIGet(client, "/proxies/proxy")
 	if err != nil {
 		return map[string]interface{}{
 			"success": false,
@@ -848,7 +846,7 @@ func (a *App) GetCurrentProxy() map[string]interface{} {
 	// Get delay for current proxy
 	delay := 0
 	if currentProxy != "" {
-		delayResp, err := client.Get(fmt.Sprintf("http://127.0.0.1:9090/proxies/%s/delay?timeout=3000&url=http://www.gstatic.com/generate_204", currentProxy))
+		delayResp, err := a.clashAPIGet(client, clashProxyAPIPath(currentProxy)+"/delay?timeout=3000&url=http://www.gstatic.com/generate_204")
 		if err == nil {
 			defer delayResp.Body.Close()
 			delayBody, _ := readHTTPBodyLimited(delayResp.Body, defaultMaxHTTPResponseBytes)

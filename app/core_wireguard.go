@@ -22,6 +22,9 @@ type UserWireGuardConfig struct {
 	Endpoint            string   `json:"endpoint"`                       // [Peer] Endpoint (host без порта)
 	EndpointPort        int      `json:"endpoint_port"`                  // Порт из Endpoint
 	PersistentKeepalive int      `json:"persistent_keepalive,omitempty"` // [Peer] PersistentKeepalive
+	// CamouflageEnabled enables the Windows-only zapret2 handshake camouflage
+	// sidecar. Native WireGuard remains the tunnel implementation.
+	CamouflageEnabled bool `json:"camouflage_enabled,omitempty"`
 
 	// Внутренние домены для этого VPN (опционально, пользователь может добавить вручную)
 	// Примеры: [".company.local", ".internal.corp", ".test-test.com"]
@@ -105,13 +108,12 @@ func ParseWireGuardConfig(config string) (*UserWireGuardConfig, error) {
 					}
 				}
 			case "endpoint":
-				wg.Endpoint = value
-				// Извлекаем порт
-				if idx := strings.LastIndex(value, ":"); idx != -1 {
-					if port, err := strconv.Atoi(value[idx+1:]); err == nil {
-						wg.EndpointPort = port
-						wg.Endpoint = value[:idx] // Только хост
-					}
+				host, port, err := parseWireGuardEndpoint(value)
+				if err == nil {
+					wg.Endpoint = host
+					wg.EndpointPort = port
+				} else {
+					wg.Endpoint = value
 				}
 			case "persistentkeepalive":
 				if keepalive, err := strconv.Atoi(value); err == nil {
@@ -137,8 +139,26 @@ func ParseWireGuardConfig(config string) (*UserWireGuardConfig, error) {
 	if wg.Endpoint == "" {
 		return nil, fmt.Errorf("отсутствует Endpoint")
 	}
+	if wg.EndpointPort <= 0 {
+		return nil, fmt.Errorf("Endpoint должен содержать корректный порт")
+	}
 
 	return wg, nil
+}
+
+func parseWireGuardEndpoint(value string) (string, int, error) {
+	host, portText, err := net.SplitHostPort(strings.TrimSpace(value))
+	if err != nil {
+		return "", 0, fmt.Errorf("некорректный Endpoint: %w", err)
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil || port <= 0 || port > 65535 {
+		return "", 0, fmt.Errorf("некорректный порт Endpoint")
+	}
+	if host == "" {
+		return "", 0, fmt.Errorf("пустой хост Endpoint")
+	}
+	return strings.Trim(host, "[]"), port, nil
 }
 
 // ValidateTag проверяет корректность тега (латиница, без пробелов)
@@ -225,11 +245,12 @@ func GenerateRouteRulesForWireGuard(configs []UserWireGuardConfig) []map[string]
 
 // WireGuardInfo информация для UI
 type WireGuardInfo struct {
-	Tag             string   `json:"tag"`
-	Name            string   `json:"name"`
-	Endpoint        string   `json:"endpoint"`
-	AllowedIPs      []string `json:"allowed_ips"`
-	InternalDomains []string `json:"internal_domains,omitempty"`
+	Tag               string   `json:"tag"`
+	Name              string   `json:"name"`
+	Endpoint          string   `json:"endpoint"`
+	AllowedIPs        []string `json:"allowed_ips"`
+	InternalDomains   []string `json:"internal_domains,omitempty"`
+	CamouflageEnabled bool     `json:"camouflage_enabled,omitempty"`
 }
 
 // ToInfo конвертирует в структуру для UI
@@ -240,11 +261,12 @@ func (wg *UserWireGuardConfig) ToInfo() WireGuardInfo {
 	}
 
 	return WireGuardInfo{
-		Tag:             wg.Tag,
-		Name:            wg.Name,
-		Endpoint:        endpoint,
-		AllowedIPs:      wg.AllowedIPs,
-		InternalDomains: wg.InternalDomains,
+		Tag:               wg.Tag,
+		Name:              wg.Name,
+		Endpoint:          endpoint,
+		AllowedIPs:        wg.AllowedIPs,
+		InternalDomains:   wg.InternalDomains,
+		CamouflageEnabled: wg.CamouflageEnabled,
 	}
 }
 

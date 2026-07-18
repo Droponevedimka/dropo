@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -63,6 +64,21 @@ func TestServiceFallbackCacheExpiresAndRetries(t *testing.T) {
 	}
 	if !containsString(needSearch, "youtube") {
 		t.Fatalf("expired fallback must queue a new first-success search, got %v", needSearch)
+	}
+	due := app.serviceStrategiesDueForRetry(now, currentNetworkFingerprint())
+	if !containsString(due, "youtube") {
+		t.Fatalf("active-session retry timer did not see expired fallback: %v", due)
+	}
+}
+
+func TestNetworkPrefixIgnoresTemporaryIPv6InterfaceIdentifier(t *testing.T) {
+	first := &net.IPNet{IP: net.ParseIP("2001:db8:1234:5678:1111:2222:3333:4444"), Mask: net.CIDRMask(128, 128)}
+	second := &net.IPNet{IP: net.ParseIP("2001:db8:1234:5678:aaaa:bbbb:cccc:dddd"), Mask: net.CIDRMask(128, 128)}
+	if got, want := networkPrefixForFingerprint(first), networkPrefixForFingerprint(second); got != want || got != "2001:db8:1234:5678::/64" {
+		t.Fatalf("temporary IPv6 prefixes = %q and %q", got, want)
+	}
+	if got := networkPrefixForFingerprint(&net.IPNet{IP: net.ParseIP("fe80::1"), Mask: net.CIDRMask(64, 128)}); got != "" {
+		t.Fatalf("link-local IPv6 address contributed %q to fingerprint", got)
 	}
 }
 

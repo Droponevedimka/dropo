@@ -20,6 +20,7 @@ type wireGuardConfig struct {
 	PublicKey           string   `json:"public_key"`
 	PresharedKey        string   `json:"preshared_key"`
 	PersistentKeepalive int      `json:"persistent_keepalive"`
+	CamouflageEnabled   bool     `json:"camouflage_enabled,omitempty"`
 }
 
 var wireGuardTagPattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_-]{0,31}$`)
@@ -36,6 +37,7 @@ func addWireGuardLocked(args []interface{}) string {
 	tag := normalizeWireGuardTag(stringArg(args, 0, ""))
 	name := strings.TrimSpace(stringArg(args, 1, ""))
 	configText := stringArg(args, 2, "")
+	camouflageEnabled := boolArg(args, 3, false)
 	wg, err := parseWireGuardConfigText(configText)
 	if err != nil {
 		return encode(map[string]interface{}{"success": false, "error": err.Error()})
@@ -53,6 +55,7 @@ func addWireGuardLocked(args []interface{}) string {
 	}
 	wg.Tag = tag
 	wg.Name = firstNonEmpty(name, tag)
+	wg.CamouflageEnabled = camouflageEnabled
 	current.WireGuards = append(current.WireGuards, wg)
 	appendLogLocked("android WireGuard saved: " + wg.Tag)
 	_ = saveLocked()
@@ -64,6 +67,7 @@ func updateWireGuardLocked(args []interface{}) string {
 	tag := normalizeWireGuardTag(stringArg(args, 1, oldTag))
 	name := strings.TrimSpace(stringArg(args, 2, ""))
 	configText := stringArg(args, 3, "")
+	camouflageEnabled := boolArg(args, 4, false)
 	wg, err := parseWireGuardConfigText(configText)
 	if err != nil {
 		return encode(map[string]interface{}{"success": false, "error": err.Error()})
@@ -89,6 +93,7 @@ func updateWireGuardLocked(args []interface{}) string {
 	}
 	wg.Tag = tag
 	wg.Name = firstNonEmpty(name, tag)
+	wg.CamouflageEnabled = camouflageEnabled
 	current.WireGuards[found] = wg
 	appendLogLocked("android WireGuard updated: " + wg.Tag)
 	_ = saveLocked()
@@ -207,6 +212,7 @@ func wireGuardPayload(wg wireGuardConfig) map[string]interface{} {
 		"public_key":           wg.PublicKey,
 		"preshared_key":        wg.PresharedKey,
 		"persistent_keepalive": wg.PersistentKeepalive,
+		"camouflage_enabled":   wg.CamouflageEnabled,
 	}
 }
 

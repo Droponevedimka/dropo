@@ -149,7 +149,7 @@ func (a *App) fetchClashTraffic() (upload, download int64) {
 	client := &http.Client{Timeout: 2 * time.Second}
 
 	// Используем /connections endpoint для получения суммарного трафика
-	resp, err := client.Get("http://127.0.0.1:9090/connections")
+	resp, err := a.clashAPIGet(client, "/connections")
 	if err != nil {
 		return 0, 0
 	}

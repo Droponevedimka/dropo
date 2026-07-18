@@ -203,6 +203,11 @@ function Get-ConfigSummary {
             $_.tag -like "proxy-*" -or
             $_.type -in @("vless", "vmess", "trojan", "shadowsocks", "hysteria2", "tuic")
         })
+        $clashController = [string]$config.experimental.clash_api.external_controller
+        $clashPort = 0
+        if ($clashController -match '^(?:127\.0\.0\.1|localhost|\[::1\]):(?<port>\d+)$') {
+            $clashPort = [int]$Matches.port
+        }
         $groups = $config.outbounds |
             Where-Object { $_.tag -like "bypass-*" -or $_.tag -in @("smart-bypass", "vpn-or-direct") } |
             ForEach-Object {
@@ -227,6 +232,8 @@ function Get-ConfigSummary {
             RouteAutoDetectInterface = $config.route.auto_detect_interface
             RouteDefaultInterface = $config.route.default_interface
             DnsFinal = $config.dns.final
+            ClashController = $clashController
+            ClashPort = $clashPort
             HasVpnCandidate = [bool]$autoSelect
             VpnCandidateCount = $proxyOutbounds.Count
             AutoSelectCandidates = if ($autoSelect) { ($autoSelect.outbounds -join ",") } else { "" }
@@ -238,8 +245,18 @@ function Get-ConfigSummary {
 }
 
 function Get-ClashProxies {
+    param([string]$ConfigPath)
     try {
-        return Invoke-RestMethod -Uri "http://127.0.0.1:9090/proxies" -TimeoutSec 2
+        if (-not $ConfigPath) { return $null }
+        $config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
+        $api = $config.experimental.clash_api
+        $controller = [string]$api.external_controller
+        if ($controller -notmatch '^(?:127\.0\.0\.1|localhost|\[::1\]):\d+$') { return $null }
+        $headers = @{}
+        if ([string]$api.secret) {
+            $headers.Authorization = "Bearer $($api.secret)"
+        }
+        return Invoke-RestMethod -Uri "http://$controller/proxies" -Headers $headers -TimeoutSec 2
     } catch {
         return $null
     }
@@ -257,14 +274,15 @@ function Get-SingBoxListeners {
 }
 
 function Get-LiveMixedPort {
-    param([int]$ConfiguredPort, [object[]]$Listeners)
+    param([int]$ConfiguredPort, [object[]]$Listeners, [int[]]$ExcludedPorts = @())
 
     if ($ConfiguredPort -and (Test-TcpPort "127.0.0.1" $ConfiguredPort)) {
         return $ConfiguredPort
     }
 
-    $excluded = @(9090, 18091, 18092, 18093, 18094, 18095)
+    $excluded = @(18091, 18092, 18093, 18094, 18095)
     $excluded += 19081..19120
+    $excluded += $ExcludedPorts
     $loopback = @("127.0.0.1", "0.0.0.0", "::1", "::")
     $candidate = $Listeners |
         Where-Object { $loopback -contains $_.LocalAddress -and ($excluded -notcontains [int]$_.LocalPort) } |
@@ -375,16 +393,19 @@ $activeConfigPath = Find-ActiveConfig
 $configSummary = Get-ConfigSummary -Path $activeConfigPath
 $configSummary | ConvertTo-Json -Depth 8 | Set-Content (Join-Path $OutDir "config-summary.json") -Encoding UTF8
 
-if ($activeConfigPath) {
-    Copy-Item $activeConfigPath (Join-Path $OutDir "active_config.json") -Force
-}
+# Never copy active_config.json into a support bundle: it contains the
+# process-local Clash bearer secret and can also contain VPN credentials.
 
 $mixedPort = $null
 if ($configSummary -and $configSummary.MixedPort) {
     $mixedPort = [int]$configSummary.MixedPort
 }
-$liveMixedPort = Get-LiveMixedPort -ConfiguredPort $mixedPort -Listeners $singBoxListeners
-$portList = @(9090, 18091, 18092, 18093, 18094, 18095)
+$clashPort = if ($configSummary -and $configSummary.ClashPort) { [int]$configSummary.ClashPort } else { 0 }
+$liveMixedPort = Get-LiveMixedPort -ConfiguredPort $mixedPort -Listeners $singBoxListeners -ExcludedPorts @($clashPort)
+$portList = @(18091, 18092, 18093, 18094, 18095)
+if ($clashPort -and ($portList -notcontains $clashPort)) {
+    $portList += $clashPort
+}
 if ($mixedPort -and ($portList -notcontains $mixedPort)) {
     $portList += $mixedPort
 }
@@ -413,7 +434,7 @@ Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Setti
     ConvertTo-Json -Depth 3 |
     Set-Content (Join-Path $OutDir "user-proxy.json") -Encoding UTF8
 
-$clash = Get-ClashProxies
+$clash = Get-ClashProxies -ConfigPath $activeConfigPath
 if ($clash) {
     $clash | ConvertTo-Json -Depth 8 | Set-Content (Join-Path $OutDir "clash-proxies.json") -Encoding UTF8
 }
