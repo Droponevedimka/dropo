@@ -158,7 +158,7 @@ func TestFindReleaseAssetURLUsesNewestCompatibleRelease(t *testing.T) {
 		}
 	}
 	releases := []GitHubRelease{
-		{TagName: "v2.2.1", Assets: []GitHubReleaseAsset{{Name: "dropo-Windows-Portable-x64.zip"}}},
+		{TagName: "v2.2.1", Assets: []GitHubReleaseAsset{{Name: "dropo-Windows-x64.exe"}}},
 		{TagName: "v2.2.0", Assets: []GitHubReleaseAsset{asset("https://github.test/v2.2.0/deps.zip", sha)}},
 		{TagName: "v2.1.14", Assets: []GitHubReleaseAsset{asset("https://github.test/v2.1.14/deps.zip", sha)}},
 	}

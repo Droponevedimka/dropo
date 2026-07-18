@@ -131,3 +131,4 @@ coverage/
 # Debug
 debug/
 *.debug
+bootstrap/payload.zip

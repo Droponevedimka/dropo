@@ -203,7 +203,7 @@ func selectUpdateAssetFor(assets []GitHubReleaseAsset, goos, goarch string) (Git
 func selectWindowsUpdateAsset(assets []GitHubReleaseAsset) (GitHubReleaseAsset, bool) {
 	for _, asset := range assets {
 		name := strings.ToLower(asset.Name)
-		if strings.Contains(name, "windows") && strings.Contains(name, "portable") && strings.HasSuffix(name, ".zip") && !strings.Contains(name, "dependencies") {
+		if strings.Contains(name, "windows") && strings.HasSuffix(name, ".exe") && !strings.Contains(name, "dependencies") {
 			return asset, true
 		}
 	}
@@ -238,7 +238,7 @@ func validateTrustedUpdateURL(rawURL string) error {
 	if err := validateTrustedUpdateHost(rawURL); err != nil {
 		return err
 	}
-	if ext := updateFileExtension(rawURL); ext != ".zip" {
+	if ext := updateFileExtension(rawURL); ext != ".exe" {
 		return fmt.Errorf("unsupported update asset type: %s", ext)
 	}
 	return nil
@@ -369,7 +369,7 @@ func normalizeGitHubSHA256(digest string) string {
 func updateFileExtension(downloadURL string) string {
 	path := strings.Split(downloadURL, "?")[0]
 	ext := strings.ToLower(filepath.Ext(path))
-	if ext == ".zip" {
+	if ext == ".zip" || ext == ".exe" {
 		return ext
 	}
 	return ".bin"

@@ -165,6 +165,35 @@ func TestBuildConfigWithoutSubscriptionUsesFreeAccess(t *testing.T) {
 	}
 }
 
+func TestDiscordRealtimeUsesVPNFallbackWhenAvailable(t *testing.T) {
+	rules := (&ConfigBuilderForStorage{}).buildFreeAccessRules(GlobalAppSettings{}, true)
+	rule := findProcessNetworkRule(rules, "Discord.exe", "udp")
+	if rule == nil {
+		t.Fatal("Discord UDP realtime rule is missing")
+	}
+	if got := rule["outbound"]; got != "auto-select" {
+		t.Fatalf("Discord UDP outbound = %v, want auto-select", got)
+	}
+
+	directSettings := GlobalAppSettings{FreeAccessMethods: map[string]string{"discord": FreeAccessMethodDirect}}
+	rules = (&ConfigBuilderForStorage{}).buildFreeAccessRules(directSettings, true)
+	rule = findProcessNetworkRule(rules, "Discord.exe", "udp")
+	if rule == nil || rule["outbound"] != "direct" {
+		t.Fatalf("explicit Direct must be respected for Discord UDP, got %v", rule)
+	}
+}
+
+func findProcessNetworkRule(rules []interface{}, processName, network string) map[string]interface{} {
+	for _, raw := range rules {
+		rule, ok := raw.(map[string]interface{})
+		if !ok || rule["network"] != network || !valuesContain(rule["process_name"], processName) {
+			continue
+		}
+		return rule
+	}
+	return nil
+}
+
 func TestFilterActiveFreeAccessOutboundsRemovesInactiveStrategies(t *testing.T) {
 	config := map[string]interface{}{
 		"outbounds": []interface{}{

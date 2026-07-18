@@ -187,6 +187,18 @@ func renderUpdateScript(scriptDir, tempFile, execPath, execDir, expectedSHA256 s
 	}
 
 	switch strings.ToLower(filepath.Ext(tempFile)) {
+	case ".exe":
+		updateScript := filepath.Join(scriptDir, "dropo_update.ps1")
+		scriptContent := fmt.Sprintf(`$ErrorActionPreference = "Stop"
+Start-Sleep -Seconds 2
+$package = %s
+%s
+$process = Start-Process -FilePath $package -ArgumentList "--from-update" -PassThru
+$process.WaitForExit()
+Remove-Item -LiteralPath $package -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $PSCommandPath -Force
+`, psQuote(tempFile), hashCheck)
+		return updateScript, scriptContent, nil
 	case ".zip":
 		updateScript := filepath.Join(scriptDir, "dropo_update.ps1")
 		extractDir := filepath.Join(scriptDir, "extract")

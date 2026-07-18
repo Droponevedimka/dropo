@@ -20,6 +20,7 @@ bash ./tools/check-version-sync.sh
 go_modules=(
   "./app"
   "./launcher"
+  "./bootstrap"
 )
 
 for module in "${go_modules[@]}"; do
@@ -87,10 +88,10 @@ echo "[verify] Building Authenticode-signed Windows package"
 (cd "$worktree" && powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build/build.ps1 \
   -Build -AppOnly -AllowUntrustedSelfSignedWindows -SkipWindowsTimestamp)
 
-archive="$(find "$worktree/release" -type f -name 'dropo-Windows-Portable-x64.zip' -print -quit)"
-if [[ -z "$archive" ]]; then
-  echo "Signed Windows archive was not produced" >&2
+package_exe="$(find "$worktree/release" -type f -name 'dropo-Windows-x64.exe' -print -quit)"
+if [[ -z "$package_exe" ]]; then
+  echo "Signed Windows single-file package was not produced" >&2
   exit 1
 fi
-unzip -t "$archive"
-echo "[verify] Signed package verification completed: $(basename "$archive")"
+powershell.exe -NoProfile -Command "if ((Get-AuthenticodeSignature -LiteralPath '$package_exe').Status -eq 'NotSigned') { exit 1 }"
+echo "[verify] Signed package verification completed: $(basename "$package_exe")"

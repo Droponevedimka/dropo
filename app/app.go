@@ -32,6 +32,7 @@ type App struct {
 	depsIntegrityMu   sync.Mutex
 	depsIntegrityFor  string
 	depsIntegrityOK   bool
+	depsDownloadMu    sync.Mutex
 	singboxPath       string
 	logPath           string
 	tempLogPath       string
@@ -280,6 +281,13 @@ func (a *App) restoreVPNOnStartup() {
 		return
 	}
 	a.writeLog("Restoring VPN state from previous session")
+	if status := a.DependenciesStatus(); status.Managed && !status.Ready {
+		a.writeLog("VPN restore is waiting for the first-run component download")
+		if err := a.DownloadDependencies(); err != nil {
+			a.writeLog(fmt.Sprintf("Failed to restore VPN on startup: %v", err))
+			return
+		}
+	}
 	result := a.Start()
 	if ok, _ := result["success"].(bool); !ok {
 		a.writeLog(fmt.Sprintf("Failed to restore VPN on startup: %v", result["error"]))

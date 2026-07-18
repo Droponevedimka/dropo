@@ -5,14 +5,14 @@ param(
     [switch]$Build,
     [switch]$Portable,
     # Build every implemented release artifact in one pass:
-    # Windows portable app + Android arm64 APK.
+    # Windows single-file app + Android arm64 APK.
     [switch]$All,
     [switch]$Clean,
     [string]$Version,
     # CI mode: build only dropo.exe + app folder (no bundled bin/). The heavy
     # dependencies archive is hosted once and referenced via deps-lock.json /
     # the dependencies.json manifest. Can be combined with -Android so CI can
-    # publish Windows portable + Android APK without rebuilding Windows deps.
+    # publish Windows app + Android APK without rebuilding Windows deps.
     [switch]$AppOnly,
     # Full-build mode: record the freshly built dependencies archive as hosted
     # on the current app version, even when depsVersion did not change. Use this
@@ -425,7 +425,7 @@ $ReleasePlatform = "windows"
 $ReleaseArch = "x64"
 $RequiredDepFiles = @("sing-box.exe", "winws2.exe", "WinDivert.dll", "zapret-lib.lua", "zapret-antidpi.lua")
 $ForbiddenDepFiles = @("winws.exe")
-$WindowsPortableAsset = "dropo-Windows-Portable-x64.zip"
+$WindowsAppAsset = "dropo-Windows-x64.exe"
 $WindowsDepsAsset = "dropo-Windows-Dependencies-x64.zip"
 $AndroidReleaseArch = "arm64"
 $AndroidFlutterTargetPlatform = "android-arm64"
@@ -529,6 +529,74 @@ function New-AppOnlyArchive {
         Compress-Archive -Path (Get-ChildItem -Path $stageDir).FullName -DestinationPath $DestinationZip -CompressionLevel Optimal
     } finally {
         Remove-Item -LiteralPath $stageDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function New-WindowsSingleExecutable {
+    param(
+        [string]$SourceAppFolder,
+        [string]$DestinationExe,
+        [string]$PackageVersion
+    )
+
+    $stageDir = Join-Path $env:TEMP ("dropo-appstage-" + [Guid]::NewGuid().ToString("N"))
+    $bootstrapDir = Join-Path $env:TEMP ("dropo-bootstrap-" + [Guid]::NewGuid().ToString("N"))
+    $payloadZip = Join-Path $bootstrapDir "payload.zip"
+    New-Item -ItemType Directory -Path $stageDir | Out-Null
+    New-Item -ItemType Directory -Path $bootstrapDir | Out-Null
+    try {
+        Copy-Item -Path (Join-Path $SourceAppFolder "*") -Destination $stageDir -Recurse -Force
+        foreach ($relativeBin in @("resources\bin", "resources\app\bin")) {
+            $nestedBin = Join-Path $stageDir $relativeBin
+            if (Test-Path $nestedBin) {
+                Remove-Item -LiteralPath $nestedBin -Recurse -Force
+            }
+        }
+
+        $manifestFiles = @()
+        foreach ($file in @(Get-ChildItem -LiteralPath $stageDir -Recurse -File | Sort-Object FullName)) {
+            $relative = $file.FullName.Substring($stageDir.Length).TrimStart([char[]]"\/").Replace('\', '/')
+            $manifestFiles += [ordered]@{
+                path   = $relative
+                size   = [long]$file.Length
+                sha256 = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            }
+        }
+        $installManifest = [ordered]@{
+            version = $PackageVersion
+            files   = $manifestFiles
+        }
+        $manifestPath = Join-Path $stageDir "install-manifest.json"
+        [System.IO.File]::WriteAllText($manifestPath, ($installManifest | ConvertTo-Json -Depth 10), (New-Object System.Text.UTF8Encoding($false)))
+        $manifestSHA256 = (Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
+
+        Compress-Archive -Path (Get-ChildItem -LiteralPath $stageDir).FullName -DestinationPath $payloadZip -CompressionLevel Optimal
+        $payloadSHA256 = (Get-FileHash -LiteralPath $payloadZip -Algorithm SHA256).Hash.ToLowerInvariant()
+
+        Copy-Item -Path (Join-Path $ScriptRoot "bootstrap\*.go") -Destination $bootstrapDir -Force
+        Copy-Item -LiteralPath (Join-Path $ScriptRoot "bootstrap\go.mod") -Destination $bootstrapDir -Force
+        $launcherResource = Join-Path $ScriptRoot "launcher\dropo_icon_windows_amd64.syso"
+        if (Test-Path -LiteralPath $launcherResource -PathType Leaf) {
+            Copy-Item -LiteralPath $launcherResource -Destination $bootstrapDir -Force
+        }
+
+        if (Test-Path -LiteralPath $DestinationExe) {
+            Remove-Item -LiteralPath $DestinationExe -Force
+        }
+        Push-Location $bootstrapDir
+        try {
+            $bootstrapLdflags = "-X 'main.appVersion=$PackageVersion' -X 'main.expectedPayloadSHA256=$payloadSHA256' -X 'main.expectedManifestSHA256=$manifestSHA256' -s -w -H=windowsgui"
+            & go build -tags releasepayload -ldflags $bootstrapLdflags -o $DestinationExe .
+            if ($LASTEXITCODE -ne 0) {
+                throw "Windows single-file bootstrap build failed."
+            }
+        } finally {
+            Pop-Location
+        }
+        Invoke-WindowsCodeSigning -Paths @($DestinationExe)
+    } finally {
+        Remove-Item -LiteralPath $stageDir -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $bootstrapDir -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -860,11 +928,11 @@ function Build-Application {
         }
         [System.IO.File]::WriteAllText((Join-Path $RuntimeFolder "dependencies.json"), ($manifest | ConvertTo-Json), (New-Object System.Text.UTF8Encoding($false)))
 
-        $AppAsset = $WindowsPortableAsset
-        $zipFile = Join-Path $VersionDir $AppAsset
-        New-AppOnlyArchive -SourceAppFolder $AppFolder -DestinationZip $zipFile
-        $zipMB = [math]::Round((Get-Item $zipFile).Length / 1MB, 2)
-        Write-Host "[OK] Created $AppAsset ($zipMB MB, AppOnly; deps=$($lock.asset))" -ForegroundColor Green
+        $AppAsset = $WindowsAppAsset
+        $appExeAsset = Join-Path $VersionDir $AppAsset
+        New-WindowsSingleExecutable -SourceAppFolder $AppFolder -DestinationExe $appExeAsset -PackageVersion $AppVersion
+        $appMB = [math]::Round((Get-Item $appExeAsset).Length / 1MB, 2)
+        Write-Host "[OK] Created $AppAsset ($appMB MB, self-extracting AppOnly; deps=$($lock.asset))" -ForegroundColor Green
         Write-Host "[SUCCESS] App-only build: release/$BuildFolderName/" -ForegroundColor Green
         return
     }
@@ -1190,21 +1258,20 @@ function Build-Application {
     Invoke-WindowsCodeSigning -Paths @((Join-Path $AppFolder "dropo.exe"))
     Write-Host "[OK] Rebuilt core and launcher with final dependency lock" -ForegroundColor Green
 
-    # app archive = the dropo/ app folder WITHOUT bin/ (small, ships every release)
-    $AppAsset = $WindowsPortableAsset
-    $zipFile = Join-Path $VersionDir $AppAsset
-    if (Test-Path $zipFile) { Remove-Item $zipFile -Force }
-    New-AppOnlyArchive -SourceAppFolder $AppFolder -DestinationZip $zipFile
-    $zipSize = (Get-Item $zipFile).Length / 1MB
-    Write-Host "[OK] Created $AppAsset ($([math]::Round($zipSize, 2)) MB, app only - bin/ ships as $DepsAsset)" -ForegroundColor Green
+    # Single self-extracting app = the dropo/ app folder WITHOUT bin/.
+    $AppAsset = $WindowsAppAsset
+    $appExeAsset = Join-Path $VersionDir $AppAsset
+    New-WindowsSingleExecutable -SourceAppFolder $AppFolder -DestinationExe $appExeAsset -PackageVersion $AppVersion
+    $appSize = (Get-Item $appExeAsset).Length / 1MB
+    Write-Host "[OK] Created $AppAsset ($([math]::Round($appSize, 2)) MB, self-extracting - bin/ ships as $DepsAsset)" -ForegroundColor Green
 
     Write-Host ""
     Write-Host "[SUCCESS] Build completed: release/$BuildFolderName/" -ForegroundColor Green
     Write-Host "  app folder:  dropo/  (run dropo/dropo.exe)" -ForegroundColor Gray
     if ($depsArchiveForUpload) {
-        Write-Host "  release zips: $AppAsset + $DepsAsset" -ForegroundColor Gray
+        Write-Host "  release files: $AppAsset + $DepsAsset" -ForegroundColor Gray
     } else {
-        Write-Host "  release zips: $AppAsset (deps reused from $depsTag)" -ForegroundColor Gray
+        Write-Host "  release files: $AppAsset (deps reused from $depsTag)" -ForegroundColor Gray
     }
 
     # Show files
@@ -1493,10 +1560,10 @@ function Build-AndroidApplication {
     Write-Host "[OK] SHA256: $sha" -ForegroundColor Green
 }
 
-# Create portable ZIP (standalone, for manual use)
+# Create the single-file Windows package from an existing build.
 function Create-Portable {
     Write-Host ""
-    Write-Host "Creating portable ZIP..." -ForegroundColor Yellow
+    Write-Host "Creating Windows single-file package..." -ForegroundColor Yellow
 
     $sourceDir = $VersionDir
     if (-not (Test-Path $sourceDir)) {
@@ -1522,23 +1589,17 @@ function Create-Portable {
         Copy-PetCertificateBundle -Destination $appFolder
     }
 
-    # App-only ZIP (exclude bin/ — heavy deps ship as the separate
-    # dependencies archive). Written INSIDE the container, name without
-    # version/hash. Idempotent with Build-Application's packaging.
-    $zipFile = Join-Path $sourceDir $WindowsPortableAsset
-    if (Test-Path $zipFile) {
-        Remove-Item $zipFile
-    }
-    New-AppOnlyArchive -SourceAppFolder $appFolder -DestinationZip $zipFile
+    $appAssetPath = Join-Path $sourceDir $WindowsAppAsset
+    New-WindowsSingleExecutable -SourceAppFolder $appFolder -DestinationExe $appAssetPath -PackageVersion $AppVersion
 
-    $fileSize = (Get-Item $zipFile).Length / 1MB
-    Write-Host "[OK] Created: $WindowsPortableAsset ($([math]::Round($fileSize, 2)) MB, app only - bin/ ships separately)" -ForegroundColor Green
+    $fileSize = (Get-Item $appAssetPath).Length / 1MB
+    Write-Host "[OK] Created: $WindowsAppAsset ($([math]::Round($fileSize, 2)) MB, self-extracting - bin/ ships separately)" -ForegroundColor Green
 }
 
 # Main execution
-# Windows ships as a portable archive only (no installer). Launch-at-logon is
-# handled by a per-user Scheduled Task the app registers at runtime, so no
-# installer is required.
+# Windows ships as one self-extracting executable. It installs the signed app
+# payload under LocalAppData and starts the normal launcher; privileged runtime
+# dependencies remain protected under ProgramData.
 if ($AppOnly) {
     Build-Application
     if ($Android) {

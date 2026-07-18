@@ -6,28 +6,27 @@ import (
 	"testing"
 )
 
-func TestSelectUpdateAssetPrefersWindowsPortableZip(t *testing.T) {
+func TestSelectUpdateAssetPrefersWindowsSingleExecutable(t *testing.T) {
 	asset, ok := selectUpdateAssetFor([]GitHubReleaseAsset{
 		{Name: "dropo-Windows-Dependencies-x64.zip", BrowserDownloadURL: "deps"},
 		{Name: "dropo-Linux-x64.AppImage", BrowserDownloadURL: "linux"},
-		{Name: "dropo-Windows-Portable-x64.zip", BrowserDownloadURL: "portable", Size: 123},
-		{Name: "dropo-Windows-Setup.exe", BrowserDownloadURL: "installer"},
+		{Name: "dropo-Windows-x64.exe", BrowserDownloadURL: "single-exe", Size: 123},
 	}, "windows", "amd64")
 	if !ok {
 		t.Fatal("expected update asset")
 	}
-	if asset.Name != "dropo-Windows-Portable-x64.zip" || asset.BrowserDownloadURL != "portable" || asset.Size != 123 {
+	if asset.Name != "dropo-Windows-x64.exe" || asset.BrowserDownloadURL != "single-exe" || asset.Size != 123 {
 		t.Fatalf("unexpected selected asset: %+v", asset)
 	}
 }
 
-func TestSelectUpdateAssetRejectsWindowsExeInstaller(t *testing.T) {
+func TestSelectUpdateAssetRejectsLegacyWindowsZip(t *testing.T) {
 	_, ok := selectUpdateAssetFor([]GitHubReleaseAsset{
 		{Name: "dropo-Windows-Dependencies-x64.zip", BrowserDownloadURL: "deps"},
-		{Name: "dropo-Windows-Setup.exe", BrowserDownloadURL: "installer"},
+		{Name: "dropo-Windows-Portable-x64.zip", BrowserDownloadURL: "legacy"},
 	}, "windows", "amd64")
 	if ok {
-		t.Fatal("installer executable must not be copied over the portable launcher")
+		t.Fatal("legacy ZIP must not be selected after switching to the single executable")
 	}
 }
 
@@ -42,7 +41,7 @@ func TestSelectLatestCompatibleReleaseSkipsAndroidOnlyReleaseForWindows(t *testi
 		{
 			TagName: "v2.2.1",
 			Assets: []GitHubReleaseAsset{
-				{Name: "dropo-Windows-Portable-x64.zip", BrowserDownloadURL: "windows-2.2.1"},
+				{Name: "dropo-Windows-x64.exe", BrowserDownloadURL: "windows-2.2.1"},
 			},
 		},
 	}, "windows", "amd64")
@@ -67,7 +66,7 @@ func TestSelectLatestCompatibleReleaseUsesNewestMatchingVersion(t *testing.T) {
 
 func TestSelectUpdateAssetForFuturePlatforms(t *testing.T) {
 	assets := []GitHubReleaseAsset{
-		{Name: "dropo-Windows-Portable-x64.zip", BrowserDownloadURL: "windows"},
+		{Name: "dropo-Windows-x64.exe", BrowserDownloadURL: "windows"},
 		{Name: "dropo-Linux-Dependencies-x64.zip", BrowserDownloadURL: "linux-deps"},
 		{Name: "dropo-Linux-x64.AppImage", BrowserDownloadURL: "linux"},
 		{Name: "dropo-macOS-arm64.dmg", BrowserDownloadURL: "macos"},
@@ -98,10 +97,9 @@ func TestSelectUpdateAssetForFuturePlatforms(t *testing.T) {
 
 func TestUpdateFileExtension(t *testing.T) {
 	cases := map[string]string{
-		"https://example.test/dropo-Windows-Portable-x64.zip":       ".zip",
-		"https://example.test/dropo-Windows-Portable-x64.zip?token": ".zip",
-		"https://example.test/dropo-Windows-Setup.exe":              ".bin",
-		"https://example.test/download":                             ".bin",
+		"https://example.test/dropo-Windows-x64.exe":       ".exe",
+		"https://example.test/dropo-Windows-x64.exe?token": ".exe",
+		"https://example.test/download":                    ".bin",
 	}
 	for input, want := range cases {
 		if got := updateFileExtension(input); got != want {
@@ -128,6 +126,22 @@ func TestMakeUpdateScriptForZip(t *testing.T) {
 	// path, to avoid a TOCTOU swap before the elevated launch (review.md §4).
 	if dir := filepath.Dir(scriptPath); !strings.Contains(filepath.Base(dir), "dropo-update-") {
 		t.Fatalf("script dir = %q, want a randomized dropo-update-* dir", dir)
+	}
+}
+
+func TestMakeUpdateScriptForSingleExecutable(t *testing.T) {
+	tempFile := filepath.Join(t.TempDir(), "dropo_update.exe")
+	scriptPath, script, err := makeUpdateScript(tempFile, `C:\dropo\dropo.exe`, `C:\dropo`)
+	if err != nil {
+		t.Fatalf("makeUpdateScript: %v", err)
+	}
+	if filepath.Ext(scriptPath) != ".ps1" {
+		t.Fatalf("script path = %q, want .ps1", scriptPath)
+	}
+	for _, part := range []string{"--from-update", "WaitForExit", "Remove-Item"} {
+		if !strings.Contains(script, part) {
+			t.Fatalf("single-executable update script missing %q:\n%s", part, script)
+		}
 	}
 }
 
@@ -161,7 +175,7 @@ func TestCompareVersions(t *testing.T) {
 
 func TestValidateTrustedUpdateURL(t *testing.T) {
 	allowed := []string{
-		"https://github.com/Droponevedimka/dropo/releases/download/v2.2.0/dropo-Windows-Portable-x64.zip",
+		"https://github.com/Droponevedimka/dropo/releases/download/v2.2.0/dropo-Windows-x64.exe",
 		"https://release-assets.githubusercontent.com/github-production-release-asset/file",
 	}
 	if err := validateTrustedUpdateURL(allowed[0]); err != nil {
@@ -171,9 +185,9 @@ func TestValidateTrustedUpdateURL(t *testing.T) {
 		t.Fatalf("trusted GitHub redirect rejected: %v", err)
 	}
 	for _, rawURL := range []string{
-		"http://github.com/Droponevedimka/dropo/releases/download/v2.2.0/update.zip",
-		"https://example.com/update.zip",
-		"https://github.com/Droponevedimka/dropo/releases/download/v2.2.0/update.bin",
+		"http://github.com/Droponevedimka/dropo/releases/download/v2.2.0/update.exe",
+		"https://example.com/update.exe",
+		"https://github.com/Droponevedimka/dropo/releases/download/v2.2.0/update.zip",
 	} {
 		if err := validateTrustedUpdateURL(rawURL); err == nil {
 			t.Errorf("untrusted update URL accepted: %s", rawURL)

@@ -1,6 +1,6 @@
 package main
 
-// Dependency bootstrap. The portable app ships WITHOUT the heavy bin/ (sing-box,
+// Dependency bootstrap. The single-file app payload ships WITHOUT the heavy bin/ (sing-box,
 // winws2+WinDivert+Lua, wireguard, xray, tg-ws-proxy, filters). Those live in a
 // separate release asset `dependencies-<depsVersion>.zip` and are downloaded
 // once on first run (or when depsVersion changes), verified by sha256, and
@@ -201,6 +201,9 @@ func (a *App) failDepsDownload(m *DepsManifest, err error) error {
 // Idempotent: a no-op if bin/ already matches the required version. Safe to call
 // from the frontend; emits `deps-progress`.
 func (a *App) DownloadDependencies() error {
+	a.depsDownloadMu.Lock()
+	defer a.depsDownloadMu.Unlock()
+
 	m, ok := a.loadDepsManifest()
 	if !ok {
 		return nil // bundled build — nothing to fetch

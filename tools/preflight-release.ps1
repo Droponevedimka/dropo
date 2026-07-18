@@ -221,14 +221,14 @@ function Invoke-ArtifactValidation {
 
     $appFolder = Join-Path $folder "dropo"
     $runtimeFolder = Join-Path $appFolder "resources"
-    $zipPath = Join-Path $folder "dropo-Windows-Portable-x64.zip"
+    $windowsExePath = Join-Path $folder "dropo-Windows-x64.exe"
     $androidAssetName = "dropo-Android-arm64.apk"
     $androidApkPath = Join-Path $folder $androidAssetName
     $androidShaPath = Join-Path $folder "$androidAssetName.sha256"
 
     Write-Host "Release folder: $folder" -ForegroundColor Gray
     Write-Host "App folder:     $appFolder" -ForegroundColor Gray
-    Write-Host "Release zip:    $zipPath" -ForegroundColor Gray
+    Write-Host "Windows EXE:    $windowsExePath" -ForegroundColor Gray
     Write-Host "Android APK:    $androidApkPath" -ForegroundColor Gray
 
     $dropoExe = Join-Path $appFolder "dropo.exe"
@@ -247,7 +247,7 @@ function Invoke-ArtifactValidation {
         }
     }
     Assert-FileExists (Join-Path $runtimeFolder "resources\template.json")
-    Assert-FileExists $zipPath
+    Assert-FileExists $windowsExePath
     Assert-FileExists $androidApkPath
     Assert-FileExists $androidShaPath
     Assert-NoRuntimeFiles $appFolder
@@ -260,8 +260,10 @@ function Invoke-ArtifactValidation {
     }
 
     Assert-NotRequireAdministrator $dropoExe
+    Assert-NotRequireAdministrator $windowsExePath
     Assert-NotRequireAdministrator (Join-Path $runtimeFolder "dropo-ui.exe")
     Assert-AuthenticodeSigned $dropoExe
+    Assert-AuthenticodeSigned $windowsExePath
     Assert-AuthenticodeSigned (Join-Path $runtimeFolder "dropo-ui.exe")
     Assert-AuthenticodeSigned (Join-Path $runtimeFolder "dropo-core.exe")
 
@@ -285,33 +287,29 @@ function Invoke-ArtifactValidation {
         throw "Portable app root must contain only dropo.exe and resources/. Got: $($rootItems -join ', ')"
     }
 
-    $tempDir = Join-Path $env:TEMP ("dropo-preflight-" + [guid]::NewGuid().ToString("N"))
-    New-Item -ItemType Directory -Path $tempDir | Out-Null
+    # Exercise the actual embedded payload without launching the application or
+    # touching the user's real AppData. The bootstrap verifies its signed
+    # manifest and every extracted file before returning from --install-only.
+    $bootstrapSmokeRoot = Join-Path $env:TEMP ("dropo-bootstrap-smoke-" + [guid]::NewGuid().ToString("N"))
+    $previousLocalAppData = [string]$env:LOCALAPPDATA
     try {
-        Expand-Archive -Path $zipPath -DestinationPath $tempDir -Force
-        Assert-FileExists (Join-Path $tempDir "dropo.exe")
-        Assert-FileExists (Join-Path $tempDir "resources\dropo-ui.exe")
-        Assert-FileExists (Join-Path $tempDir "resources\dropo-core.exe")
-        Assert-FileExists (Join-Path $tempDir "resources\flutter_windows.dll")
-        Assert-FileExists (Join-Path $tempDir "resources\data\flutter_assets\AssetManifest.bin")
-        Assert-FileExists (Join-Path $tempDir "resources\dependencies.json")
-        Assert-FileExists (Join-Path $tempDir "resources\cert\dropo-pet-code-signing.cer")
-        Assert-FileExists (Join-Path $tempDir "resources\cert\install-dropo-pet-certificate.cmd")
-        Assert-FileExists (Join-Path $tempDir "resources\cert\remove-dropo-pet-certificate.cmd")
-        if (Test-Path (Join-Path $tempDir "resources\bin")) {
-            throw "Portable app zip must not contain bundled resources\bin"
+        $env:LOCALAPPDATA = $bootstrapSmokeRoot
+        $bootstrapProcess = Start-Process -FilePath $windowsExePath -ArgumentList "--install-only" -PassThru -Wait
+        if ($bootstrapProcess.ExitCode -ne 0) {
+            $bootstrapLog = Join-Path $bootstrapSmokeRoot "dropo\bootstrap-error.log"
+            $detail = if (Test-Path -LiteralPath $bootstrapLog) { Get-Content -LiteralPath $bootstrapLog -Raw } else { "no bootstrap error log" }
+            throw "Windows single-file extraction smoke failed (exit $($bootstrapProcess.ExitCode)): $detail"
         }
-        if (Test-Path (Join-Path $tempDir "resources\app")) {
-            throw "Portable app zip must not contain legacy resources\app"
-        }
-        $zipRootItems = @(Get-ChildItem -Path $tempDir | ForEach-Object { $_.Name } | Sort-Object)
-        $expectedZipRoot = $expectedRoot
-        if (($zipRootItems -join "|") -ne ($expectedZipRoot -join "|")) {
-            throw "Portable app zip root must contain only dropo.exe and resources/. Got: $($zipRootItems -join ', ')"
-        }
-        Assert-NoRuntimeFiles $tempDir
+        $installedRoot = Join-Path $bootstrapSmokeRoot "dropo\app\$version"
+        Assert-FileExists (Join-Path $installedRoot "dropo.exe")
+        Assert-FileExists (Join-Path $installedRoot "install-manifest.json")
+        Assert-FileExists (Join-Path $installedRoot "resources\dropo-core.exe")
+        Assert-FileExists (Join-Path $installedRoot "resources\dropo-ui.exe")
+        Assert-FileExists (Join-Path $installedRoot "resources\dependencies.json")
+        Assert-NoRuntimeFiles $installedRoot
     } finally {
-        Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+        $env:LOCALAPPDATA = $previousLocalAppData
+        Remove-Item -LiteralPath $bootstrapSmokeRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
 
     return $appFolder

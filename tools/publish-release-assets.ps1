@@ -121,9 +121,9 @@ if (-not $ReleaseFolder -or -not (Test-Path -LiteralPath $ReleaseFolder -PathTyp
     throw "Release folder for $version was not found. Build it locally first."
 }
 
-$windowsZip = Join-Path $ReleaseFolder "dropo-Windows-Portable-x64.zip"
+$windowsExe = Join-Path $ReleaseFolder "dropo-Windows-x64.exe"
 $androidApk = Join-Path $ReleaseFolder "dropo-Android-arm64.apk"
-foreach ($path in @($windowsZip, $androidApk)) {
+foreach ($path in @($windowsExe, $androidApk)) {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
         throw "Required release asset was not found: $path"
     }
@@ -156,10 +156,10 @@ $tag = "v$version"
 $release = Invoke-GitHubApi -Method Get -Uri "https://api.github.com/repos/$Repository/releases/tags/$tag"
 if ($release.draft) { throw "Release $tag is still a draft." }
 
-Upload-ReleaseAsset -ReleaseId $release.id -Path $windowsZip -ExistingAssets $release.assets
+Upload-ReleaseAsset -ReleaseId $release.id -Path $windowsExe -ExistingAssets $release.assets
 Upload-ReleaseAsset -ReleaseId $release.id -Path $androidApk -ExistingAssets $release.assets
 
-$windowsSha = (Get-FileHash -LiteralPath $windowsZip -Algorithm SHA256).Hash.ToLowerInvariant()
+$windowsSha = (Get-FileHash -LiteralPath $windowsExe -Algorithm SHA256).Hash.ToLowerInvariant()
 $androidSha = (Get-FileHash -LiteralPath $androidApk -Algorithm SHA256).Hash.ToLowerInvariant()
 $body = [string]$release.body
 $body = $body.Replace("__WINDOWS_SHA256_PENDING_LOCAL_UPLOAD__", $windowsSha)

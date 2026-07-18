@@ -2015,7 +2015,8 @@ func insertAfterFirstRouteRule(rules []interface{}, extra []interface{}) []inter
 // its own latency-tested bypass group (toggle on) or vpn-or-direct group
 // (toggle off). Same rule set regardless of routing mode.
 func (b *ConfigBuilderForStorage) buildFreeAccessRules(settings GlobalAppSettings, hasVPNProxy bool) []interface{} {
-	rules := make([]interface{}, 0, len(DefaultFreeAccessServices))
+	rules := make([]interface{}, 0, len(DefaultFreeAccessServices)+1)
+	rules = append(rules, buildDiscordRealtimeRules(settings, hasVPNProxy)...)
 
 	for _, svc := range DefaultFreeAccessServices {
 		outbound := FreeAccessServiceRouteOutboundForSettings(svc, settings, hasVPNProxy)
@@ -2047,6 +2048,44 @@ func (b *ConfigBuilderForStorage) buildFreeAccessRules(settings GlobalAppSetting
 	}
 
 	return rules
+}
+
+// buildDiscordRealtimeRules keeps Discord voice, screen sharing and stream
+// media usable when the transparent path can open Discord but the provider
+// still drops its encrypted UDP media. zapret2 can desync discovery/STUN, but
+// it cannot reliably transform encrypted RTP. In automatic mode a configured
+// subscription is therefore the resilient path for Discord UDP only; normal
+// Discord HTTP traffic keeps using the selected free-access route. An explicit
+// Direct choice is always respected, and installations without a subscription
+// retain the existing service-specific transparent route.
+func buildDiscordRealtimeRules(settings GlobalAppSettings, hasVPNProxy bool) []interface{} {
+	var discord *FreeAccessService
+	for i := range DefaultFreeAccessServices {
+		if DefaultFreeAccessServices[i].Tag == "discord" {
+			discord = &DefaultFreeAccessServices[i]
+			break
+		}
+	}
+	if discord == nil || len(discord.ProcessNames) == 0 {
+		return nil
+	}
+
+	outbound := FreeAccessServiceRouteOutboundForSettings(*discord, settings, hasVPNProxy)
+	if hasVPNProxy && FreeAccessServiceMethod(settings, discord.Tag) != FreeAccessMethodDirect {
+		outbound = "auto-select"
+	}
+	if outbound == "" {
+		return nil
+	}
+
+	return []interface{}{
+		map[string]interface{}{
+			"process_name": discord.ProcessNames,
+			"network":      "udp",
+			"action":       "route",
+			"outbound":     outbound,
+		},
+	}
 }
 
 // blockedCatchAllOutbound returns which group the broad Re:filter/community

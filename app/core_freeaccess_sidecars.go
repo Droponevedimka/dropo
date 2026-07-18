@@ -137,25 +137,28 @@ func (m *TransparentBypassManager) StartComposedStrategy(label string, args []st
 		return fmt.Errorf("%s not found: %s", ZapretProcessName, exePath)
 	}
 	m.mu.Lock()
+	defer m.mu.Unlock()
 	alreadyRunning := m.activeTag == composedStrategyTag && m.activeCmd != nil && slices.Equal(m.activeArgs, args)
-	m.mu.Unlock()
 	if alreadyRunning {
 		m.log(fmt.Sprintf("%s already uses the requested composed arguments; restart skipped", label))
 		return nil
 	}
-	// Validate before touching the currently working process.
-	if err := m.validateZapret2Args(exePath, args); err != nil {
-		return fmt.Errorf("%s configuration is invalid: %w", label, err)
-	}
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
 	previousLabel := m.activeLabel
 	previousArgs := append([]string(nil), m.activeArgs...)
 	previousWasComposed := m.activeTag == composedStrategyTag && len(previousArgs) > 0
 
-	// Composed args change as per-service selections change, so always restart.
+	// winws2 --dry-run still opens the configured WinDivert filter. Running it
+	// beside the current composed instance therefore fails with "A copy of
+	// winws2 is already running with the same filter". Serialize recomposition
+	// and stop the old filter before validating the replacement. If validation
+	// fails, restore the last known-good composed process immediately.
 	m.stopLocked()
+	if err := m.validateZapret2Args(exePath, args); err != nil {
+		m.restoreComposedLocked(previousWasComposed, previousLabel, previousArgs)
+		return fmt.Errorf("%s configuration is invalid: %w", label, err)
+	}
+
+	// Composed args change as per-service selections change, so always restart.
 	m.logWinDivertStatus("before composed start")
 	cmd, exitCh, err := m.startRawProcessValidated(label, args)
 	if err != nil {
