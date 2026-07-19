@@ -167,7 +167,9 @@ func (m *TransparentBypassManager) StartComposedStrategy(label string, args []st
 		return err
 	}
 	if err := waitForTransparentStartup(exitCh); err != nil {
-		terminateProcessTree(cmd)
+		if !terminateManagedCmdAndWait(cmd, 3*time.Second) {
+			m.log("timed out terminating failed composed strategy")
+		}
 		m.restoreComposedLocked(previousWasComposed, previousLabel, previousArgs)
 		m.logWinDivertStatus("composed startup failed")
 		return err
@@ -195,7 +197,9 @@ func (m *TransparentBypassManager) restoreComposedLocked(restore bool, label str
 		return
 	}
 	if err := waitForTransparentStartup(exitCh); err != nil {
-		terminateProcessTree(cmd)
+		if !terminateManagedCmdAndWait(cmd, 3*time.Second) {
+			m.log("timed out terminating failed restored strategy")
+		}
 		m.log(fmt.Sprintf("previous composed strategy did not recover: %v", err))
 		return
 	}
@@ -260,14 +264,18 @@ func (m *TransparentBypassManager) StartForProbe(strategy TransparentFreeAccessS
 		return nil, err
 	}
 	if err := waitForTransparentStartup(exitCh); err != nil {
-		terminateProcessTree(cmd)
+		if !terminateManagedCmdAndWait(cmd, 3*time.Second) {
+			m.log(fmt.Sprintf("%s probe did not terminate after startup failure", strategy.Label))
+		}
 		m.logWinDivertStatus("probe startup failed")
 		return nil, err
 	}
 	m.logWinDivertStatus("after probe start")
 	m.log(fmt.Sprintf("%s probe started (pid=%d)", strategy.Label, cmd.Process.Pid))
 	return func() {
-		terminateProcessTree(cmd)
+		if !terminateManagedCmdAndWait(cmd, 3*time.Second) {
+			m.log(fmt.Sprintf("%s probe did not terminate within timeout", strategy.Label))
+		}
 		m.logWinDivertStatus("after probe stop")
 		if m.ActiveTag() == "" {
 			cleanupWinDivertServiceIfOwned([]string{m.basePath}, "probe stop", m.log)
@@ -906,7 +914,9 @@ func (m *TransparentBypassManager) stopLocked() {
 		close(stopCh)
 	}
 	if cmd != nil {
-		terminateProcessTree(cmd)
+		if !terminateManagedCmdAndWait(cmd, 3*time.Second) {
+			m.log("transparent process did not terminate within timeout; orphan cleanup will retry it")
+		}
 	}
 }
 

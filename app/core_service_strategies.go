@@ -434,7 +434,6 @@ const (
 	// *.discord.media:2048; keep it with the alternate media TCP ports so voice
 	// channel join handshakes do not bypass winws2 while regular Discord works.
 	discordMediaTCPPorts = "2048,2053,2083,2087,2096,8443"
-	discordVoiceUDPPorts = "19294-19344,50000-50100"
 )
 
 func hasDiscordSelection(selections []serviceWinwsSelection) bool {
@@ -495,9 +494,14 @@ func composeServiceAndWireGuardWinwsArgs(selections []serviceWinwsSelection, wir
 				"--lua-desync=multisplit:pos=1:seqovl=681:seqovl_pattern=google_tls",
 			}
 			voiceUDP := []string{
-				"--filter-udp=" + discordVoiceUDPPorts,
+				// The Discord voice server supplies the UDP port dynamically. Do
+				// not constrain the profile to a guessed range: the bundled raw
+				// WinDivert parts already capture only Discord IP discovery and
+				// STUN packets, while this L7 filter performs the precise userspace
+				// match recommended by zapret2 upstream.
+				"--filter-l7=discord,stun",
 				"--payload=discord_ip_discovery,stun",
-				"--lua-desync=fake:blob=0x00000000000000000000000000000000:repeats=6",
+				"--lua-desync=fake:blob=0x00000000000000000000000000000000:repeats=2",
 			}
 			profiles = append(profiles, mediaTCP, voiceUDP)
 		}
@@ -612,8 +616,8 @@ func composeZapret2GlobalArgs(method ServiceBypassMethod) []string {
 			"--lua-desync=multisplit:pos=1:seqovl=681:seqovl_pattern=google_tls",
 		},
 		{
-			"--filter-udp=" + discordVoiceUDPPorts, "--payload=discord_ip_discovery,stun",
-			"--lua-desync=fake:blob=0x00000000000000000000000000000000:repeats=6",
+			"--filter-l7=discord,stun", "--payload=discord_ip_discovery,stun",
+			"--lua-desync=fake:blob=0x00000000000000000000000000000000:repeats=2",
 		},
 		append([]string{"--filter-tcp=443", "--ipset=${IPSET}"}, method.TCPArgs...),
 		append([]string{"--filter-udp=443", "--ipset=${IPSET}"}, method.UDPArgs...),

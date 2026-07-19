@@ -3741,7 +3741,7 @@ class _DropoHomePageState extends State<DropoHomePage>
       externalVpnConflictBlocked = false;
       statusMessage = 'Подключаем VPN';
       connectionHint =
-          'Перед запуском проверяем активные VPN и туннельные адаптеры.';
+          'Перед запуском проверяем активные VPN, zapret и туннельные адаптеры.';
       connectionHintDanger = false;
     });
 
@@ -3756,9 +3756,9 @@ class _DropoHomePageState extends State<DropoHomePage>
 
       setState(() {
         externalVpnConflictBlocked = true;
-        statusMessage = 'Другой VPN активен';
+        statusMessage = 'Обнаружен сетевой конфликт';
         connectionHint =
-            'Отключите найденные VPN-подключения и запустите dropo снова.';
+            'Закройте найденные VPN или zapret-процессы и запустите dropo снова.';
         routeProbeActive = false;
       });
       final continueAnyway = await _showExternalVpnConflictDialog(info);
@@ -3773,9 +3773,9 @@ class _DropoHomePageState extends State<DropoHomePage>
       if (mounted) {
         setState(() {
           externalVpnConflictBlocked = true;
-          statusMessage = 'Другой VPN активен';
+          statusMessage = 'Обнаружен сетевой конфликт';
           connectionHint =
-              'Отключите найденные VPN-подключения и запустите dropo снова.';
+              'Закройте найденные VPN или zapret-процессы и запустите dropo снова.';
           routeProbeActive = false;
         });
       }
@@ -3801,13 +3801,13 @@ class _DropoHomePageState extends State<DropoHomePage>
         return _AppDialog(
           width: 560,
           centered: true,
-          title: 'Работают другие VPN',
+          title: 'Работает другой VPN или zapret',
           icon: Icons.warning_amber_rounded,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               const Text(
-                'Найдены активные VPN-подключения или туннельные адаптеры. Если включить dropo поверх них, могут конфликтовать маршруты, DNS и TUN-адаптеры.',
+                'Найдены активные VPN-подключения, туннельные адаптеры или сторонние zapret/WinDivert-процессы. При одновременном запуске могут конфликтовать маршруты, DNS, TUN и фильтры пакетов.',
                 style: TextStyle(color: Color(0xFFD8E4E0), height: 1.35),
               ),
               const SizedBox(height: 12),
@@ -3822,7 +3822,7 @@ class _DropoHomePageState extends State<DropoHomePage>
                 icon: Icons.power_settings_new,
                 title: 'Рекомендуем',
                 body:
-                    'Нажмите «Отмена», отключите сторонние VPN в их приложениях или в настройках Windows, затем включите dropo заново. Продолжайте только если понимаете риск конфликта.',
+                    'Нажмите «Отмена», закройте сторонний VPN или zapret и затем включите dropo заново. Продолжайте только если понимаете риск конфликта.',
               ),
               const SizedBox(height: 14),
               Row(

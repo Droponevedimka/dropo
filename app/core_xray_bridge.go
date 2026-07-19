@@ -149,7 +149,9 @@ func (m *XrayBridgeManager) Stop() {
 		return
 	}
 
-	terminateProcessTree(cmd)
+	if !terminateManagedCmdAndWait(cmd, 3*time.Second) {
+		m.log("process termination timed out; orphan cleanup will retry it")
+	}
 }
 
 func (m *XrayBridgeManager) logOutput(reader io.Reader, prefix string) {

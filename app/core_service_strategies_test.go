@@ -47,8 +47,8 @@ func TestComposeServiceWinwsArgsPerServiceProfiles(t *testing.T) {
 	}
 	for _, expected := range []string{
 		"--filter-tcp=2048,2053,2083,2087,2096,8443 --hostlist-domains=discord.media --payload=tls_client_hello --lua-desync=multisplit:pos=1:seqovl=681:seqovl_pattern=google_tls",
-		"--filter-udp=19294-19344,50000-50100 --payload=discord_ip_discovery,stun",
-		"--lua-desync=fake:blob=0x00000000000000000000000000000000:repeats=6",
+		"--filter-l7=discord,stun --payload=discord_ip_discovery,stun",
+		"--lua-desync=fake:blob=0x00000000000000000000000000000000:repeats=2",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("missing Discord media profile %q: %s", expected, joined)
@@ -70,7 +70,7 @@ func TestComposeServiceWinwsArgsKeepsNarrowFiltersWithoutDiscord(t *testing.T) {
 	if !strings.HasPrefix(joined, "--wf-tcp-out=80,443 --wf-raw-part=@C:\\dropo\\bin\\windivert_part.quic_initial_ietf.txt") {
 		t.Fatalf("non-Discord composed args must keep narrow wf header: %s", joined)
 	}
-	for _, unexpected := range []string{discordVoiceUDPPorts, discordMediaTCPPorts, "--payload=discord_ip_discovery,stun", "--hostlist-domains=discord.media"} {
+	for _, unexpected := range []string{discordMediaTCPPorts, "--filter-l7=discord,stun", "--payload=discord_ip_discovery,stun", "--hostlist-domains=discord.media"} {
 		if strings.Contains(joined, unexpected) {
 			t.Fatalf("non-Discord composed args unexpectedly contain %q: %s", unexpected, joined)
 		}

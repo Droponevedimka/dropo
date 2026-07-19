@@ -51,3 +51,23 @@ func TestManagedProcessJobKillsAssignedChildOnClose(t *testing.T) {
 		t.Fatal("managed child survived after job object close")
 	}
 }
+
+func TestTerminateManagedCmdAndWaitConfirmsExit(t *testing.T) {
+	cmd := exec.Command("powershell", "-NoProfile", "-Command", "Start-Sleep -Seconds 60")
+	if err := startManagedCommand(cmd, "terminate wait test", func(msg string) { t.Log(msg) }); err != nil {
+		t.Fatalf("start managed child failed: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.Wait()
+	}()
+
+	if !terminateManagedCmdAndWait(cmd, 5*time.Second) {
+		t.Fatal("termination was not confirmed within timeout")
+	}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("cmd.Wait did not observe the confirmed process exit")
+	}
+}

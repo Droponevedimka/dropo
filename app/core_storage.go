@@ -2051,13 +2051,12 @@ func (b *ConfigBuilderForStorage) buildFreeAccessRules(settings GlobalAppSetting
 }
 
 // buildDiscordRealtimeRules keeps Discord voice, screen sharing and stream
-// media usable when the transparent path can open Discord but the provider
-// still drops its encrypted UDP media. zapret2 can desync discovery/STUN, but
-// it cannot reliably transform encrypted RTP. In automatic mode a configured
-// subscription is therefore the resilient path for Discord UDP only; normal
-// Discord HTTP traffic keeps using the selected free-access route. An explicit
-// Direct choice is always respected, and installations without a subscription
-// retain the existing service-specific transparent route.
+// media on the same direct path handled by the composed zapret2 profile.
+// Discord supplies media ports dynamically and the VLESS subscription may not
+// support UDP at all; forcing every Discord UDP flow through auto-select made
+// voice appear healthy while Go Live publishing/viewing stalled. Only an
+// explicit VPN selection (or disabling free methods) sends realtime traffic to
+// the subscription. Explicit Direct and the automatic zapret2 path stay direct.
 func buildDiscordRealtimeRules(settings GlobalAppSettings, hasVPNProxy bool) []interface{} {
 	var discord *FreeAccessService
 	for i := range DefaultFreeAccessServices {
@@ -2070,9 +2069,15 @@ func buildDiscordRealtimeRules(settings GlobalAppSettings, hasVPNProxy bool) []i
 		return nil
 	}
 
-	outbound := FreeAccessServiceRouteOutboundForSettings(*discord, settings, hasVPNProxy)
-	if hasVPNProxy && FreeAccessServiceMethod(settings, discord.Tag) != FreeAccessMethodDirect {
-		outbound = "auto-select"
+	method := FreeAccessServiceMethod(settings, discord.Tag)
+	outbound := "direct"
+	if method == FreeAccessMethodVPN || !FreeMethodsAllowed(settings) {
+		outbound = ""
+		if hasVPNProxy {
+			outbound = "auto-select"
+		}
+	} else if !serviceHasFreeBypass(discord.Tag) {
+		outbound = FreeAccessServiceRouteOutboundForSettings(*discord, settings, hasVPNProxy)
 	}
 	if outbound == "" {
 		return nil

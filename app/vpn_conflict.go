@@ -111,6 +111,9 @@ func candidateLooksLikeExternalVPN(candidate externalVPNCandidate) bool {
 	if source == "vpn-connection" {
 		return status == "" || status == "connected"
 	}
+	if source == "dpi-process" || source == "packet-filter-service" {
+		return status == "" || status == "running"
+	}
 	if status != "" && status != "up" && status != "connected" && status != "true" {
 		return false
 	}
@@ -133,8 +136,13 @@ func knownDropoOrNonVPNAdapter(text string) bool {
 }
 
 func externalVPNKind(candidate externalVPNCandidate) string {
-	if strings.EqualFold(strings.TrimSpace(candidate.Source), "vpn-connection") {
+	switch strings.ToLower(strings.TrimSpace(candidate.Source)) {
+	case "vpn-connection":
 		return "VPN profile"
+	case "dpi-process":
+		return "DPI bypass process"
+	case "packet-filter-service":
+		return "Packet filter service"
 	}
 	return "Network adapter"
 }

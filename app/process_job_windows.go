@@ -6,10 +6,46 @@ import (
 	"fmt"
 	"os/exec"
 	"sync"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
+
+// terminateManagedCmdAndWait terminates a child while retaining a process
+// handle until Windows confirms that every thread has exited. os.Process.Kill
+// alone only requests termination; immediately starting another WinDivert
+// instance can otherwise race the old winws2 process during teardown.
+func terminateManagedCmdAndWait(cmd *exec.Cmd, timeout time.Duration) bool {
+	if cmd == nil || cmd.Process == nil {
+		return true
+	}
+	handle, err := windows.OpenProcess(
+		windows.PROCESS_TERMINATE|windows.SYNCHRONIZE,
+		false,
+		uint32(cmd.Process.Pid),
+	)
+	if err != nil {
+		// The process may already be gone. Retain the best-effort kill for
+		// unusual access errors; owned children normally open successfully.
+		_ = cmd.Process.Kill()
+		return true
+	}
+	defer windows.CloseHandle(handle)
+
+	if err := windows.TerminateProcess(handle, 1); err != nil {
+		if status, waitErr := windows.WaitForSingleObject(handle, 0); waitErr == nil && status == windows.WAIT_OBJECT_0 {
+			return true
+		}
+		return false
+	}
+	waitMS := uint32(timeout / time.Millisecond)
+	if waitMS == 0 {
+		waitMS = 1
+	}
+	status, err := windows.WaitForSingleObject(handle, waitMS)
+	return err == nil && status == windows.WAIT_OBJECT_0
+}
 
 var managedProcessJob = struct {
 	sync.Mutex

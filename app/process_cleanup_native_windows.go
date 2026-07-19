@@ -193,7 +193,14 @@ func killWindowsDropoManagedSidecarsNative(paths []string, roots []string) ([]in
 					if terminateErr := windows.TerminateProcess(process, 1); terminateErr != nil {
 						resultErr = errors.Join(resultErr, fmt.Errorf("terminate pid %d: %w", entry.ProcessID, terminateErr))
 					} else {
-						result = append(result, int(entry.ProcessID))
+						waitStatus, waitErr := windows.WaitForSingleObject(process, uint32(2*time.Second/time.Millisecond))
+						if waitErr != nil {
+							resultErr = errors.Join(resultErr, fmt.Errorf("wait for pid %d: %w", entry.ProcessID, waitErr))
+						} else if waitStatus != windows.WAIT_OBJECT_0 {
+							resultErr = errors.Join(resultErr, fmt.Errorf("wait for pid %d timed out", entry.ProcessID))
+						} else {
+							result = append(result, int(entry.ProcessID))
+						}
 					}
 				}
 				_ = windows.CloseHandle(process)

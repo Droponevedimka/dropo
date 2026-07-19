@@ -933,7 +933,9 @@ func (m *ByeDPIManager) Stop() {
 	m.wg.Wait()
 
 	for _, cmd := range cmds {
-		terminateProcessTree(cmd)
+		if !terminateManagedCmdAndWait(cmd, 3*time.Second) {
+			m.log("strategy termination timed out; orphan cleanup will retry it")
+		}
 	}
 	m.log("all strategies stopped")
 }
@@ -978,7 +980,9 @@ func (m *ByeDPIManager) handleCrash(strategy ByeDPIStrategy) {
 
 	if m.restarts[strategy.Tag] >= byeDPIMaxRestartAttempts {
 		m.log(fmt.Sprintf("%s exceeded restart attempts, disabled until next VPN start", strategy.Label))
-		terminateProcessTree(cmd)
+		if !terminateManagedCmdAndWait(cmd, 3*time.Second) {
+			m.log(fmt.Sprintf("%s did not terminate after exceeding restart attempts", strategy.Label))
+		}
 		delete(m.cmds, strategy.Tag)
 		return
 	}
@@ -986,7 +990,10 @@ func (m *ByeDPIManager) handleCrash(strategy ByeDPIStrategy) {
 	m.restarts[strategy.Tag]++
 	m.log(fmt.Sprintf("%s is not responding, restart attempt %d/%d", strategy.Label, m.restarts[strategy.Tag], byeDPIMaxRestartAttempts))
 
-	terminateProcessTree(cmd)
+	if !terminateManagedCmdAndWait(cmd, 3*time.Second) {
+		m.log(fmt.Sprintf("%s did not terminate before restart; restart cancelled", strategy.Label))
+		return
+	}
 	delete(m.cmds, strategy.Tag)
 
 	time.Sleep(byeDPIRestartBackoff)

@@ -63,6 +63,41 @@ try {
   } catch {}
 }
 
+# WinDivert-based DPI bypass tools compete for packet capture filters even
+# though they do not expose a Windows VPN adapter. Surface them explicitly so
+# the user can close the other zapret/GoodbyeDPI instance before starting dropo.
+$dpiProcessNames = @('winws.exe', 'winws2.exe', 'nfqws.exe', 'nfqws2.exe', 'goodbyedpi.exe')
+try {
+  $processes = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+    $dpiProcessNames -contains ([string]$_.Name).ToLowerInvariant()
+  }
+  foreach ($process in @($processes)) {
+    $detail = 'PID ' + [string]$process.ProcessId
+    if (-not [string]::IsNullOrWhiteSpace([string]$process.ExecutablePath)) {
+      $detail += ' — ' + [string]$process.ExecutablePath
+    }
+    Add-DropoVpnCandidate ([string]$process.Name) $detail 'dpi-process' 'Running'
+  }
+} catch {
+  try {
+    $processes = Get-Process -ErrorAction SilentlyContinue | Where-Object {
+      $dpiProcessNames -contains ($_.ProcessName.ToLowerInvariant() + '.exe')
+    }
+    foreach ($process in @($processes)) {
+      Add-DropoVpnCandidate ($process.ProcessName + '.exe') ('PID ' + [string]$process.Id) 'dpi-process' 'Running'
+    }
+  } catch {}
+}
+
+try {
+  $drivers = Get-CimInstance Win32_SystemDriver -ErrorAction SilentlyContinue | Where-Object {
+    ([string]$_.Name -like 'WinDivert*') -and ([string]$_.State -eq 'Running')
+  }
+  foreach ($driver in @($drivers)) {
+    Add-DropoVpnCandidate ([string]$driver.Name) ([string]$driver.PathName) 'packet-filter-service' 'Running'
+  }
+} catch {}
+
 if ($items.Count -eq 0) {
   '[]'
 } else {

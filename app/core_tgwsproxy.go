@@ -125,8 +125,11 @@ func (m *TgWsProxyManager) Stop() {
 	m.cmd = nil
 	m.mu.Unlock()
 	if cmd != nil {
-		terminateProcessTree(cmd)
-		m.log("MTProto proxy stopped")
+		if terminateManagedCmdAndWait(cmd, 3*time.Second) {
+			m.log("MTProto proxy stopped")
+		} else {
+			m.log("MTProto proxy termination timed out; orphan cleanup will retry it")
+		}
 	}
 }
 

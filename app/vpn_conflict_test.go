@@ -58,3 +58,16 @@ func TestFilterExternalVPNConflictsKeepsLegacyKampusAdapter(t *testing.T) {
 		t.Fatalf("conflict = %+v, want kampus", conflicts[0])
 	}
 }
+
+func TestFilterExternalVPNConflictsKeepsZapretAndWinDivert(t *testing.T) {
+	conflicts := filterExternalVPNConflicts([]externalVPNCandidate{
+		{Name: "winws2.exe", Detail: `PID 4242 — C:\\tools\\zapret\\winws2.exe`, Source: "dpi-process", Status: "Running"},
+		{Name: "WinDivert", Detail: `C:\\tools\\zapret\\WinDivert64.sys`, Source: "packet-filter-service", Status: "Running"},
+	})
+	if len(conflicts) != 2 {
+		t.Fatalf("len(conflicts) = %d, want 2: %+v", len(conflicts), conflicts)
+	}
+	if conflicts[0].Kind != "DPI bypass process" || conflicts[1].Kind != "Packet filter service" {
+		t.Fatalf("unexpected conflict kinds: %+v", conflicts)
+	}
+}
