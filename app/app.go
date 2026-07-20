@@ -65,6 +65,7 @@ type App struct {
 	transparentReselectionDone  bool
 	serviceStrategyCacheMu      sync.Mutex
 	serviceEngineComposeMu      sync.Mutex
+	discordRealtime             *discordRealtimeController
 	wireGuardCamouflageMu       sync.RWMutex
 	wireGuardCamouflageReady    bool
 	wireGuardCamouflageTargets  []wireGuardCamouflageTarget
@@ -90,6 +91,7 @@ func NewApp() *App {
 		logBuffer:         make([]string, 0, MaxLogBufferSize),
 		windowVisible:     true,
 		routeStrategyJobs: make(chan string, 64),
+		discordRealtime:   newDiscordRealtimeController(),
 		events:            NewEventHub(512),
 		initDone:          make(chan struct{}),
 	}

@@ -115,8 +115,11 @@ func (a *App) switchServiceToVPNFallback(serviceTag string) bool {
 }
 
 func (a *App) switchServiceRoute(serviceTag, outboundTag string) bool {
+	return a.switchOutboundSelector(ServiceBypassGroupTag(serviceTag), outboundTag)
+}
+
+func (a *App) switchOutboundSelector(groupTag, outboundTag string) bool {
 	client := &http.Client{Timeout: 2 * time.Second}
-	groupTag := ServiceBypassGroupTag(serviceTag)
 	deadline := time.Now().Add(5 * time.Second)
 	for !a.clashAPIPortReady(250*time.Millisecond) && time.Now().Before(deadline) {
 		time.Sleep(100 * time.Millisecond)
@@ -149,8 +152,12 @@ func (a *App) switchServiceRoute(serviceTag, outboundTag string) bool {
 }
 
 func (a *App) currentServiceRoute(serviceTag string) string {
+	return a.currentOutboundSelector(ServiceBypassGroupTag(serviceTag))
+}
+
+func (a *App) currentOutboundSelector(groupTag string) string {
 	client := &http.Client{Timeout: 2 * time.Second}
-	resp, err := a.clashAPIGet(client, clashProxyAPIPath(ServiceBypassGroupTag(serviceTag)))
+	resp, err := a.clashAPIGet(client, clashProxyAPIPath(groupTag))
 	if err != nil {
 		return ""
 	}

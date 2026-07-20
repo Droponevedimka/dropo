@@ -121,6 +121,7 @@ func (a *App) Start() map[string]interface{} {
 			return
 		}
 		a.stopNativeWireGuardTunnels()
+		a.stopDiscordRealtimeMonitor()
 		a.stopFreeAccess()
 		a.stopXrayBridge()
 		a.cleanupDropoRuntimeResidue("failed start")
@@ -369,6 +370,7 @@ func (a *App) Start() map[string]interface{} {
 	// Camouflage must be installed before native WireGuard sends its first
 	// initiation packet. It remains a sidecar; WireGuard owns the tunnel.
 	a.resetWireGuardCamouflageSession()
+	a.prepareDiscordRealtimeSession()
 	a.updateBusy(busyID, "Подбираем стратегии для заблокированных сервисов...")
 	if err := a.startComposedTransparentEngine(busyID); err != nil {
 		a.writeLog(fmt.Sprintf("[NetworkMode] Windows Unified winws2 engine failed to start: %v", err))
@@ -388,6 +390,7 @@ func (a *App) Start() map[string]interface{} {
 			"error":   fmt.Sprintf("Windows Unified: не удалось запустить подбор стратегий winws2: %v", err),
 		}
 	}
+	a.startDiscordRealtimeMonitor()
 
 	// Start Native WireGuard tunnels only after the strictly-scoped zapret2
 	// handshake profiles are active.
@@ -421,6 +424,7 @@ func (a *App) Start() map[string]interface{} {
 		// This prevents orphaned tunnels that block user's native WireGuard
 		a.mu.Unlock() // Unlock before calling stopNativeWireGuardTunnels to avoid deadlock
 		a.stopNativeWireGuardTunnels()
+		a.stopDiscordRealtimeMonitor()
 		a.stopFreeAccess()
 		a.stopXrayBridge()
 		a.cleanupDropoRuntimeResidue("process exit")
@@ -741,6 +745,7 @@ func (a *App) monitorSingBoxProcess(cmd *exec.Cmd, done chan error) {
 
 	a.mu.Unlock()
 	a.stopNativeWireGuardTunnels()
+	a.stopDiscordRealtimeMonitor()
 	a.stopFreeAccess()
 	a.stopXrayBridge()
 	a.cleanupDropoRuntimeResidue("process exit")
@@ -995,6 +1000,7 @@ func (a *App) Stop() map[string]interface{} {
 		a.mu.Unlock()
 		// Also stop Native WireGuard tunnels and free access process
 		a.stopNativeWireGuardTunnels()
+		a.stopDiscordRealtimeMonitor()
 		a.stopFreeAccess()
 		a.stopXrayBridge()
 		a.updateBusy(busyID, "Проверяем и закрываем фоновые процессы dropo...")
@@ -1040,6 +1046,7 @@ func (a *App) Stop() map[string]interface{} {
 	a.updateBusy(busyID, "Останавливаем WireGuard-сети...")
 	a.stopNativeWireGuardTunnels()
 	a.updateBusy(busyID, "Останавливаем бесплатные методы обхода...")
+	a.stopDiscordRealtimeMonitor()
 	a.stopFreeAccess()
 	a.updateBusy(busyID, "Останавливаем Xray bridge...")
 	a.stopXrayBridge()

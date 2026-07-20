@@ -1862,6 +1862,40 @@ func (b *ConfigBuilderForStorage) addFreeAccessOutbounds(template map[string]int
 		}
 	}
 
+	// Discord voice servers allocate both their WebSocket and UDP media ports
+	// dynamically. Route that realtime plane through its own runtime-controlled
+	// selector so the health monitor can keep web/API traffic untouched while it
+	// rotates direct zapret2 profiles and, after the bounded local search, moves
+	// voice/video/Go Live to a UDP-capable subscription node.
+	if hasVPNProxy {
+		vpnCandidates := outboundGroupCandidates(outbounds, "auto-select")
+		if len(vpnCandidates) == 0 {
+			vpnCandidates = []string{"auto-select"}
+		}
+		outbounds = append(outbounds, map[string]interface{}{
+			"type":      "selector",
+			"tag":       discordVPNGroupTag,
+			"outbounds": vpnCandidates,
+			"default":   vpnCandidates[0],
+		})
+	}
+	realtimeCandidates := []string{"direct"}
+	if hasVPNProxy {
+		realtimeCandidates = append(realtimeCandidates, discordVPNGroupTag)
+	}
+	realtimeDefault := "direct"
+	if FreeAccessServiceMethod(settings, "discord") == FreeAccessMethodVPN || !FreeMethodsAllowed(settings) {
+		if hasVPNProxy {
+			realtimeDefault = discordVPNGroupTag
+		}
+	}
+	outbounds = append(outbounds, map[string]interface{}{
+		"type":      "selector",
+		"tag":       discordRealtimeGroupTag,
+		"outbounds": realtimeCandidates,
+		"default":   realtimeDefault,
+	})
+
 	outbounds = append(outbounds, BuildResilientGroup(VpnOrDirectGroupTag, vpnOrDirect))
 
 	if settings.HideRuTraffic {
@@ -1906,6 +1940,17 @@ func outboundTagExists(outbounds []interface{}, tag string) bool {
 		}
 	}
 	return false
+}
+
+func outboundGroupCandidates(outbounds []interface{}, tag string) []string {
+	for _, outbound := range outbounds {
+		outboundMap, ok := outbound.(map[string]interface{})
+		if !ok || outboundMap["tag"] != tag {
+			continue
+		}
+		return interfaceStringSlice(outboundMap["outbounds"])
+	}
+	return nil
 }
 
 func buildFreeAccessProcessRules(settings GlobalAppSettings) []interface{} {
@@ -2050,13 +2095,9 @@ func (b *ConfigBuilderForStorage) buildFreeAccessRules(settings GlobalAppSetting
 	return rules
 }
 
-// buildDiscordRealtimeRules keeps Discord voice, screen sharing and stream
-// media on the same direct path handled by the composed zapret2 profile.
-// Discord supplies media ports dynamically and the VLESS subscription may not
-// support UDP at all; forcing every Discord UDP flow through auto-select made
-// voice appear healthy while Go Live publishing/viewing stalled. Only an
-// explicit VPN selection (or disabling free methods) sends realtime traffic to
-// the subscription. Explicit Direct and the automatic zapret2 path stay direct.
+// buildDiscordRealtimeRules sends the complete realtime plane to a dedicated
+// selector. package/process matching catches the IP-only dynamic UDP flow,
+// while the discord.media rule keeps its voice WebSocket on the same route.
 func buildDiscordRealtimeRules(settings GlobalAppSettings, hasVPNProxy bool) []interface{} {
 	var discord *FreeAccessService
 	for i := range DefaultFreeAccessServices {
@@ -2069,26 +2110,18 @@ func buildDiscordRealtimeRules(settings GlobalAppSettings, hasVPNProxy bool) []i
 		return nil
 	}
 
-	method := FreeAccessServiceMethod(settings, discord.Tag)
-	outbound := "direct"
-	if method == FreeAccessMethodVPN || !FreeMethodsAllowed(settings) {
-		outbound = ""
-		if hasVPNProxy {
-			outbound = "auto-select"
-		}
-	} else if !serviceHasFreeBypass(discord.Tag) {
-		outbound = FreeAccessServiceRouteOutboundForSettings(*discord, settings, hasVPNProxy)
-	}
-	if outbound == "" {
-		return nil
-	}
-
 	return []interface{}{
 		map[string]interface{}{
 			"process_name": discord.ProcessNames,
 			"network":      "udp",
 			"action":       "route",
-			"outbound":     outbound,
+			"outbound":     discordRealtimeGroupTag,
+		},
+		map[string]interface{}{
+			"domain_suffix": []string{"discord.media"},
+			"network":       "tcp",
+			"action":        "route",
+			"outbound":      discordRealtimeGroupTag,
 		},
 	}
 }

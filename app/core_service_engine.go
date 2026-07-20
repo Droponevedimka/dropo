@@ -366,6 +366,9 @@ func (a *App) orderedSelections(selections map[string]serviceWinwsSelection) []s
 	ordered := make([]serviceWinwsSelection, 0, len(selections))
 	for _, svc := range DefaultFreeAccessServices {
 		if sel, ok := selections[svc.Tag]; ok {
+			if strings.EqualFold(sel.ServiceTag, "discord") {
+				sel = a.decorateDiscordRealtimeSelection(sel)
+			}
 			ordered = append(ordered, sel)
 		}
 	}

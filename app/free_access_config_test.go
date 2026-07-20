@@ -165,28 +165,28 @@ func TestBuildConfigWithoutSubscriptionUsesFreeAccess(t *testing.T) {
 	}
 }
 
-func TestDiscordRealtimeUsesZapretDirectPathWhenAvailable(t *testing.T) {
+func TestDiscordRealtimeAlwaysUsesRuntimeSelector(t *testing.T) {
 	rules := (&ConfigBuilderForStorage{}).buildFreeAccessRules(GlobalAppSettings{}, true)
 	rule := findProcessNetworkRule(rules, "Discord.exe", "udp")
 	if rule == nil {
 		t.Fatal("Discord UDP realtime rule is missing")
 	}
-	if got := rule["outbound"]; got != "direct" {
-		t.Fatalf("Discord UDP outbound = %v, want direct zapret2 path", got)
+	if got := rule["outbound"]; got != discordRealtimeGroupTag {
+		t.Fatalf("Discord UDP outbound = %v, want runtime selector", got)
 	}
 
 	directSettings := GlobalAppSettings{FreeAccessMethods: map[string]string{"discord": FreeAccessMethodDirect}}
 	rules = (&ConfigBuilderForStorage{}).buildFreeAccessRules(directSettings, true)
 	rule = findProcessNetworkRule(rules, "Discord.exe", "udp")
-	if rule == nil || rule["outbound"] != "direct" {
-		t.Fatalf("explicit Direct must be respected for Discord UDP, got %v", rule)
+	if rule == nil || rule["outbound"] != discordRealtimeGroupTag {
+		t.Fatalf("explicit Direct must still use the runtime selector, got %v", rule)
 	}
 
 	vpnSettings := GlobalAppSettings{FreeAccessMethods: map[string]string{"discord": FreeAccessMethodVPN}}
 	rules = (&ConfigBuilderForStorage{}).buildFreeAccessRules(vpnSettings, true)
 	rule = findProcessNetworkRule(rules, "Discord.exe", "udp")
-	if rule == nil || rule["outbound"] != "auto-select" {
-		t.Fatalf("explicit VPN must route Discord UDP to subscription, got %v", rule)
+	if rule == nil || rule["outbound"] != discordRealtimeGroupTag {
+		t.Fatalf("explicit VPN must still use the runtime selector, got %v", rule)
 	}
 }
 
