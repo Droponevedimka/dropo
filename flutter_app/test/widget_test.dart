@@ -141,6 +141,24 @@ void main() {
     expect(decision, isTrue);
   });
 
+  testWidgets('cold start exposes an available update action', (tester) async {
+    tester.view.physicalSize = const Size(1280, 860);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      MaterialApp(home: DropoHomePage(bridge: _UpdateAvailableBridge())),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 2));
+
+    expect(find.text('Доступна версия 3.0.4'), findsWidgets);
+    expect(find.text('Обновить и перезапустить'), findsOneWidget);
+
+    await tester.pump(const Duration(seconds: 12));
+  });
+
   testWidgets('autostart prompt: «Нет, не надо» returns false (decline)', (
     tester,
   ) async {
@@ -270,7 +288,7 @@ void main() {
     expect(openDropoSpace, isTrue);
   });
 
-  test('UpdateInfo keeps Android GitHub APK asset details', () {
+  test('UpdateInfo keeps Android Russian mirror APK asset details', () {
     final info = UpdateInfo.fromJson(const {
       'success': true,
       'hasUpdate': true,
@@ -279,7 +297,7 @@ void main() {
       'releaseURL':
           'https://github.com/Droponevedimka/dropo/releases/tag/v2.1.7',
       'downloadURL':
-          'https://github.com/Droponevedimka/dropo/releases/download/v2.1.7/dropo-Android-arm64.apk',
+          'https://downloads.droponevedimka.ru/releases/download/v2.1.7/dropo-Android-arm64.apk',
       'assetName': 'dropo-Android-arm64.apk',
       'fileSize': 58242990,
       'platform': 'android',
@@ -292,6 +310,13 @@ void main() {
     expect(info.fileSize, 58242990);
     expect(info.platform, 'android');
     expect(info.selfUpdate, isFalse);
+  });
+
+  test('UpdateInfo rejects incomplete bridge responses', () {
+    final info = UpdateInfo.fromJson(const {});
+
+    expect(info.success, isFalse);
+    expect(info.hasUpdate, isFalse);
   });
 
   test('MockCoreBridge exposes an autonomous Android UI backend', () async {
@@ -308,4 +333,24 @@ void main() {
     final events = await bridge.events(since: 0);
     expect(events.map((event) => event.name), contains('vpn-status-changed'));
   });
+}
+
+class _UpdateAvailableBridge extends MockCoreBridge {
+  @override
+  Future<UpdateInfo> checkUpdates() async {
+    return UpdateInfo.fromJson(const {
+      'success': true,
+      'hasUpdate': true,
+      'currentVersion': '3.0.3',
+      'latestVersion': '3.0.4',
+      'releaseURL':
+          'https://github.com/Droponevedimka/dropo/releases/tag/v3.0.4',
+      'downloadURL':
+          'https://downloads.droponevedimka.ru/releases/download/v3.0.4/dropo-Windows-x64.exe',
+      'assetName': 'dropo-Windows-x64.exe',
+      'fileSize': 123456,
+      'platform': 'windows',
+      'selfUpdate': true,
+    });
+  }
 }

@@ -29,6 +29,7 @@ var bridgeCallableMethods = map[string]struct{}{
 	"CreateProfile":             {},
 	"DeleteProfile":             {},
 	"DeleteWireGuard":           {},
+	"DownloadAndInstallUpdate":  {},
 	"GetAppConfig":              {},
 	"GetBypassRouteSummary":     {},
 	"GetCurrentSubscription":    {},

@@ -267,6 +267,12 @@ func (a *App) DownloadDependencies() error {
 }
 
 func (a *App) downloadVerified(url string, out *os.File, m *DepsManifest) error {
+	productionDownload := strings.TrimSpace(trustedDepsSHA256) != ""
+	if productionDownload {
+		if err := validateTrustedUpdateHost(url); err != nil {
+			return fmt.Errorf("untrusted dependencies URL: %w", err)
+		}
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -280,6 +286,11 @@ func (a *App) downloadVerified(url string, out *os.File, m *DepsManifest) error 
 		return err
 	}
 	defer resp.Body.Close()
+	if productionDownload {
+		if err := validateTrustedUpdateHost(resp.Request.URL.String()); err != nil {
+			return fmt.Errorf("dependencies redirect rejected: %w", err)
+		}
+	}
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("сервер вернул статус %d", resp.StatusCode)
 	}
@@ -513,7 +524,7 @@ func releaseAssetMatches(as GitHubReleaseAsset, asset string, expectedSize int64
 	if expectedSHA256 != "" && as.Digest != "" && normalizeGitHubSHA256(as.Digest) != expectedSHA256 {
 		return false
 	}
-	return as.BrowserDownloadURL != ""
+	return validateTrustedUpdateHost(as.BrowserDownloadURL) == nil
 }
 
 // extractZip unpacks src into destDir, guarding against path traversal.

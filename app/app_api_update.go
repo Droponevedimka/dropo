@@ -69,7 +69,11 @@ func (a *App) DownloadAndInstallUpdate() map[string]interface{} {
 		// Progress callback - can emit events if needed
 		if total > 0 {
 			progress := float64(downloaded) / float64(total) * 100
-			a.emitEvent("update-progress", progress)
+			a.emitEvent("update-progress", map[string]interface{}{
+				"downloaded": downloaded,
+				"total":      total,
+				"percent":    progress,
+			})
 		}
 	})
 
@@ -135,6 +139,7 @@ func (a *App) DownloadAndInstallUpdate() map[string]interface{} {
 	return map[string]interface{}{
 		"success": true,
 		"message": "Update downloaded, app will restart",
+		"version": updateInfo.Version,
 	}
 }
 

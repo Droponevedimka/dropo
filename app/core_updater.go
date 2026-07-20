@@ -97,7 +97,11 @@ func CheckForUpdates() (*UpdateInfo, error) {
 	if err := json.Unmarshal(body, &releases); err != nil {
 		return nil, fmt.Errorf("failed to parse release mirror response: %w", err)
 	}
-	release, asset, found := selectLatestCompatibleRelease(releases, runtime.GOOS, runtime.GOARCH)
+	currentVersion := strings.TrimPrefix(strings.TrimSpace(Version), "v")
+	if !isReleaseVersion(currentVersion) {
+		return nil, fmt.Errorf("current application version is unavailable")
+	}
+	release, asset, found := selectLatestInstallableRelease(releases, runtime.GOOS, runtime.GOARCH)
 	if !found {
 		return &UpdateInfo{
 			Available:      false,
@@ -107,8 +111,6 @@ func CheckForUpdates() (*UpdateInfo, error) {
 
 	// Extract version from tag (remove 'v' prefix if present)
 	latestVersion := strings.TrimPrefix(release.TagName, "v")
-	currentVersion := strings.TrimPrefix(Version, "v")
-
 	// Compare versions
 	available := compareVersions(latestVersion, currentVersion) > 0
 
@@ -124,6 +126,22 @@ func CheckForUpdates() (*UpdateInfo, error) {
 		AssetName:      asset.Name,
 		SHA256:         normalizeGitHubSHA256(asset.Digest),
 	}, nil
+}
+
+func selectLatestInstallableRelease(releases []GitHubRelease, goos, goarch string) (GitHubRelease, GitHubReleaseAsset, bool) {
+	filtered := make([]GitHubRelease, 0, len(releases))
+	for _, release := range releases {
+		asset, ok := selectUpdateAssetFor(release.Assets, goos, goarch)
+		if !ok || asset.Size <= 0 || asset.Size > maxUpdateDownloadBytes || normalizeGitHubSHA256(asset.Digest) == "" {
+			continue
+		}
+		if goos == "windows" && validateTrustedUpdateURL(asset.BrowserDownloadURL) != nil {
+			continue
+		}
+		release.Assets = []GitHubReleaseAsset{asset}
+		filtered = append(filtered, release)
+	}
+	return selectLatestCompatibleRelease(filtered, goos, goarch)
 }
 
 func selectLatestCompatibleRelease(releases []GitHubRelease, goos, goarch string) (GitHubRelease, GitHubReleaseAsset, bool) {

@@ -28,6 +28,7 @@ func main() {
 	listen := flag.String("listen", "127.0.0.1:17890", "HTTP bridge listen address")
 	noTray := flag.Bool("no-tray", false, "disable Windows tray integration")
 	flag.Parse()
+	initializeRuntimeVersionFromExecutable()
 
 	releaseSingleInstance, alreadyRunning := acquireSingleInstance()
 	if alreadyRunning {

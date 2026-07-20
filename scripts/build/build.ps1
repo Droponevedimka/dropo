@@ -839,7 +839,7 @@ function Build-Application {
             Write-Host "Reusing existing Flutter Windows Release output..." -ForegroundColor Yellow
         } else {
             Write-Host "Building Flutter Windows UI..." -ForegroundColor Gray
-            & $FlutterCmd build windows --release --build-name $AppVersion --build-number 1 --dart-define "DROPO_CORE_ENDPOINT=http://127.0.0.1:17890"
+            & $FlutterCmd build windows --release --build-name $AppVersion --build-number 1 --dart-define "DROPO_CORE_ENDPOINT=http://127.0.0.1:17890" --dart-define "DROPO_APP_VERSION=$AppVersion"
             if ($LASTEXITCODE -ne 0) {
                 Write-Host "[ERROR] Flutter Windows build failed." -ForegroundColor Red
                 exit 1
@@ -1533,7 +1533,7 @@ function Build-AndroidApplication {
     $buildNumber = Get-AndroidBuildNumber
     Push-Location $FlutterDir
     try {
-        & $FlutterCmd build apk --release --target-platform $AndroidFlutterTargetPlatform --build-name $AppVersion --build-number $buildNumber
+        & $FlutterCmd build apk --release --target-platform $AndroidFlutterTargetPlatform --build-name $AppVersion --build-number $buildNumber --dart-define "DROPO_APP_VERSION=$AppVersion"
         if ($LASTEXITCODE -ne 0) {
             Write-Host "[ERROR] Flutter Android build failed. Run 'flutter doctor -v' and check Android SDK/JDK." -ForegroundColor Red
             exit 1

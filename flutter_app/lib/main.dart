@@ -15,6 +15,10 @@ const String _bridgeMode = String.fromEnvironment(
   'BRIDGE',
   defaultValue: 'auto',
 );
+const String _bundledAppVersion = String.fromEnvironment(
+  'DROPO_APP_VERSION',
+  defaultValue: 'dev',
+);
 
 @visibleForTesting
 bool? debugMobileShellOverride;
@@ -136,6 +140,7 @@ abstract class CoreBridge {
   Future<List<String>> logs();
   Future<List<BridgeEvent>> events({required int since});
   Future<UpdateInfo> checkUpdates();
+  Future<Map<String, dynamic>> installUpdate();
   Future<TrafficStatsInfo> trafficStats();
   Future<Map<String, dynamic>> resetTrafficStats();
   Future<List<WireGuardInfo>> wireGuards();
@@ -456,7 +461,17 @@ class HttpCoreBridge implements CoreBridge {
 
   @override
   Future<UpdateInfo> checkUpdates() async {
-    return UpdateInfo.fromJson(await callMap('CheckForUpdates'));
+    return UpdateInfo.fromJson(
+      await callMap('CheckForUpdates', timeout: const Duration(seconds: 40)),
+    );
+  }
+
+  @override
+  Future<Map<String, dynamic>> installUpdate() {
+    return callMap(
+      'DownloadAndInstallUpdate',
+      timeout: const Duration(minutes: 15),
+    );
   }
 
   @override
@@ -1025,7 +1040,18 @@ class ChannelCoreBridge implements CoreBridge {
 
   @override
   Future<UpdateInfo> checkUpdates() async {
-    return UpdateInfo.fromJson(await callMap('CheckForUpdates'));
+    return UpdateInfo.fromJson(
+      await callMap('CheckForUpdates', timeout: const Duration(seconds: 40)),
+    );
+  }
+
+  @override
+  Future<Map<String, dynamic>> installUpdate() async {
+    return {
+      'success': false,
+      'error':
+          'Android устанавливает обновление через системный установщик APK',
+    };
   }
 
   @override
@@ -1646,6 +1672,11 @@ class MockCoreBridge implements CoreBridge {
   }
 
   @override
+  Future<Map<String, dynamic>> installUpdate() async {
+    return {'success': true, 'message': 'Mock update installer started'};
+  }
+
+  @override
   Future<TrafficStatsInfo> trafficStats() async => TrafficStatsInfo.empty;
 
   @override
@@ -2039,12 +2070,20 @@ class VersionInfo {
   final String singboxVersion;
 
   factory VersionInfo.fromJson(Map<String, dynamic> json) {
+    final reportedVersion = json['version']?.toString().trim() ?? '';
+    final version = reportedVersion.isEmpty || reportedVersion == 'dev'
+        ? _bundledAppVersion
+        : reportedVersion;
+    final reportedFullVersion = json['fullVersion']?.toString().trim() ?? '';
+    final fullVersion =
+        reportedFullVersion.isEmpty ||
+            reportedFullVersion == 'dev' ||
+            reportedFullVersion.startsWith('dev-')
+        ? version
+        : reportedFullVersion;
     return VersionInfo(
-      version: json['version']?.toString() ?? 'dev',
-      fullVersion:
-          json['fullVersion']?.toString() ??
-          json['version']?.toString() ??
-          'dev',
+      version: version,
+      fullVersion: fullVersion,
       singboxVersion: json['singboxVersion']?.toString() ?? '',
     );
   }
@@ -2716,7 +2755,7 @@ class UpdateInfo {
 
   factory UpdateInfo.fromJson(Map<String, dynamic> json) {
     return UpdateInfo(
-      success: json['success'] != false,
+      success: json['success'] == true,
       hasUpdate: json['hasUpdate'] == true,
       currentVersion: json['currentVersion']?.toString() ?? '',
       latestVersion: json['latestVersion']?.toString() ?? '',
@@ -2857,6 +2896,7 @@ class _DropoHomePageState extends State<DropoHomePage>
   StreamSubscription<BridgeEvent>? pushEventsSubscription;
   bool startupUpdateCheckScheduled = false;
   bool compatibilityNoticeShowing = false;
+  double? updateProgressPercent;
 
   bool get connectionBusy {
     return busyTasks.containsKey('vpn-connect') ||
@@ -2994,8 +3034,8 @@ class _DropoHomePageState extends State<DropoHomePage>
       _startPolling();
 
       await _refresh(all: true);
-      await _ensureDependenciesReady();
       _scheduleStartupUpdateCheck();
+      await _ensureDependenciesReady();
       if (!mounted) {
         return;
       }
@@ -3241,37 +3281,56 @@ class _DropoHomePageState extends State<DropoHomePage>
       return;
     }
     startupUpdateCheckScheduled = true;
-    Future<void>.delayed(const Duration(seconds: 2), () async {
+    Future<void>.delayed(const Duration(seconds: 1), () async {
       if (!mounted || quitting) {
         return;
       }
-      try {
-        final result = await widget.bridge.checkUpdates();
-        if (!mounted) {
+      for (var attempt = 0; attempt < 2; attempt++) {
+        UpdateInfo? result;
+        try {
+          result = await widget.bridge.checkUpdates();
+        } catch (_) {
+          result = null;
+        }
+        if (!mounted || quitting) {
           return;
         }
-        if (result.success) {
+        final checked = result;
+        if (checked != null && checked.success) {
           setState(() {
-            updateInfo = result;
-            if (result.hasUpdate && !connectionBusy && !uiBusy) {
-              statusMessage = 'Доступна версия ${result.latestVersion}';
-              connectionHint = _isMobileShell && Platform.isAndroid
-                  ? 'Доступен новый APK в GitHub Releases.'
-                  : 'Откройте About или настройки, чтобы перейти к GitHub Releases.';
+            updateInfo = checked;
+            if (checked.hasUpdate && !connectionBusy && !uiBusy) {
+              statusMessage = 'Доступна версия ${checked.latestVersion}';
+              connectionHint = checked.selfUpdate
+                  ? 'Нажмите «Обновить и перезапустить».'
+                  : 'Нажмите «Скачать APK» для установки обновления.';
             }
           });
-          if (result.hasUpdate && _isMobileShell && Platform.isAndroid) {
-            _showUpdateSnackBar(result, manual: false);
+          if (checked.hasUpdate) {
+            _showUpdateSnackBar(checked, manual: false);
           }
+          return;
         }
-      } catch (_) {
-        // Startup update checks are intentionally quiet.
+        if (attempt == 0) {
+          await Future<void>.delayed(const Duration(seconds: 15));
+        }
       }
     });
   }
 
   void _applyEvent(BridgeEvent event) {
     switch (event.name) {
+      case 'update-progress':
+        final value = event.payload['percent'];
+        updateProgressPercent = value is num
+            ? value.toDouble().clamp(0, 100).toDouble()
+            : null;
+        if (updateProgressPercent != null) {
+          statusMessage =
+              'Загружаем обновление: ${updateProgressPercent!.round()}%';
+          connectionHint = 'После проверки подписи dropo перезапустится.';
+        }
+        break;
       case 'android-service-status':
       case 'vpn-status-changed':
         _applyServiceStatePayload(event.payload);
@@ -4003,9 +4062,9 @@ class _DropoHomePageState extends State<DropoHomePage>
             : 'Ошибка обновления';
         connectionHint = result.success
             ? (result.hasUpdate
-                  ? (_isMobileShell && Platform.isAndroid
-                        ? 'Новая Android-сборка доступна в GitHub Releases.'
-                        : 'Откройте GitHub Releases и скачайте новую сборку.')
+                  ? (result.selfUpdate
+                        ? 'Нажмите «Обновить и перезапустить».'
+                        : 'Нажмите «Скачать APK» для установки обновления.')
                   : 'Вы используете последнюю опубликованную версию.')
             : result.error;
       });
@@ -4050,35 +4109,114 @@ class _DropoHomePageState extends State<DropoHomePage>
       }
       return;
     }
-    final link = _updateDownloadLink(result);
     final asset = result.assetName.isEmpty ? 'новую сборку' : result.assetName;
     messenger.showSnackBar(
       SnackBar(
         content: Text('Доступна версия ${result.latestVersion}: $asset'),
         duration: const Duration(seconds: 12),
-        action: link.isEmpty
-            ? null
-            : SnackBarAction(
-                label: _isMobileShell && Platform.isAndroid
-                    ? 'Скачать'
-                    : 'Открыть',
-                onPressed: () => unawaited(widget.bridge.openExternal(link)),
-              ),
+        action: SnackBarAction(
+          label: result.selfUpdate ? 'Обновить' : 'Скачать APK',
+          onPressed: () => unawaited(_performUpdate(result)),
+        ),
       ),
     );
   }
 
   String _updateDownloadLink(UpdateInfo result) {
-    if (_isMobileShell && Platform.isAndroid && result.downloadUrl.isNotEmpty) {
+    if (result.downloadUrl.isNotEmpty) {
       return result.downloadUrl;
     }
-    if (result.releaseUrl.isNotEmpty) {
-      return result.releaseUrl;
-    }
-    if (appConfig.githubUrl.trim().isNotEmpty) {
-      return '${appConfig.githubUrl.trim()}/releases/latest';
-    }
     return '';
+  }
+
+  Future<void> _performUpdate(UpdateInfo result) async {
+    if (!result.success || !result.hasUpdate || uiBusy || quitting) {
+      return;
+    }
+    if (!result.selfUpdate) {
+      final link = _updateDownloadLink(result);
+      if (link.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Ссылка на APK отсутствует. Повторите проверку обновлений.',
+            ),
+          ),
+        );
+        return;
+      }
+      await widget.bridge.openExternal(link);
+      return;
+    }
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => _AppDialog(
+        title: 'Обновить dropo до ${result.latestVersion}?',
+        icon: Icons.system_update_alt,
+        width: 520,
+        centered: true,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Text(
+              'Приложение скачает подписанную сборку через российский сервер, проверит SHA-256, установит её и перезапустится.',
+              style: TextStyle(color: Color(0xFFD8E4E0), height: 1.35),
+            ),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                Expanded(
+                  child: _ActionButton(
+                    label: 'Отмена',
+                    icon: Icons.close,
+                    secondary: true,
+                    onPressed: () => Navigator.of(dialogContext).pop(false),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: _ActionButton(
+                    label: 'Обновить',
+                    icon: Icons.restart_alt,
+                    onPressed: () => Navigator.of(dialogContext).pop(true),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+    if (confirmed != true || !mounted) {
+      return;
+    }
+
+    await _runBusy(() async {
+      setState(() {
+        updateProgressPercent = 0;
+        statusMessage = 'Загружаем обновление';
+        connectionHint = 'Не закрывайте dropo до завершения проверки.';
+      });
+      final response = await widget.bridge.installUpdate();
+      if (response['success'] != true) {
+        throw StateError(
+          response['error']?.toString() ?? 'Не удалось установить обновление',
+        );
+      }
+      if (mounted) {
+        setState(() {
+          quitting = true;
+          quitProgressMessage =
+              'Устанавливаем обновление и перезапускаем dropo...';
+          statusMessage = 'Перезапускаем dropo';
+          connectionHint = 'Новая версия уже загружена и проверена.';
+        });
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+      exit(0);
+    });
   }
 
   Future<void> _runBusy(
@@ -4397,6 +4535,16 @@ class _DropoHomePageState extends State<DropoHomePage>
           items: routeProbeProgress.values.toList(growable: false),
         ),
         const SizedBox(height: 12),
+        if (updateInfo?.hasUpdate == true) ...[
+          _UpdateStrip(
+            info: updateInfo!,
+            progressPercent: updateProgressPercent,
+            onUpdate: controlsDisabled || uiBusy
+                ? null
+                : () => unawaited(_performUpdate(updateInfo!)),
+          ),
+          const SizedBox(height: 10),
+        ],
         if (status.dependencies.managed && !status.dependencies.ready)
           _DependencyStrip(
             status: status.dependencies,
@@ -4432,9 +4580,16 @@ class _DropoHomePageState extends State<DropoHomePage>
           bridge: widget.bridge,
           initialConfig: appConfig,
           currentStatus: status,
+          updateInfo: updateInfo,
           embedded: true,
           onChanged: (updated) => setState(() => appConfig = updated),
           onCheckUpdates: () => unawaited(_checkUpdates()),
+          onInstallUpdate: () {
+            final info = updateInfo;
+            if (info != null) {
+              unawaited(_performUpdate(info));
+            }
+          },
           onDownloadDependencies: () => unawaited(_downloadDependencies()),
         );
       case 'dropo_space':
@@ -4710,7 +4865,7 @@ class _DropoHomePageState extends State<DropoHomePage>
             ),
             const SizedBox(height: 8),
             const Text(
-              'Официальная сборка dropo. Скачивайте приложение только из GitHub Releases основного репозитория.',
+              'Официальная сборка dropo. Скачивайте приложение только из основного репозитория или через российский сервер обновлений.',
               style: TextStyle(color: Color(0xFF9BB0AB), height: 1.35),
             ),
           ],
@@ -6136,6 +6291,79 @@ class _DependencyStrip extends StatelessWidget {
   }
 }
 
+class _UpdateStrip extends StatelessWidget {
+  const _UpdateStrip({
+    required this.info,
+    required this.progressPercent,
+    required this.onUpdate,
+  });
+
+  final UpdateInfo info;
+  final double? progressPercent;
+  final VoidCallback? onUpdate;
+
+  @override
+  Widget build(BuildContext context) {
+    final progress = progressPercent;
+    final actionLabel = info.selfUpdate
+        ? 'Обновить и перезапустить'
+        : 'Скачать APK';
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(12, 10, 10, 10),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF59E0B).withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: const Color(0xFFF59E0B).withValues(alpha: 0.4),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.system_update_alt, color: Color(0xFFFBBF24)),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  'Доступна версия ${info.latestVersion}',
+                  style: const TextStyle(
+                    color: Color(0xFFF8FAFC),
+                    fontSize: 12,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 7),
+          Text(
+            progress == null
+                ? 'Обновление готово к загрузке и проверке.'
+                : 'Загружено ${progress.round()}%',
+            style: const TextStyle(color: Color(0xFFCBD5E1), fontSize: 10.5),
+          ),
+          if (progress != null) ...[
+            const SizedBox(height: 6),
+            LinearProgressIndicator(
+              value: progress <= 0 ? null : progress / 100,
+              minHeight: 3,
+              color: const Color(0xFFFBBF24),
+              backgroundColor: Colors.white.withValues(alpha: 0.08),
+            ),
+          ],
+          const SizedBox(height: 4),
+          Align(
+            alignment: Alignment.centerRight,
+            child: TextButton(onPressed: onUpdate, child: Text(actionLabel)),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _VersionStrip extends StatelessWidget {
   const _VersionStrip({required this.version});
 
@@ -7514,7 +7742,7 @@ class _AboutSection extends StatelessWidget {
             icon: Icons.verified_user_outlined,
             title: 'Официальная сборка',
             body:
-                'Скачивайте приложение только из GitHub Releases основного репозитория.',
+                'Скачивайте приложение только из основного репозитория или через российский сервер обновлений.',
           ),
         ],
       ),
@@ -9495,7 +9723,9 @@ class _SettingsDialog extends StatefulWidget {
     required this.bridge,
     required this.initialConfig,
     required this.currentStatus,
+    required this.updateInfo,
     required this.onCheckUpdates,
+    required this.onInstallUpdate,
     required this.onDownloadDependencies,
     this.embedded = false,
     this.onChanged,
@@ -9504,7 +9734,9 @@ class _SettingsDialog extends StatefulWidget {
   final CoreBridge bridge;
   final AppConfig initialConfig;
   final CoreStatus currentStatus;
+  final UpdateInfo? updateInfo;
   final VoidCallback onCheckUpdates;
+  final VoidCallback onInstallUpdate;
   final VoidCallback onDownloadDependencies;
   final bool embedded;
   final ValueChanged<AppConfig>? onChanged;
@@ -9843,9 +10075,21 @@ class _SettingsDialogState extends State<_SettingsDialog> {
                         _saveGeneral(config.copyWith(checkUpdates: value))
                   : null,
             ),
+            if (widget.updateInfo?.hasUpdate == true)
+              _ButtonSetting(
+                title: 'Доступна версия ${widget.updateInfo!.latestVersion}',
+                description: widget.updateInfo!.selfUpdate
+                    ? 'Скачать, проверить и перезапустить dropo'
+                    : 'Скачать APK через российский сервер',
+                label: widget.updateInfo!.selfUpdate
+                    ? 'Обновить'
+                    : 'Скачать APK',
+                icon: Icons.restart_alt,
+                onPressed: canUseLiveSafe ? widget.onInstallUpdate : null,
+              ),
             _ButtonSetting(
               title: 'Проверить сейчас',
-              description: 'Открыть проверку GitHub Releases',
+              description: 'Проверить российский сервер обновлений',
               label: 'Проверить',
               icon: Icons.system_update_alt,
               onPressed: canUseLiveSafe ? widget.onCheckUpdates : null,

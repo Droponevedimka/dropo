@@ -142,11 +142,14 @@ func TestHostHeaderLoopback(t *testing.T) {
 }
 
 func TestBridgeCallAllowlistRejectsExportedMaintenanceMethods(t *testing.T) {
-	_, err := callAppMethod(&App{}, bridgeCallRequest{Method: "DownloadAndInstallUpdate"})
+	_, err := callAppMethod(&App{}, bridgeCallRequest{Method: "RebuildActiveProfileConfig"})
 	if err == nil {
-		t.Fatal("DownloadAndInstallUpdate unexpectedly exposed through /api/call")
+		t.Fatal("RebuildActiveProfileConfig unexpectedly exposed through /api/call")
 	}
 	if _, ok := bridgeCallableMethods["GetAppConfig"]; !ok {
 		t.Fatal("GetAppConfig must remain available to the Flutter UI")
+	}
+	if _, ok := bridgeCallableMethods["DownloadAndInstallUpdate"]; !ok {
+		t.Fatal("DownloadAndInstallUpdate must be available to the trusted Flutter UI")
 	}
 }

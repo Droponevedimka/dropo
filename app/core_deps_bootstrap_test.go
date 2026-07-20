@@ -131,7 +131,7 @@ func TestReleaseAssetMatchesExpectedSize(t *testing.T) {
 		Name:               "dropo-Windows-Dependencies-x64.zip",
 		Size:               68575183,
 		Digest:             "sha256:" + sha,
-		BrowserDownloadURL: "https://example.test/dependencies.zip",
+		BrowserDownloadURL: "https://downloads.droponevedimka.ru/releases/download/v2.2.0/dependencies.zip",
 	}
 	if !releaseAssetMatches(asset, "dropo-Windows-Dependencies-x64.zip", 68575183, sha) {
 		t.Fatal("asset with matching name and size should match")
@@ -144,6 +144,10 @@ func TestReleaseAssetMatchesExpectedSize(t *testing.T) {
 	}
 	if releaseAssetMatches(asset, "dropo-Windows-Dependencies-x64.zip", 68575183, strings.Repeat("0", 64)) {
 		t.Fatal("asset with a different GitHub digest must not match")
+	}
+	asset.BrowserDownloadURL = "https://github.com/Droponevedimka/dropo/releases/download/v2.2.0/dependencies.zip"
+	if releaseAssetMatches(asset, "dropo-Windows-Dependencies-x64.zip", 68575183, sha) {
+		t.Fatal("asset outside the Russian release mirror must not match")
 	}
 }
 
@@ -159,17 +163,17 @@ func TestFindReleaseAssetURLUsesNewestCompatibleRelease(t *testing.T) {
 	}
 	releases := []GitHubRelease{
 		{TagName: "v2.2.1", Assets: []GitHubReleaseAsset{{Name: "dropo-Windows-x64.exe"}}},
-		{TagName: "v2.2.0", Assets: []GitHubReleaseAsset{asset("https://github.test/v2.2.0/deps.zip", sha)}},
-		{TagName: "v2.1.14", Assets: []GitHubReleaseAsset{asset("https://github.test/v2.1.14/deps.zip", sha)}},
+		{TagName: "v2.2.0", Assets: []GitHubReleaseAsset{asset("https://downloads.droponevedimka.ru/v2.2.0/deps.zip", sha)}},
+		{TagName: "v2.1.14", Assets: []GitHubReleaseAsset{asset("https://downloads.droponevedimka.ru/v2.1.14/deps.zip", sha)}},
 	}
 	got := findReleaseAssetURLIn(releases, "dropo-Windows-Dependencies-x64.zip", 68575183, sha)
-	if got != "https://github.test/v2.2.0/deps.zip" {
+	if got != "https://downloads.droponevedimka.ru/v2.2.0/deps.zip" {
 		t.Fatalf("selected URL = %q, want newest compatible v2.2.0 asset", got)
 	}
 
-	releases[1].Assets[0] = asset("https://github.test/v2.2.0/wrong.zip", strings.Repeat("0", 64))
+	releases[1].Assets[0] = asset("https://downloads.droponevedimka.ru/v2.2.0/wrong.zip", strings.Repeat("0", 64))
 	got = findReleaseAssetURLIn(releases, "dropo-Windows-Dependencies-x64.zip", 68575183, sha)
-	if got != "https://github.test/v2.1.14/deps.zip" {
+	if got != "https://downloads.droponevedimka.ru/v2.1.14/deps.zip" {
 		t.Fatalf("selected URL = %q, want older asset after digest mismatch", got)
 	}
 }

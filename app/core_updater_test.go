@@ -64,6 +64,34 @@ func TestSelectLatestCompatibleReleaseUsesNewestMatchingVersion(t *testing.T) {
 	}
 }
 
+func TestSelectLatestInstallableReleaseSkipsUnusableOrForeignAssets(t *testing.T) {
+	digest := "sha256:" + strings.Repeat("a", 64)
+	releases := []GitHubRelease{
+		{
+			TagName: "v3.0.5",
+			Assets: []GitHubReleaseAsset{{
+				Name:               "dropo-Windows-x64.exe",
+				BrowserDownloadURL: "https://github.com/Droponevedimka/dropo/releases/download/v3.0.5/dropo-Windows-x64.exe",
+				Size:               100,
+				Digest:             digest,
+			}},
+		},
+		{
+			TagName: "v3.0.4",
+			Assets: []GitHubReleaseAsset{{
+				Name:               "dropo-Windows-x64.exe",
+				BrowserDownloadURL: "https://downloads.droponevedimka.ru/releases/download/v3.0.4/dropo-Windows-x64.exe",
+				Size:               100,
+				Digest:             digest,
+			}},
+		},
+	}
+	release, asset, ok := selectLatestInstallableRelease(releases, "windows", "amd64")
+	if !ok || release.TagName != "v3.0.4" || !strings.Contains(asset.BrowserDownloadURL, "downloads.droponevedimka.ru") {
+		t.Fatalf("selected release=%q asset=%q ok=%v", release.TagName, asset.BrowserDownloadURL, ok)
+	}
+}
+
 func TestSelectUpdateAssetForFuturePlatforms(t *testing.T) {
 	assets := []GitHubReleaseAsset{
 		{Name: "dropo-Windows-x64.exe", BrowserDownloadURL: "windows"},
