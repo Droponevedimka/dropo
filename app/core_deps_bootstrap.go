@@ -15,12 +15,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"html"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -219,7 +217,7 @@ func (a *App) DownloadDependencies() error {
 	if err != nil {
 		return a.failDepsDownload(m, fmt.Errorf("не найден архив зависимостей %s: %w", m.Asset, err))
 	}
-	a.writeLog(fmt.Sprintf("[Deps] downloading %s (%d MB) from %s", m.Asset, m.Size/(1024*1024), url))
+	a.writeLog(fmt.Sprintf("[Deps] downloading %s (%d MB) from trusted Russian release mirror", m.Asset, m.Size/(1024*1024)))
 	a.emitDepsProgress(0, m.Size, "Загрузка компонентов…")
 
 	tmp, err := os.CreateTemp(a.runtimeBasePath(), "dropo-deps-*.zip")
@@ -454,11 +452,11 @@ func httpResourceLooksUsable(url string, expectedSize int64) bool {
 	return true
 }
 
-// findReleaseAssetURL scans every published release in GitHub's newest-first
-// order. Pagination avoids silently falling back to a fixed historical tag.
+// findReleaseAssetURL scans every published release through the trusted Russian
+// mirror in newest-first order. There is intentionally no direct GitHub fallback.
 func findReleaseAssetURL(repo, asset string, expectedSize int64, expectedSHA256 string) string {
 	for page := 1; ; page++ {
-		url := fmt.Sprintf("https://api.github.com/repos/%s/releases?per_page=100&page=%d", repo, page)
+		url := fmt.Sprintf("%s/repos/%s/releases?per_page=100&page=%d", ReleaseMirrorBaseURL, repo, page)
 		req, err := http.NewRequest(http.MethodGet, url, nil)
 		if err != nil {
 			return ""
@@ -466,7 +464,7 @@ func findReleaseAssetURL(repo, asset string, expectedSize int64, expectedSHA256 
 		req.Header.Set("Accept", "application/vnd.github+json")
 		req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 		req.Header.Set("User-Agent", AppName+"/"+Version)
-		resp, err := ShortHTTPClient.Do(req)
+		resp, err := HTTPClient.Do(req)
 		if err != nil {
 			break
 		}
@@ -490,7 +488,7 @@ func findReleaseAssetURL(repo, asset string, expectedSize int64, expectedSHA256 
 			break
 		}
 	}
-	return findReleaseAssetURLFromHTML(repo, asset, expectedSize)
+	return ""
 }
 
 func findReleaseAssetURLIn(releases []GitHubRelease, asset string, expectedSize int64, expectedSHA256 string) string {
@@ -516,63 +514,6 @@ func releaseAssetMatches(as GitHubReleaseAsset, asset string, expectedSize int64
 		return false
 	}
 	return as.BrowserDownloadURL != ""
-}
-
-// findReleaseAssetURLFromHTML is a rate-limit fallback for unauthenticated
-// clients. GitHub's public releases pages list assets newest-first and do not
-// consume the REST API quota. Size and the final downloaded SHA-256 are still
-// verified before any executable is used.
-func findReleaseAssetURLFromHTML(repo, asset string, expectedSize int64) string {
-	for page := 1; page <= 100; page++ {
-		pageURL := fmt.Sprintf("https://github.com/%s/releases?page=%d", repo, page)
-		req, err := http.NewRequest(http.MethodGet, pageURL, nil)
-		if err != nil {
-			return ""
-		}
-		req.Header.Set("User-Agent", AppName+"/"+Version)
-		resp, err := ShortHTTPClient.Do(req)
-		if err != nil {
-			return ""
-		}
-		if resp.StatusCode != http.StatusOK {
-			resp.Body.Close()
-			return ""
-		}
-		body, err := readHTTPBodyLimited(resp.Body, maxReleaseMetadataBytes)
-		resp.Body.Close()
-		if err != nil {
-			return ""
-		}
-		links := releaseAssetURLsFromHTML(string(body), asset)
-		for _, candidate := range links {
-			if httpResourceLooksUsable(candidate, expectedSize) {
-				return candidate
-			}
-		}
-		if !bytes.Contains(body, []byte("/releases/tag/")) {
-			return ""
-		}
-	}
-	return ""
-}
-
-func releaseAssetURLsFromHTML(body, asset string) []string {
-	pattern := `href="([^"]*/releases/download/[^"]*/` + regexp.QuoteMeta(asset) + `)"`
-	matches := regexp.MustCompile(pattern).FindAllStringSubmatch(body, -1)
-	result := make([]string, 0, len(matches))
-	seen := make(map[string]bool, len(matches))
-	for _, match := range matches {
-		candidate := html.UnescapeString(match[1])
-		if strings.HasPrefix(candidate, "/") {
-			candidate = "https://github.com" + candidate
-		}
-		if !strings.HasPrefix(candidate, "https://github.com/") || seen[candidate] {
-			continue
-		}
-		seen[candidate] = true
-		result = append(result, candidate)
-	}
-	return result
 }
 
 // extractZip unpacks src into destDir, guarding against path traversal.

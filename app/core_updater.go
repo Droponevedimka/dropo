@@ -53,15 +53,15 @@ type UpdateInfo struct {
 	SHA256         string `json:"sha256"`
 }
 
-// CheckForUpdates checks for updates on GitHub.
+// CheckForUpdates checks the trusted Russian release mirror for updates.
 func CheckForUpdates() (*UpdateInfo, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), ShortHTTPTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), DefaultHTTPTimeout)
 	defer cancel()
 
 	// Releases may be platform-specific. The repository-wide /latest endpoint
 	// can point to an Android-only release and must not make Windows offer an
 	// update without a Windows asset, so inspect recent releases instead.
-	url := fmt.Sprintf("https://api.github.com/repos/%s/releases?per_page=100", GitHubRepo)
+	url := fmt.Sprintf("%s/repos/%s/releases?per_page=100", ReleaseMirrorBaseURL, GitHubRepo)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -70,7 +70,7 @@ func CheckForUpdates() (*UpdateInfo, error) {
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
 	req.Header.Set("User-Agent", AppName+"/"+Version)
 
-	resp, err := ShortHTTPClient.Do(req)
+	resp, err := HTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to check for updates: %w", err)
 	}
@@ -85,7 +85,7 @@ func CheckForUpdates() (*UpdateInfo, error) {
 	}
 
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("GitHub returned status %d", resp.StatusCode)
+		return nil, fmt.Errorf("release mirror returned status %d", resp.StatusCode)
 	}
 
 	body, err := readHTTPBodyLimited(resp.Body, maxReleaseMetadataBytes)
@@ -95,7 +95,7 @@ func CheckForUpdates() (*UpdateInfo, error) {
 
 	var releases []GitHubRelease
 	if err := json.Unmarshal(body, &releases); err != nil {
-		return nil, fmt.Errorf("failed to parse GitHub response: %w", err)
+		return nil, fmt.Errorf("failed to parse release mirror response: %w", err)
 	}
 	release, asset, found := selectLatestCompatibleRelease(releases, runtime.GOOS, runtime.GOARCH)
 	if !found {
@@ -253,7 +253,7 @@ func validateTrustedUpdateHost(rawURL string) error {
 		return fmt.Errorf("update URL must use HTTPS")
 	}
 	host := strings.ToLower(parsed.Hostname())
-	if host != "github.com" && !strings.HasSuffix(host, ".githubusercontent.com") {
+	if host != "downloads.droponevedimka.ru" {
 		return fmt.Errorf("untrusted update host: %s", host)
 	}
 	return nil

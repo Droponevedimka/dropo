@@ -37,6 +37,8 @@ const (
 	LegacyAppDataDirName = "KampusVPN"
 	// GitHubRepo is the GitHub repository path for updates.
 	GitHubRepo = "Droponevedimka/dropo"
+	// ReleaseMirrorBaseURL is the Russian release gateway used for update metadata and assets.
+	ReleaseMirrorBaseURL = "https://downloads.droponevedimka.ru"
 	// GitHubURL is the full GitHub URL.
 	GitHubURL = "https://github.com/" + GitHubRepo
 	// TelegramUpdatesURL is the public channel/group for release news.

@@ -174,20 +174,16 @@ func TestCompareVersions(t *testing.T) {
 }
 
 func TestValidateTrustedUpdateURL(t *testing.T) {
-	allowed := []string{
-		"https://github.com/Droponevedimka/dropo/releases/download/v2.2.0/dropo-Windows-x64.exe",
-		"https://release-assets.githubusercontent.com/github-production-release-asset/file",
-	}
-	if err := validateTrustedUpdateURL(allowed[0]); err != nil {
-		t.Fatalf("trusted GitHub asset rejected: %v", err)
-	}
-	if err := validateTrustedUpdateHost(allowed[1]); err != nil {
-		t.Fatalf("trusted GitHub redirect rejected: %v", err)
+	allowed := "https://downloads.droponevedimka.ru/releases/download/v3.0.3/dropo-Windows-x64.exe"
+	if err := validateTrustedUpdateURL(allowed); err != nil {
+		t.Fatalf("trusted Russian mirror asset rejected: %v", err)
 	}
 	for _, rawURL := range []string{
 		"http://github.com/Droponevedimka/dropo/releases/download/v2.2.0/update.exe",
 		"https://example.com/update.exe",
 		"https://github.com/Droponevedimka/dropo/releases/download/v2.2.0/update.zip",
+		"https://github.com/Droponevedimka/dropo/releases/download/v2.2.0/update.exe",
+		"https://release-assets.githubusercontent.com/github-production-release-asset/update.exe",
 	} {
 		if err := validateTrustedUpdateURL(rawURL); err == nil {
 			t.Errorf("untrusted update URL accepted: %s", rawURL)

@@ -9,6 +9,8 @@ import (
 	"time"
 )
 
+const androidReleaseMirrorBaseURL = "https://downloads.droponevedimka.ru"
+
 type androidGitHubRelease struct {
 	TagName     string    `json:"tag_name"`
 	Name        string    `json:"name"`
@@ -34,8 +36,8 @@ func checkAndroidUpdates() string {
 	}
 	mu.Unlock()
 
-	url := "https://api.github.com/repos/" + repo + "/releases/latest"
-	client := &http.Client{Timeout: 8 * time.Second}
+	url := androidReleaseMirrorBaseURL + "/repos/" + repo + "/releases/latest"
+	client := &http.Client{Timeout: 30 * time.Second}
 	request, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		return encode(map[string]interface{}{"success": false, "error": err.Error()})
@@ -49,7 +51,7 @@ func checkAndroidUpdates() string {
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return encode(map[string]interface{}{"success": false, "error": fmt.Sprintf("GitHub returned %s", response.Status)})
+		return encode(map[string]interface{}{"success": false, "error": fmt.Sprintf("release mirror returned %s", response.Status)})
 	}
 
 	body, err := readHTTPBodyLimited(response.Body, maxAndroidMetadataBytes)
