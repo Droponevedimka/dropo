@@ -16,8 +16,8 @@ import (
 // It is composed into the shared winws2 instance as TCP and UDP profiles scoped
 // to that service's own hostlist, so different services can run different
 // methods simultaneously inside one WinDivert filter. Discord additionally gets
-// raw media profiles because desktop voice uses direct UDP packets, not only
-// hostname-scoped HTTPS/QUIC. This is the key to "no single method fits all
+// narrowly scoped raw filters for identifiable discovery/STUN packets; encrypted
+// RTP is deliberately left untouched. This is the key to "no single method fits all
 // services": each service keeps its own best method.
 //
 // Discord/YouTube methods mirror the Flowseal zapret-discord-youtube bundle
@@ -414,14 +414,10 @@ func findServiceBypassMethod(serviceTag, methodTag string) (ServiceBypassMethod,
 // serviceWinwsSelection binds a service's hostlist file to the method that will
 // handle its traffic in the composed winws2 instance.
 type serviceWinwsSelection struct {
-	ServiceTag            string
-	HostlistPath          string
-	Method                ServiceBypassMethod
-	DiscordRealtime       discordRealtimeProfile
-	DiscordMediaTCPPorts  []int
-	DiscordMediaUDPPorts  []int
-	DiscordMediaUDPIPs    []string
-	DiscordMediaRawFilter string
+	ServiceTag      string
+	HostlistPath    string
+	Method          ServiceBypassMethod
+	DiscordRealtime discordRealtimeProfile
 }
 
 // wireGuardCamouflageTarget is deliberately limited to resolved peer
@@ -445,8 +441,9 @@ func hasDiscordSelection(selections []serviceWinwsSelection) bool {
 
 // composeServiceWinwsArgs builds a single winws2 argument list where each service
 // has HTTP/TLS/QUIC profiles scoped to its hostlist.
-// Discord also contributes voice/media profiles for raw UDP and discord.media
-// alternate TCP ports, matching the standalone zapret Discord preset. winws2
+// Discord also contributes a discovery/STUN profile for raw UDP and a
+// discord.media profile for alternate TCP ports, matching upstream zapret2.
+// winws2
 // matches a packet against the first profile whose filter+scope match, and the
 // per-service scopes are disjoint, so every service is handled by its own method
 // without conflicting with the others.
@@ -469,9 +466,6 @@ func composeServiceAndWireGuardWinwsArgs(selections []serviceWinwsSelection, wir
 
 	discordSelected := hasDiscordSelection(selections)
 	var discordTCPPorts []int
-	var discordUDPPorts []int
-	var discordUDPIPs []string
-	var discordRawFilter string
 
 	profiles := make([][]string, 0, len(selections)*3+len(wireGuardTargets)+2)
 	for _, sel := range selections {
@@ -490,23 +484,13 @@ func composeServiceAndWireGuardWinwsArgs(selections []serviceWinwsSelection, wir
 		profiles = append(profiles, http, tcp, udp)
 		if strings.EqualFold(sel.ServiceTag, "discord") {
 			realtime := effectiveDiscordRealtimeProfile(sel.DiscordRealtime)
-			discordTCPPorts = normalizedDiscordTCPPorts(sel.DiscordMediaTCPPorts)
-			discordUDPPorts = normalizedDiscordUDPPorts(sel.DiscordMediaUDPPorts)
-			discordUDPIPs = normalizedDiscordUDPIPs(sel.DiscordMediaUDPIPs)
-			discordRawFilter = strings.TrimSpace(sel.DiscordMediaRawFilter)
+			discordTCPPorts = normalizedDiscordTCPPorts(nil)
 			mediaTCP := []string{
 				"--filter-tcp=" + discordTCPPortList(discordTCPPorts),
 				"--hostlist-domains=discord.media",
 			}
 			mediaTCP = append(mediaTCP, resolve(realtime.VoiceTCPArgs)...)
 			voiceUDP := resolve(realtime.VoiceUDPArgs)
-			if udpPortList := discordUDPPortList(discordUDPPorts); udpPortList != "" {
-				mediaFilter := []string{"--filter-udp=" + udpPortList}
-				if len(discordUDPIPs) > 0 {
-					mediaFilter = append(mediaFilter, "--ipset-ip="+strings.Join(discordUDPIPs, ","))
-				}
-				voiceUDP = append(mediaFilter, resolve(realtime.VoiceMediaUDPArgs)...)
-			}
 			profiles = append(profiles, mediaTCP, voiceUDP)
 		}
 	}
@@ -535,7 +519,7 @@ func composeServiceAndWireGuardWinwsArgs(selections []serviceWinwsSelection, wir
 		ports = append(ports, port)
 	}
 	sort.Ints(ports)
-	args := zapret2BootstrapArgsWithRealtime(binPrefix, discordSelected, ports, discordTCPPorts, discordRawFilter)
+	args := zapret2BootstrapArgsWithRealtime(binPrefix, discordSelected, ports, discordTCPPorts)
 	for i, profile := range profiles {
 		if i > 0 {
 			args = append(args, "--new")
@@ -550,10 +534,10 @@ func zapret2BootstrapArgs(binPrefix string, discord bool) []string {
 }
 
 func zapret2BootstrapArgsWithUDP(binPrefix string, discord bool, wireGuardPorts []int) []string {
-	return zapret2BootstrapArgsWithRealtime(binPrefix, discord, wireGuardPorts, nil, "")
+	return zapret2BootstrapArgsWithRealtime(binPrefix, discord, wireGuardPorts, nil)
 }
 
-func zapret2BootstrapArgsWithRealtime(binPrefix string, discord bool, wireGuardPorts, discordPorts []int, discordRawFilter string) []string {
+func zapret2BootstrapArgsWithRealtime(binPrefix string, discord bool, wireGuardPorts, discordPorts []int) []string {
 	tcpPorts := "80,443"
 	if discord {
 		if mediaPorts := discordTCPPortList(discordPorts); mediaPorts != "" {
@@ -577,11 +561,8 @@ func zapret2BootstrapArgsWithRealtime(binPrefix string, discord bool, wireGuardP
 		args = append(args, "--wf-udp-out="+strings.Join(ports, ","))
 	}
 	if discord {
-		if strings.TrimSpace(discordRawFilter) == "" {
-			discordRawFilter = binPrefix + discordMediaRawFilter
-		}
 		args = append(args,
-			"--wf-raw-part=@"+discordRawFilter,
+			"--wf-raw-part=@"+binPrefix+discordMediaRawFilter,
 			"--wf-raw-part=@"+binPrefix+discordSTUNRawFilter,
 		)
 	}

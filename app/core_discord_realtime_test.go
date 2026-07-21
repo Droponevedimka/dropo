@@ -1,7 +1,6 @@
 package main
 
 import (
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -18,63 +17,35 @@ func TestDiscordRealtimeProfilesAreBoundedAndUnique(t *testing.T) {
 	if !strings.Contains(strings.Join(profiles[0].VoiceUDPArgs, " "), "repeats=2") {
 		t.Fatalf("first profile must be the upstream Discord UDP baseline: %#v", profiles[0])
 	}
-	mediaStrategies := make(map[string]struct{}, len(profiles))
 	for _, profile := range profiles {
-		joined := strings.Join(profile.VoiceMediaUDPArgs, " ")
-		if !strings.Contains(joined, "--payload=all") || !strings.Contains(joined, "--out-range=-d") {
-			t.Fatalf("profile does not cover bounded unknown media packets: %#v", profile)
-		}
-		mediaStrategies[joined] = struct{}{}
-	}
-	if len(mediaStrategies) != discordRealtimeMaxTrials {
-		t.Fatalf("only %d distinct media strategies for %d attempts", len(mediaStrategies), discordRealtimeMaxTrials)
-	}
-}
-
-func TestDiscordDynamicMediaFilterHasNoPortOrAddressFamilyGuess(t *testing.T) {
-	filter := discordDynamicMediaFilterForPorts(nil)
-	for _, forbidden := range []string{"DstPort", "50000", "19294", " and ip and"} {
-		if strings.Contains(filter, forbidden) {
-			t.Fatalf("dynamic Discord filter still contains %q: %s", forbidden, filter)
-		}
-	}
-	for _, required := range []string{"udp.PayloadLength=74", "udp.Payload32[0]=0x00010046"} {
-		if !strings.Contains(filter, required) {
-			t.Fatalf("dynamic Discord filter is missing %q", required)
+		joined := strings.Join(append(append([]string(nil), profile.VoiceTCPArgs...), profile.VoiceUDPArgs...), " ")
+		for _, forbidden := range []string{"--payload=all", "--out-range=-d"} {
+			if strings.Contains(joined, forbidden) {
+				t.Fatalf("encrypted Discord RTP must not be modified with %q: %#v", forbidden, profile)
+			}
 		}
 	}
 }
 
-func TestDiscordSelectionUsesGeneratedFilterAndLearnedTCPPort(t *testing.T) {
+func TestDiscordSelectionKeepsStableUpstreamFiltersAfterLearningEndpoints(t *testing.T) {
 	controller := newDiscordRealtimeController()
 	controller.learnedPorts[32123] = time.Now()
 	controller.learnedUDPPorts[19328] = time.Now()
 	controller.learnedUDPIPs["203.0.113.20"] = time.Now()
-	app := &App{basePath: t.TempDir(), discordRealtime: controller}
+	app := &App{discordRealtime: controller}
 	selection := app.decorateDiscordRealtimeSelection(serviceWinwsSelection{
 		ServiceTag:   "discord",
 		HostlistPath: `C:\state\discord.txt`,
 		Method:       methodMultisplit("m1", "M1", 652, 2, googleQUICPayload),
 	})
-	if selection.DiscordMediaRawFilter == "" {
-		t.Fatal("generated media filter path is empty")
-	}
-	filter, err := os.ReadFile(selection.DiscordMediaRawFilter)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(filter), "udp.DstPort=19328") {
-		t.Fatalf("generated filter does not capture the learned media port: %s", filter)
-	}
 	joined := strings.Join(composeServiceWinwsArgs([]serviceWinwsSelection{selection}, `C:\dropo\bin`), " ")
-	if !strings.Contains(joined, "--wf-tcp-out=80,443,2048,2053,2083,2087,2096,8443,32123") {
-		t.Fatalf("learned TCP port is missing from WinDivert bootstrap: %s", joined)
+	if !strings.Contains(joined, `--wf-raw-part=@C:\dropo\bin\windivert_part.discord_media.txt`) {
+		t.Fatalf("bundled upstream Discord filter is not used: %s", joined)
 	}
-	if !strings.Contains(joined, "--wf-raw-part=@"+selection.DiscordMediaRawFilter) {
-		t.Fatalf("generated raw filter is not used: %s", joined)
-	}
-	if !strings.Contains(joined, "--filter-udp=19328 --ipset-ip=203.0.113.20 --out-range=-d2 --payload=all") {
-		t.Fatalf("learned UDP port is missing from the bounded media profile: %s", joined)
+	for _, forbidden := range []string{"32123", "--filter-udp=19328", "--ipset-ip=203.0.113.20", "--payload=all", "--out-range=-d"} {
+		if strings.Contains(joined, forbidden) {
+			t.Fatalf("learned endpoint triggered unstable encrypted-media interception %q: %s", forbidden, joined)
+		}
 	}
 }
 
@@ -153,6 +124,49 @@ func TestDiscordRealtimeAcceptsBidirectionalUDP(t *testing.T) {
 	}
 }
 
+func TestDiscordRealtimeDiagnosticsCaptureRouteAndCounterDeltas(t *testing.T) {
+	controller := newDiscordRealtimeController()
+	controller.running = true
+	controller.automatic = true
+	controller.fallbackVPN = true
+	started := time.Unix(2025, 0)
+	connection := clashConnection{
+		ID: "voice-udp-diagnostic",
+		Metadata: clashConnectionMetadata{
+			Network:         "udp",
+			DestinationIP:   "104.29.136.221",
+			DestinationPort: "19314",
+			Process:         "Discord.exe",
+		},
+		Chains:   []string{"node-a", discordVPNGroupTag, discordRealtimeGroupTag},
+		Upload:   74,
+		Download: 74,
+	}
+	controller.observeConnections([]clashConnection{connection}, started)
+	diagnostic, due := controller.collectDiagnostics(started)
+	if !due || !diagnostic.FallbackVPN || len(diagnostic.NewFlows) != 1 || len(diagnostic.Flows) != 1 {
+		t.Fatalf("initial diagnostic = %#v, due=%v", diagnostic, due)
+	}
+	line := formatDiscordFlowDiagnostic("opened", diagnostic.NewFlows[0])
+	for _, expected := range []string{"process=Discord.exe", "destination=104.29.136.221:19314", "node-a -> discord-vpn -> discord-realtime", "total_up=74", "total_down=74"} {
+		if !strings.Contains(line, expected) {
+			t.Fatalf("diagnostic line is missing %q: %s", expected, line)
+		}
+	}
+
+	connection.Upload += 100
+	connection.Download += 200
+	controller.observeConnections([]clashConnection{connection}, started.Add(discordRealtimeDiagInterval))
+	diagnostic, due = controller.collectDiagnostics(started.Add(discordRealtimeDiagInterval))
+	if !due || len(diagnostic.NewFlows) != 0 || len(diagnostic.Flows) != 1 {
+		t.Fatalf("follow-up diagnostic = %#v, due=%v", diagnostic, due)
+	}
+	flow := diagnostic.Flows[0]
+	if flow.UploadDelta != 100 || flow.DownloadDelta != 200 || flow.InboundPolls != 1 {
+		t.Fatalf("follow-up flow counters = %#v", flow)
+	}
+}
+
 func TestDiscordRealtimeDoesNotTreatDiscoveryResponseAsMedia(t *testing.T) {
 	controller := newDiscordRealtimeController()
 	controller.running = true
@@ -202,7 +216,7 @@ func TestDiscordRealtimeIgnoresDiscordWebQUIC(t *testing.T) {
 	}
 }
 
-func TestDiscordRealtimeRetriesLearnedEndpointsAfterApplyFailure(t *testing.T) {
+func TestDiscordRealtimeEndpointObservationDoesNotResetControllerState(t *testing.T) {
 	controller := newDiscordRealtimeController()
 	controller.learnedPorts[32123] = time.Now()
 	controller.learnedUDPPorts[19328] = time.Now()
@@ -213,8 +227,8 @@ func TestDiscordRealtimeRetriesLearnedEndpointsAfterApplyFailure(t *testing.T) {
 		map[int]struct{}{19328: {}},
 		map[string]struct{}{"203.0.113.20": {}},
 	)
-	if len(controller.learnedPorts) != 0 || len(controller.learnedUDPPorts) != 0 || len(controller.learnedUDPIPs) != 0 {
-		t.Fatalf("failed endpoints were not made retryable: tcp=%v udp=%v ips=%v", controller.learnedPorts, controller.learnedUDPPorts, controller.learnedUDPIPs)
+	if len(controller.learnedPorts) != 1 || len(controller.learnedUDPPorts) != 1 || len(controller.learnedUDPIPs) != 1 {
+		t.Fatalf("diagnostic endpoints were unexpectedly reset: tcp=%v udp=%v ips=%v", controller.learnedPorts, controller.learnedUDPPorts, controller.learnedUDPIPs)
 	}
 }
 
@@ -349,8 +363,21 @@ func TestDiscordRealtimeOutboundsSeparateDirectAndVPNNodes(t *testing.T) {
 		t.Fatalf("Discord VPN selector = %#v", vpn)
 	}
 	realtime := findOutboundMap(outbounds, discordRealtimeGroupTag)
-	if realtime == nil || realtime["default"] != "direct" || !sameStringSet(interfaceStringSlice(realtime["outbounds"]), []string{"direct", discordVPNGroupTag}) {
+	if realtime == nil || realtime["default"] != discordVPNGroupTag || !sameStringSet(interfaceStringSlice(realtime["outbounds"]), []string{"direct", discordVPNGroupTag}) {
 		t.Fatalf("Discord realtime selector = %#v", realtime)
+	}
+
+	manualTemplate := map[string]interface{}{
+		"outbounds": []interface{}{
+			map[string]interface{}{"type": "direct", "tag": "direct"},
+			map[string]interface{}{"type": "urltest", "tag": "auto-select", "outbounds": []string{"node-a"}},
+		},
+	}
+	settings := GlobalAppSettings{FreeAccessMethods: map[string]string{"discord": FreeAccessMethodDirect}}
+	builder.addFreeAccessOutbounds(manualTemplate, settings)
+	manualRealtime := findOutboundMap(manualTemplate["outbounds"].([]interface{}), discordRealtimeGroupTag)
+	if manualRealtime == nil || manualRealtime["default"] != "direct" {
+		t.Fatalf("manual direct Discord realtime selector = %#v", manualRealtime)
 	}
 }
 

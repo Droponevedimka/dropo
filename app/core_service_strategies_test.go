@@ -48,10 +48,15 @@ func TestComposeServiceWinwsArgsPerServiceProfiles(t *testing.T) {
 	for _, expected := range []string{
 		"--filter-tcp=2048,2053,2083,2087,2096,8443 --hostlist-domains=discord.media --payload=tls_client_hello --lua-desync=multisplit:pos=1:seqovl=681:seqovl_pattern=google_tls",
 		"--filter-l7=discord,stun --payload=discord_ip_discovery,stun",
-		"--lua-desync=fake:payload=all:blob=0x00000000000000000000000000000000:repeats=2",
+		"--lua-desync=fake:blob=0x00000000000000000000000000000000:repeats=2",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("missing Discord media profile %q: %s", expected, joined)
+		}
+	}
+	for _, forbidden := range []string{"--payload=all", "--out-range=-d", "--ipset-ip=104.29."} {
+		if strings.Contains(joined, forbidden) {
+			t.Fatalf("encrypted Discord media must not use dynamic fake profile %q: %s", forbidden, joined)
 		}
 	}
 	// Discord contributes 5 profiles and YouTube contributes 3 = 8 profiles.

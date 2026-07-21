@@ -123,9 +123,15 @@ if (-not $ReleaseFolder -or -not (Test-Path -LiteralPath $ReleaseFolder -PathTyp
 
 $windowsExe = Join-Path $ReleaseFolder "dropo-Windows-x64.exe"
 $androidApk = Join-Path $ReleaseFolder "dropo-Android-arm64.apk"
-foreach ($path in @($windowsExe, $androidApk)) {
-    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-        throw "Required release asset was not found: $path"
+$tag = "v$version"
+$depsLock = Get-Content (Join-Path $RepoRoot "deps-lock.json") -Raw | ConvertFrom-Json
+$releaseAssets = @($windowsExe, $androidApk)
+if ([string]$depsLock.tag -eq $tag) {
+	$releaseAssets += Join-Path $ReleaseFolder ([string]$depsLock.asset)
+}
+foreach ($path in $releaseAssets) {
+	if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+		throw "Required release asset was not found: $path"
     }
 }
 
@@ -152,12 +158,12 @@ $script:GitHubHeaders = @{
     "X-GitHub-Api-Version" = "2022-11-28"
     "User-Agent" = "dropo-local-release-publisher"
 }
-$tag = "v$version"
 $release = Invoke-GitHubApi -Method Get -Uri "https://api.github.com/repos/$Repository/releases/tags/$tag"
 if ($release.draft) { throw "Release $tag is still a draft." }
 
-Upload-ReleaseAsset -ReleaseId $release.id -Path $windowsExe -ExistingAssets $release.assets
-Upload-ReleaseAsset -ReleaseId $release.id -Path $androidApk -ExistingAssets $release.assets
+foreach ($assetPath in $releaseAssets) {
+	Upload-ReleaseAsset -ReleaseId $release.id -Path $assetPath -ExistingAssets $release.assets
+}
 
 $windowsSha = (Get-FileHash -LiteralPath $windowsExe -Algorithm SHA256).Hash.ToLowerInvariant()
 $androidSha = (Get-FileHash -LiteralPath $androidApk -Algorithm SHA256).Hash.ToLowerInvariant()

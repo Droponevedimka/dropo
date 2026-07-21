@@ -1865,8 +1865,9 @@ func (b *ConfigBuilderForStorage) addFreeAccessOutbounds(template map[string]int
 	// Discord voice servers allocate both their WebSocket and UDP media ports
 	// dynamically. Route that realtime plane through its own runtime-controlled
 	// selector so the health monitor can keep web/API traffic untouched while it
-	// rotates direct zapret2 profiles and, after the bounded local search, moves
-	// voice/video/Go Live to a UDP-capable subscription node.
+	// keeps voice/video/Go Live on one route. Automatic mode prefers a
+	// UDP-capable subscription node; the stable direct zapret2 discovery profile
+	// remains available when a subscription is absent or explicitly bypassed.
 	if hasVPNProxy {
 		vpnCandidates := outboundGroupCandidates(outbounds, "auto-select")
 		if len(vpnCandidates) == 0 {
@@ -1884,7 +1885,8 @@ func (b *ConfigBuilderForStorage) addFreeAccessOutbounds(template map[string]int
 		realtimeCandidates = append(realtimeCandidates, discordVPNGroupTag)
 	}
 	realtimeDefault := "direct"
-	if FreeAccessServiceMethod(settings, "discord") == FreeAccessMethodVPN || !FreeMethodsAllowed(settings) {
+	discordMethod := FreeAccessServiceMethod(settings, "discord")
+	if discordMethod == FreeAccessMethodVPN || discordMethod == FreeAccessMethodAuto || !FreeMethodsAllowed(settings) {
 		if hasVPNProxy {
 			realtimeDefault = discordVPNGroupTag
 		}

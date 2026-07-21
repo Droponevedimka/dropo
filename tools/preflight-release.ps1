@@ -239,14 +239,40 @@ function Invoke-ArtifactValidation {
     Assert-FileExists (Join-Path $runtimeFolder "data\flutter_assets\AssetManifest.bin")
     $depsManifestPath = Join-Path $runtimeFolder "dependencies.json"
     Assert-FileExists $depsManifestPath
-    $depsManifest = Get-Content $depsManifestPath -Raw | ConvertFrom-Json
-    $depsLock = Get-Content (Join-Path $RepoRoot "deps-lock.json") -Raw | ConvertFrom-Json
+	$depsManifest = Get-Content $depsManifestPath -Raw | ConvertFrom-Json
+	$depsLock = Get-Content (Join-Path $RepoRoot "deps-lock.json") -Raw | ConvertFrom-Json
     foreach ($field in @("depsVersion", "asset", "sha256", "size")) {
         if ([string]$depsManifest.$field -ne [string]$depsLock.$field) {
-            throw "dependencies.json field $field does not match deps-lock.json"
-        }
-    }
-    Assert-FileExists (Join-Path $runtimeFolder "resources\template.json")
+			throw "dependencies.json field $field does not match deps-lock.json"
+		}
+	}
+	$currentTag = "v$version"
+	if ([string]$depsLock.tag -eq $currentTag) {
+		$depsArchivePath = Join-Path $folder ([string]$depsLock.asset)
+		Assert-FileExists $depsArchivePath
+		$actualDepsSize = (Get-Item -LiteralPath $depsArchivePath).Length
+		$actualDepsSha = (Get-FileHash -LiteralPath $depsArchivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+		if ($actualDepsSize -ne [long]$depsLock.size) {
+			throw "Dependencies archive size mismatch: lock=$($depsLock.size), file=$actualDepsSize"
+		}
+		if ($actualDepsSha -ne ([string]$depsLock.sha256).ToLowerInvariant()) {
+			throw "Dependencies archive SHA-256 mismatch: lock=$($depsLock.sha256), file=$actualDepsSha"
+		}
+		Add-Type -AssemblyName System.IO.Compression.FileSystem
+		$archive = [IO.Compression.ZipFile]::OpenRead($depsArchivePath)
+		try {
+			$entries = @($archive.Entries | ForEach-Object { $_.FullName.Replace('\', '/').TrimStart('/') })
+			foreach ($requiredFile in @($depsLock.requiredFiles)) {
+				if ($entries -notcontains [string]$requiredFile) {
+					throw "Dependencies archive is missing required file: $requiredFile"
+				}
+			}
+		} finally {
+			$archive.Dispose()
+		}
+		Write-Host "Dependencies: $depsArchivePath" -ForegroundColor Gray
+	}
+	Assert-FileExists (Join-Path $runtimeFolder "resources\template.json")
     Assert-FileExists $windowsExePath
     Assert-FileExists $androidApkPath
     Assert-FileExists $androidShaPath

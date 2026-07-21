@@ -1,11 +1,11 @@
 {
     "platform":  "windows",
     "arch":  "x64",
-    "depsVersion":  "8efda10134fe",
-    "tag":  "v2.1.55",
+    "depsVersion":  "eb2c61c3bc26",
+    "tag":  "v3.0.8",
     "asset":  "dropo-Windows-Dependencies-x64.zip",
-    "sha256":  "37e7894e09d1a98e46450255031358d4321d8aa7e8527b08bacfcac6e6462b66",
-    "size":  68812032,
+    "sha256":  "eb094d9a9ee9fcbdcd2de412b70b1a4cd7c7a6e19399e053359772e22853602e",
+    "size":  68812249,
     "requiredFiles":  [
                           "sing-box.exe",
                           "winws2.exe",

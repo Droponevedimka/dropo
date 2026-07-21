@@ -1,5 +1,5 @@
 {
-    "version":  "3.0.7",
+    "version":  "3.0.8",
     "name":  "dropo",
     "productName":  "dropo",
     "description":  "dropo VPN client with sing-box, WireGuard, and smart routing",
@@ -20,9 +20,9 @@
                    "version":  "0.17.3"
                },
     "zapret":  {
-                   "version":  "1.0.2",
+                   "version":  "1.0.3",
                    "generation":  2,
-                   "archiveSha256":  "45f90e1c70db104a735cd0f99e5644cea84689bf05dadb498953f334999b1ebb"
+                   "archiveSha256":  "734fbea360aa863cd5c724f8b941116aaa250434d699b1ce99769e5f632a7a77"
                },
     "tgwsproxy":  {
                       "version":  "1.7.3"

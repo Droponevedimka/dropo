@@ -262,14 +262,6 @@ func TestPackagedZapret2ComposedDryRun(t *testing.T) {
 			HostlistPath: hostlist,
 			Method:       rankedMethodsForService(tag)[0],
 		}
-		if tag == "discord" {
-			selection.DiscordMediaUDPPorts = []int{19328}
-			selection.DiscordMediaUDPIPs = []string{"104.29.156.148"}
-			selection.DiscordMediaRawFilter = filepath.Join(hostlistDir, discordDynamicFilterFileName)
-			if err := os.WriteFile(selection.DiscordMediaRawFilter, []byte(discordDynamicMediaFilterForPorts(selection.DiscordMediaUDPPorts)), 0o600); err != nil {
-				t.Fatalf("create Discord media filter failed: %v", err)
-			}
-		}
 		selections = append(selections, selection)
 	}
 	args := append(composeServiceWinwsArgs(selections, binDir), "--dry-run")
