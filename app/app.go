@@ -15,46 +15,47 @@ import (
 
 // App is the main application struct that holds all state and dependencies.
 type App struct {
-	ctx               context.Context
-	cmd               *exec.Cmd
-	cmdDone           chan error
-	isRunning         bool
-	isStarting        bool
-	hasError          atomic.Bool // connection-error flag; atomic so log-reader/monitor goroutines can set it without a.mu
-	stoppedManually   bool        // Manual stop flag
-	initialized       bool        // Initialization complete flag
-	windowVisible     bool        // Window visibility flag for ping optimization
-	mu                sync.Mutex
-	basePath          string // Base path (exe directory)
-	dataPath          string // Per-user writable state directory
-	runtimePath       string // Protected base for executable dependencies
-	runtimePathErr    error
-	depsIntegrityMu   sync.Mutex
-	depsIntegrityFor  string
-	depsIntegrityOK   bool
-	depsDownloadMu    sync.Mutex
-	singboxPath       string
-	logPath           string
-	tempLogPath       string
-	logFile           *os.File
-	logFileMu         sync.Mutex
-	storage           *Storage                 // Unified storage for all settings
-	configBuilder     *ConfigBuilderForStorage // Config builder for storage
-	trafficStats      *TrafficStats
-	nativeWG          *NativeWireGuardManager // Native WireGuard tunnel manager
-	byeDPI            *ByeDPIManager          // Free access (DPI-bypass) process manager
-	zapret            *TransparentBypassManager
-	tgwsproxy         *TgWsProxyManager  // Telegram MTProto-over-WebSocket proxy sidecar
-	xrayBridge        *XrayBridgeManager // Xray bridge for VLESS xhttp profiles
-	lastRouteProbe    map[string]routeProbeServiceResult
-	lastRouteProbeMu  sync.RWMutex
-	routeLatencyMu    sync.Mutex
-	routeLatencyCache map[string]routeSummaryLatencyEntry
-	routeProbeRunMu   sync.Mutex
-	routeProbeRunning bool
-	routeProbeDone    chan struct{}
-	routeStrategyJobs chan string
-	routeStrategyLoop atomic.Bool
+	ctx                  context.Context
+	cmd                  *exec.Cmd
+	cmdDone              chan error
+	isRunning            bool
+	isStarting           bool
+	hasError             atomic.Bool // connection-error flag; atomic so log-reader/monitor goroutines can set it without a.mu
+	stoppedManually      bool        // Manual stop flag
+	initialized          bool        // Initialization complete flag
+	windowVisible        bool        // Window visibility flag for ping optimization
+	mu                   sync.Mutex
+	basePath             string // Base path (exe directory)
+	dataPath             string // Per-user writable state directory
+	runtimePath          string // Protected base for executable dependencies
+	runtimePathErr       error
+	depsIntegrityMu      sync.Mutex
+	depsIntegrityFor     string
+	depsIntegrityOK      bool
+	depsIntegrityBlocked []string
+	depsDownloadMu       sync.Mutex
+	singboxPath          string
+	logPath              string
+	tempLogPath          string
+	logFile              *os.File
+	logFileMu            sync.Mutex
+	storage              *Storage                 // Unified storage for all settings
+	configBuilder        *ConfigBuilderForStorage // Config builder for storage
+	trafficStats         *TrafficStats
+	nativeWG             *NativeWireGuardManager // Native WireGuard tunnel manager
+	byeDPI               *ByeDPIManager          // Free access (DPI-bypass) process manager
+	zapret               *TransparentBypassManager
+	tgwsproxy            *TgWsProxyManager  // Telegram MTProto-over-WebSocket proxy sidecar
+	xrayBridge           *XrayBridgeManager // Xray bridge for VLESS xhttp profiles
+	lastRouteProbe       map[string]routeProbeServiceResult
+	lastRouteProbeMu     sync.RWMutex
+	routeLatencyMu       sync.Mutex
+	routeLatencyCache    map[string]routeSummaryLatencyEntry
+	routeProbeRunMu      sync.Mutex
+	routeProbeRunning    bool
+	routeProbeDone       chan struct{}
+	routeStrategyJobs    chan string
+	routeStrategyLoop    atomic.Bool
 	// routeStrategy* keep per-service background searches unhurried and in order.
 	// Pending jobs are coalesced and completed searches use a cooldown, so a
 	// later confirmed failure can retune the same service again without churn.

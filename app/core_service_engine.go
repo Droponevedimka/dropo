@@ -543,6 +543,10 @@ func (a *App) startComposedTransparentEngine(busyID string) error {
 	if !freeMethodsAllowed && !wireGuardRequested {
 		return nil
 	}
+	if a.depsComponentBlocked(ZapretProcessName) {
+		a.writeLog("[Security][Defender] zapret2/winws2 is unavailable by endpoint-protection policy; skipping the transparent engine and keeping trusted VPN/VLESS routing active")
+		return nil
+	}
 	if a.zapret == nil || !a.zapret.IsInstalled() {
 		if wireGuardRequested && !freeMethodsAllowed {
 			a.writeLog("[WireGuard] camouflage unavailable because zapret2/winws2 runtime is not installed; continuing with native WireGuard")
@@ -551,6 +555,72 @@ func (a *App) startComposedTransparentEngine(busyID string) error {
 		return fmt.Errorf("Windows Unified zapret2/winws2 runtime is not installed")
 	}
 	return a.startWindowsUnifiedServiceEngine(busyID)
+}
+
+// forceSubscriptionFallbackForTransparentRuntime rewrites only resilient
+// routing groups that already contain the trusted subscription selector. It is
+// used when endpoint protection blocks optional winws2: direct remains present
+// for later recovery, but no blocked service is accidentally pinned to a path
+// that requires the unavailable packet engine.
+func (a *App) forceSubscriptionFallbackForTransparentRuntime(configPath string) (bool, error) {
+	config, err := readJSONConfig(configPath)
+	if err != nil {
+		return false, err
+	}
+	outbounds, ok := config["outbounds"].([]interface{})
+	if !ok || !outboundTagExists(outbounds, "auto-select") {
+		return false, nil
+	}
+	changed := false
+	for _, raw := range outbounds {
+		outbound, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		tag, _ := outbound["tag"].(string)
+		if !(strings.HasPrefix(tag, "bypass-") || tag == SmartBypassGroupTag || tag == VpnOrDirectGroupTag) {
+			continue
+		}
+		candidates := interfaceStringSlice(outbound["outbounds"])
+		if !containsStringValue(candidates, "auto-select") {
+			continue
+		}
+		preferOutboundGroupCandidate(outbound, "auto-select")
+		outbound["type"] = "selector"
+		outbound["default"] = "auto-select"
+		deleteOutboundGroupHealthCheckFields(outbound)
+		changed = true
+	}
+	if changed {
+		if err := writeJSONConfig(configPath, config); err != nil {
+			return false, err
+		}
+	}
+	return changed, nil
+}
+
+func containsStringValue(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *App) activateSubscriptionFallbackForTransparentRuntime() int {
+	groups := make([]string, 0, len(DefaultFreeAccessServices)+2)
+	for _, service := range DefaultFreeAccessServices {
+		groups = append(groups, ServiceBypassGroupTag(service.Tag))
+	}
+	groups = append(groups, SmartBypassGroupTag, VpnOrDirectGroupTag)
+	switched := 0
+	for _, group := range groups {
+		if a.switchOutboundSelector(group, "auto-select") {
+			switched++
+		}
+	}
+	return switched
 }
 
 // firstRunServiceSearch validates each requested service and finds the first

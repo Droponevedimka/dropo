@@ -76,8 +76,9 @@ func (a *App) Start() map[string]interface{} {
 	a.updateBusy(busyID, "Проверяем состояние приложения...")
 	// Heavy binaries (bin/) ship as a separate release asset and are fetched on
 	// first run. Refuse to start until they are present.
-	if st := a.DependenciesStatus(); st.Managed {
-		if !st.Ready {
+	depsStatus := a.DependenciesStatus()
+	if depsStatus.Managed {
+		if !depsStatus.Ready {
 			return map[string]interface{}{
 				"success": false,
 				"error":   "Компоненты ещё не загружены. Подключитесь к интернету и дождитесь первичной загрузки компонентов.",
@@ -280,6 +281,16 @@ func (a *App) Start() map[string]interface{} {
 	} else {
 		a.writeLog("[RouteProbe] startup route gate skipped because discovery cache is not available yet")
 	}
+	if depsStatus.Degraded {
+		changed, fallbackErr := a.forceSubscriptionFallbackForTransparentRuntime(configPath)
+		if fallbackErr != nil {
+			a.writeLog(fmt.Sprintf("[Security][Defender] failed to prepare subscription-only fallback: %v", fallbackErr))
+		} else if changed {
+			a.writeLog(fmt.Sprintf("[Security][Defender] optional component(s) %v are unavailable; blocked-service groups were pinned to the trusted VPN/VLESS subscription", depsStatus.BlockedComponents))
+		} else {
+			a.writeLog(fmt.Sprintf("[Security][Defender] optional component(s) %v are unavailable and no VPN/VLESS subscription fallback exists", depsStatus.BlockedComponents))
+		}
+	}
 	a.logActiveConfigDiagnostics(configPath)
 
 	a.writeLog("[NetworkMode] Windows Unified startup: sing-box TUN + one composed winws2 engine")
@@ -365,20 +376,28 @@ func (a *App) Start() map[string]interface{} {
 	a.updateBusy(busyID, "Подбираем стратегии для заблокированных сервисов...")
 	if err := a.startComposedTransparentEngine(busyID); err != nil {
 		a.writeLog(fmt.Sprintf("[NetworkMode] Windows Unified winws2 engine failed to start: %v", err))
-		terminateProcessTree(cmd)
-		_ = cmd.Wait()
-		a.mu.Lock()
-		if a.cmd == cmd {
-			a.cmd = nil
-			a.cmdDone = nil
-			a.isRunning = false
-		}
-		a.hasError.Store(true)
-		a.mu.Unlock()
-		UpdateTrayIcon("error")
-		return map[string]interface{}{
-			"success": false,
-			"error":   fmt.Sprintf("Windows Unified: не удалось запустить подбор стратегий winws2: %v", err),
+		if isAntimalwareBlockError(err) {
+			a.markDepsComponentBlocked(ZapretProcessName)
+			_, _ = a.forceSubscriptionFallbackForTransparentRuntime(configPath)
+			switched := a.activateSubscriptionFallbackForTransparentRuntime()
+			a.writeLog(fmt.Sprintf("[Security][Defender] trusted zapret2 component was blocked at execution; kept sing-box running and switched %d blocked-service group(s) to VPN/VLESS without creating antivirus exclusions", switched))
+			a.AddToLogBuffer("Microsoft Defender заблокировал zapret2. Подключение продолжено через VPN/VLESS; локальный обход временно недоступен.")
+		} else {
+			terminateProcessTree(cmd)
+			_ = cmd.Wait()
+			a.mu.Lock()
+			if a.cmd == cmd {
+				a.cmd = nil
+				a.cmdDone = nil
+				a.isRunning = false
+			}
+			a.hasError.Store(true)
+			a.mu.Unlock()
+			UpdateTrayIcon("error")
+			return map[string]interface{}{
+				"success": false,
+				"error":   fmt.Sprintf("Windows Unified: не удалось запустить подбор стратегий winws2: %v", err),
+			}
 		}
 	}
 	a.startDiscordRealtimeMonitor()

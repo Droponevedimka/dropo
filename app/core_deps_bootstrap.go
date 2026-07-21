@@ -14,18 +14,27 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
 const depsDownloadIdleTimeout = 45 * time.Second
+
+const depsAntivirusMarkerName = ".deps-antivirus-blocked.json"
+
+var antivirusOptionalDependencies = map[string]struct{}{
+	"winws2.exe": {},
+}
 
 // App-only release builds inject these values from deps-lock.json into the
 // signed core. In that mode dependencies.json is informational only: changing
@@ -54,11 +63,14 @@ type DepsManifest struct {
 
 // DepsStatus is reported to the frontend so it can gate first-run download.
 type DepsStatus struct {
-	Managed   bool   `json:"managed"`   // split build (manifest present)
-	Ready     bool   `json:"ready"`     // bin/ present and matches required version
-	Required  string `json:"required"`  // required depsVersion
-	Installed string `json:"installed"` // installed depsVersion (marker)
-	SizeMB    int64  `json:"sizeMB"`    // download size, for the UI
+	Managed           bool     `json:"managed"`           // split build (manifest present)
+	Ready             bool     `json:"ready"`             // trusted runtime is usable, possibly without an AV-blocked optional engine
+	Degraded          bool     `json:"degraded"`          // optional packet engine is blocked by endpoint protection
+	Required          string   `json:"required"`          // required depsVersion
+	Installed         string   `json:"installed"`         // installed depsVersion (marker)
+	SizeMB            int64    `json:"sizeMB"`            // download size, for the UI
+	BlockedComponents []string `json:"blockedComponents"` // exact optional files unavailable to the runtime
+	Warning           string   `json:"warning,omitempty"`
 }
 
 func (a *App) depsManifestPath() string { return filepath.Join(a.basePath, "dependencies.json") }
@@ -70,6 +82,14 @@ func (a *App) binDir() string {
 }
 func (a *App) depsMarkerPath() string  { return filepath.Join(a.binDir(), ".deps-version") }
 func (a *App) depsArchivePath() string { return filepath.Join(a.runtimeBasePath(), "dependencies.zip") }
+func (a *App) depsAntivirusMarkerPath() string {
+	return filepath.Join(a.runtimeBasePath(), depsAntivirusMarkerName)
+}
+
+type depsAntivirusMarker struct {
+	DepsVersion string   `json:"depsVersion"`
+	Components  []string `json:"components"`
+}
 
 func (a *App) loadDepsManifest() (*DepsManifest, bool) {
 	if strings.TrimSpace(trustedDepsSHA256) != "" {
@@ -133,23 +153,79 @@ func (a *App) binLooksComplete() bool {
 }
 
 func (a *App) depsPresent(required string) bool {
-	if a.installedDepsVersion() != required || !a.binLooksComplete() {
-		return false
+	ready, _ := a.depsPresentWithBlocked(required)
+	return ready
+}
+
+func (a *App) depsPresentWithBlocked(required string) (bool, []string) {
+	if a.installedDepsVersion() != required {
+		return false, nil
 	}
 	if strings.TrimSpace(trustedDepsSHA256) == "" {
-		return true
+		return a.binLooksComplete(), nil
 	}
 	a.depsIntegrityMu.Lock()
 	defer a.depsIntegrityMu.Unlock()
 	if a.depsIntegrityOK && a.depsIntegrityFor == required {
-		return true
+		return true, append([]string(nil), a.depsIntegrityBlocked...)
 	}
 	m, ok := a.loadDepsManifest()
-	verified := ok && verifyFileSHA256AndSize(a.depsArchivePath(), m.SHA256, m.Size) == nil &&
-		extractedFilesMatchArchive(a.depsArchivePath(), a.binDir()) == nil
+	if !ok || verifyFileSHA256AndSize(a.depsArchivePath(), m.SHA256, m.Size) != nil {
+		a.setDepsIntegrityStateLocked(required, false, nil)
+		return false, nil
+	}
+	allowed := a.loadDepsAntivirusMarker(required)
+	blocked, err := extractedFilesMatchArchiveAllowBlocked(a.depsArchivePath(), a.binDir(), allowed)
+	if err != nil {
+		a.setDepsIntegrityStateLocked(required, false, nil)
+		return false, nil
+	}
+	a.setDepsIntegrityStateLocked(required, true, blocked)
+	if len(blocked) == 0 {
+		_ = os.Remove(a.depsAntivirusMarkerPath())
+	} else {
+		_ = a.saveDepsAntivirusMarker(required, blocked)
+	}
+	return true, append([]string(nil), blocked...)
+}
+
+func (a *App) setDepsIntegrityStateLocked(required string, ok bool, blocked []string) {
 	a.depsIntegrityFor = required
-	a.depsIntegrityOK = verified
-	return verified
+	a.depsIntegrityOK = ok
+	a.depsIntegrityBlocked = append(a.depsIntegrityBlocked[:0], blocked...)
+}
+
+func (a *App) depsComponentBlocked(name string) bool {
+	if a == nil {
+		return false
+	}
+	a.depsIntegrityMu.Lock()
+	defer a.depsIntegrityMu.Unlock()
+	for _, component := range a.depsIntegrityBlocked {
+		if strings.EqualFold(component, name) {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *App) markDepsComponentBlocked(name string) {
+	name = strings.ToLower(filepath.Base(strings.TrimSpace(name)))
+	if _, ok := antivirusOptionalDependencies[name]; !ok || a == nil {
+		return
+	}
+	m, ok := a.loadDepsManifest()
+	if !ok {
+		return
+	}
+	a.depsIntegrityMu.Lock()
+	defer a.depsIntegrityMu.Unlock()
+	blocked := uniqueSortedStrings(append(a.depsIntegrityBlocked, name))
+	if a.depsIntegrityFor == "" {
+		a.depsIntegrityFor = m.DepsVersion
+	}
+	a.depsIntegrityBlocked = blocked
+	_ = a.saveDepsAntivirusMarker(m.DepsVersion, blocked)
 }
 
 // DependenciesStatus reports whether the bundled binaries are ready. A build that
@@ -162,13 +238,20 @@ func (a *App) DependenciesStatus() DepsStatus {
 	if a.runtimePathErr != nil {
 		return DepsStatus{Managed: true, Ready: false, Required: m.DepsVersion, SizeMB: m.Size / (1024 * 1024)}
 	}
-	return DepsStatus{
-		Managed:   true,
-		Ready:     a.depsPresent(m.DepsVersion),
-		Required:  m.DepsVersion,
-		Installed: a.installedDepsVersion(),
-		SizeMB:    m.Size / (1024 * 1024),
+	ready, blocked := a.depsPresentWithBlocked(m.DepsVersion)
+	status := DepsStatus{
+		Managed:           true,
+		Ready:             ready,
+		Degraded:          len(blocked) > 0,
+		Required:          m.DepsVersion,
+		Installed:         a.installedDepsVersion(),
+		SizeMB:            m.Size / (1024 * 1024),
+		BlockedComponents: blocked,
 	}
+	if status.Degraded {
+		status.Warning = "Microsoft Defender заблокировал дополнительный движок zapret2; VPN-подписка продолжит работать, локальный обход будет временно отключён"
+	}
+	return status
 }
 
 func (a *App) emitDepsProgress(done, total int64, phase string) {
@@ -209,8 +292,11 @@ func (a *App) DownloadDependencies() error {
 	if a.runtimePathErr != nil || a.runtimeBasePath() == "" {
 		return a.failDepsDownload(m, fmt.Errorf("protected dependency runtime is unavailable: %v", a.runtimePathErr))
 	}
-	if a.depsPresent(m.DepsVersion) {
-		return nil
+	if ready, blocked := a.depsPresentWithBlocked(m.DepsVersion); ready {
+		if len(blocked) == 0 {
+			return nil
+		}
+		return a.retryAntivirusBlockedDependencies(m, blocked)
 	}
 
 	url, err := a.resolveDepsURL(m)
@@ -233,11 +319,21 @@ func (a *App) DownloadDependencies() error {
 	}
 	tmp.Close()
 
+	// Status polling verifies the cached archive concurrently with first-run
+	// download. Keep extraction, cache replacement and verification in one
+	// integrity critical section so Windows never sees an archive being removed
+	// while another goroutine still has it open.
+	a.depsIntegrityMu.Lock()
+	defer a.depsIntegrityMu.Unlock()
+	a.setDepsIntegrityStateLocked(m.DepsVersion, false, nil)
+
 	a.emitDepsProgress(m.Size, m.Size, "Распаковка…")
-	if err := extractZip(tmpPath, a.binDir()); err != nil {
+	productionRuntime := strings.TrimSpace(trustedDepsSHA256) != ""
+	extractBlocked, err := extractZipAllowAntimalware(tmpPath, a.binDir(), productionRuntime)
+	if err != nil {
 		return a.failDepsDownload(m, fmt.Errorf("не удалось распаковать зависимости: %w", err))
 	}
-	if strings.TrimSpace(trustedDepsSHA256) != "" {
+	if productionRuntime {
 		if err := os.Remove(a.depsArchivePath()); err != nil && !os.IsNotExist(err) {
 			return a.failDepsDownload(m, fmt.Errorf("replace dependencies cache: %w", err))
 		}
@@ -248,22 +344,144 @@ func (a *App) DownloadDependencies() error {
 	if err := os.WriteFile(a.depsMarkerPath(), []byte(m.DepsVersion), 0644); err != nil {
 		a.writeLog(fmt.Sprintf("[Deps] failed to write marker: %v", err))
 	}
-	if !a.binLooksComplete() {
-		return a.failDepsDownload(m, fmt.Errorf("архив зависимостей распакован, но ключевые файлы отсутствуют"))
-	}
-	if strings.TrimSpace(trustedDepsSHA256) != "" {
-		if err := extractedFilesMatchArchive(a.depsArchivePath(), a.binDir()); err != nil {
+	blocked := append([]string(nil), extractBlocked...)
+	if productionRuntime {
+		allowed := make(map[string]struct{}, len(blocked))
+		for _, component := range blocked {
+			allowed[component] = struct{}{}
+		}
+		verifiedBlocked, err := extractedFilesMatchArchiveAllowBlocked(a.depsArchivePath(), a.binDir(), allowed)
+		if err != nil {
 			return a.failDepsDownload(m, fmt.Errorf("verify extracted dependencies: %w", err))
 		}
-		a.depsIntegrityMu.Lock()
-		a.depsIntegrityFor = m.DepsVersion
-		a.depsIntegrityOK = true
-		a.depsIntegrityMu.Unlock()
+		blocked = uniqueSortedStrings(append(blocked, verifiedBlocked...))
+		if err := a.saveDepsAntivirusMarker(m.DepsVersion, blocked); err != nil && !os.IsNotExist(err) {
+			return a.failDepsDownload(m, fmt.Errorf("record Defender compatibility state: %w", err))
+		}
+		a.setDepsIntegrityStateLocked(m.DepsVersion, true, blocked)
+	} else if !a.binLooksComplete() {
+		return a.failDepsDownload(m, fmt.Errorf("архив зависимостей распакован, но ключевые файлы отсутствуют"))
 	}
 	a.refreshSingBoxPath()
+	if len(blocked) > 0 {
+		a.writeLog(fmt.Sprintf("[Security][Defender] trusted dependency archive sha256=%s verified, but optional component(s) %v were blocked by endpoint protection; continuing in subscription-only degraded mode without exclusions", m.SHA256, blocked))
+		a.emitEvent("deps-warning", map[string]interface{}{
+			"warning":           "Microsoft Defender заблокировал zapret2. VPN/VLESS продолжит работать; локальный обход временно отключён. Обновите базы Defender и повторите проверку позже.",
+			"blockedComponents": blocked,
+		})
+	}
 	a.writeLog("[Deps] dependencies ready (depsVersion=" + m.DepsVersion + ")")
 	a.emitDepsProgress(m.Size, m.Size, "Готово")
 	return nil
+}
+
+func (a *App) retryAntivirusBlockedDependencies(m *DepsManifest, blocked []string) error {
+	a.depsIntegrityMu.Lock()
+	defer a.depsIntegrityMu.Unlock()
+	if err := verifyFileSHA256AndSize(a.depsArchivePath(), m.SHA256, m.Size); err != nil {
+		a.setDepsIntegrityStateLocked(m.DepsVersion, false, nil)
+		return a.failDepsDownload(m, fmt.Errorf("verify cached dependencies before Defender retry: %w", err))
+	}
+	retryBlocked, err := extractSelectedDependencies(a.depsArchivePath(), a.binDir(), blocked)
+	if err != nil {
+		return a.failDepsDownload(m, fmt.Errorf("retry Defender-blocked components: %w", err))
+	}
+	allowed := make(map[string]struct{}, len(blocked)+len(retryBlocked))
+	for _, component := range append(append([]string(nil), blocked...), retryBlocked...) {
+		allowed[strings.ToLower(filepath.Base(component))] = struct{}{}
+	}
+	remaining, err := extractedFilesMatchArchiveAllowBlocked(a.depsArchivePath(), a.binDir(), allowed)
+	if err != nil {
+		return a.failDepsDownload(m, fmt.Errorf("verify dependencies after Defender retry: %w", err))
+	}
+	remaining = uniqueSortedStrings(remaining)
+	if err := a.saveDepsAntivirusMarker(m.DepsVersion, remaining); err != nil && !os.IsNotExist(err) {
+		return a.failDepsDownload(m, fmt.Errorf("update Defender compatibility state: %w", err))
+	}
+	a.setDepsIntegrityStateLocked(m.DepsVersion, true, remaining)
+	if len(remaining) > 0 {
+		a.writeLog(fmt.Sprintf("[Security][Defender] optional component(s) %v are still blocked; subscription-only degraded mode remains active", remaining))
+		a.emitEvent("deps-warning", map[string]interface{}{
+			"warning":           "Компонент zapret2 всё ещё блокируется Defender. Обновите базы Microsoft Defender и повторите проверку.",
+			"blockedComponents": remaining,
+		})
+		return nil
+	}
+	a.writeLog("[Security][Defender] previously blocked zapret2 component was restored from the already verified dependency archive; full Windows Unified mode is available again")
+	a.emitEvent("deps-progress", map[string]interface{}{"done": m.Size, "total": m.Size, "percent": 100, "phase": "Компонент восстановлен"})
+	return nil
+}
+
+func extractSelectedDependencies(archivePath, destDir string, selected []string) ([]string, error) {
+	wanted := make(map[string]struct{}, len(selected))
+	for _, component := range selected {
+		name := strings.ToLower(filepath.Base(component))
+		if _, optional := antivirusOptionalDependencies[name]; optional {
+			wanted[name] = struct{}{}
+		}
+	}
+	zr, err := zip.OpenReader(archivePath)
+	if err != nil {
+		return nil, err
+	}
+	defer zr.Close()
+	destAbs, err := filepath.Abs(destDir)
+	if err != nil {
+		return nil, err
+	}
+	found := make(map[string]bool, len(wanted))
+	stillBlocked := make([]string, 0, len(wanted))
+	for _, entry := range zr.File {
+		name := strings.ToLower(filepath.Base(entry.Name))
+		if entry.FileInfo().IsDir() {
+			continue
+		}
+		if _, ok := wanted[name]; !ok {
+			continue
+		}
+		found[name] = true
+		targetAbs, pathErr := filepath.Abs(filepath.Join(destDir, entry.Name))
+		if pathErr != nil || (targetAbs != destAbs && !strings.HasPrefix(targetAbs, destAbs+string(os.PathSeparator))) {
+			return nil, fmt.Errorf("archive entry escapes destination: %s", entry.Name)
+		}
+		if err := os.MkdirAll(filepath.Dir(targetAbs), 0755); err != nil {
+			return nil, err
+		}
+		rc, openErr := entry.Open()
+		if openErr != nil {
+			return nil, openErr
+		}
+		out, createErr := os.OpenFile(targetAbs, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0644)
+		if createErr != nil {
+			rc.Close()
+			if isAntimalwareBlockError(createErr) {
+				stillBlocked = append(stillBlocked, name)
+				continue
+			}
+			return nil, createErr
+		}
+		_, copyErr := io.Copy(out, rc)
+		closeErr := out.Close()
+		rc.Close()
+		if copyErr != nil || closeErr != nil {
+			writeErr := copyErr
+			if writeErr == nil {
+				writeErr = closeErr
+			}
+			if isAntimalwareBlockError(writeErr) {
+				_ = os.Remove(targetAbs)
+				stillBlocked = append(stillBlocked, name)
+				continue
+			}
+			return nil, writeErr
+		}
+	}
+	for name := range wanted {
+		if !found[name] {
+			return nil, fmt.Errorf("trusted archive is missing optional component %s", name)
+		}
+	}
+	return uniqueSortedStrings(stillBlocked), nil
 }
 
 func (a *App) downloadVerified(url string, out *os.File, m *DepsManifest) error {
@@ -384,31 +602,44 @@ func verifyFileSHA256AndSize(path, expected string, expectedSize int64) error {
 }
 
 func extractedFilesMatchArchive(archivePath, destDir string) error {
+	_, err := extractedFilesMatchArchiveAllowBlocked(archivePath, destDir, nil)
+	return err
+}
+
+func extractedFilesMatchArchiveAllowBlocked(archivePath, destDir string, previouslyBlocked map[string]struct{}) ([]string, error) {
 	zr, err := zip.OpenReader(archivePath)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer zr.Close()
 	destAbs, err := filepath.Abs(destDir)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	blocked := make([]string, 0, 1)
 	for _, entry := range zr.File {
 		if entry.FileInfo().IsDir() {
 			continue
 		}
 		targetAbs, err := filepath.Abs(filepath.Join(destDir, entry.Name))
 		if err != nil || (targetAbs != destAbs && !strings.HasPrefix(targetAbs, destAbs+string(os.PathSeparator))) {
-			return fmt.Errorf("archive entry escapes destination: %s", entry.Name)
+			return nil, fmt.Errorf("archive entry escapes destination: %s", entry.Name)
 		}
 		extracted, err := os.Open(targetAbs)
 		if err != nil {
-			return err
+			name := strings.ToLower(filepath.Base(entry.Name))
+			_, optional := antivirusOptionalDependencies[name]
+			_, recorded := previouslyBlocked[name]
+			if optional && (isAntimalwareBlockError(err) || (recorded && os.IsNotExist(err))) {
+				blocked = append(blocked, name)
+				continue
+			}
+			return nil, err
 		}
 		archived, err := entry.Open()
 		if err != nil {
 			extracted.Close()
-			return err
+			return nil, err
 		}
 		hExtracted, hArchived := sha256.New(), sha256.New()
 		_, errExtracted := io.Copy(hExtracted, extracted)
@@ -416,13 +647,85 @@ func extractedFilesMatchArchive(archivePath, destDir string) error {
 		extracted.Close()
 		archived.Close()
 		if errExtracted != nil || errArchived != nil {
-			return fmt.Errorf("hash archive entry %s", entry.Name)
+			return nil, fmt.Errorf("hash archive entry %s", entry.Name)
 		}
 		if !bytes.Equal(hExtracted.Sum(nil), hArchived.Sum(nil)) {
-			return fmt.Errorf("extracted file differs from trusted archive: %s", entry.Name)
+			return nil, fmt.Errorf("extracted file differs from trusted archive: %s", entry.Name)
 		}
 	}
-	return nil
+	sort.Strings(blocked)
+	return blocked, nil
+}
+
+func isAntimalwareBlockError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var errno syscall.Errno
+	if errors.As(err, &errno) && (errno == syscall.Errno(225) || errno == syscall.Errno(226)) {
+		return true
+	}
+	message := strings.ToLower(err.Error())
+	for _, fragment := range []string{
+		"contains a virus or potentially unwanted software",
+		"virus or potentially unwanted software",
+		"содержит вирус",
+		"нежелательное программное обеспечение",
+	} {
+		if strings.Contains(message, fragment) {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *App) loadDepsAntivirusMarker(required string) map[string]struct{} {
+	allowed := make(map[string]struct{})
+	data, err := os.ReadFile(a.depsAntivirusMarkerPath())
+	if err != nil {
+		return allowed
+	}
+	var marker depsAntivirusMarker
+	if json.Unmarshal(data, &marker) != nil || marker.DepsVersion != required {
+		return allowed
+	}
+	for _, component := range marker.Components {
+		name := strings.ToLower(filepath.Base(component))
+		if _, ok := antivirusOptionalDependencies[name]; ok {
+			allowed[name] = struct{}{}
+		}
+	}
+	return allowed
+}
+
+func (a *App) saveDepsAntivirusMarker(required string, blocked []string) error {
+	if len(blocked) == 0 {
+		return os.Remove(a.depsAntivirusMarkerPath())
+	}
+	marker := depsAntivirusMarker{DepsVersion: required, Components: append([]string(nil), blocked...)}
+	data, err := json.Marshal(marker)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(a.depsAntivirusMarkerPath(), data, 0600)
+}
+
+func uniqueSortedStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.ToLower(strings.TrimSpace(value))
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	sort.Strings(result)
+	return result
 }
 
 // resolveDepsURL searches releases from newest to oldest for the freshest asset
@@ -529,51 +832,73 @@ func releaseAssetMatches(as GitHubReleaseAsset, asset string, expectedSize int64
 
 // extractZip unpacks src into destDir, guarding against path traversal.
 func extractZip(src, destDir string) error {
+	_, err := extractZipAllowAntimalware(src, destDir, false)
+	return err
+}
+
+func extractZipAllowAntimalware(src, destDir string, allowOptional bool) ([]string, error) {
 	zr, err := zip.OpenReader(src)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer zr.Close()
 	if err := os.MkdirAll(destDir, 0755); err != nil {
-		return err
+		return nil, err
 	}
 	destAbs, err := filepath.Abs(destDir)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	blocked := make([]string, 0, 1)
 	for _, f := range zr.File {
 		target := filepath.Join(destDir, f.Name)
 		absTarget, err := filepath.Abs(target)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if absTarget != destAbs && !strings.HasPrefix(absTarget, destAbs+string(os.PathSeparator)) {
-			return fmt.Errorf("zip entry escapes destination: %s", f.Name)
+			return nil, fmt.Errorf("zip entry escapes destination: %s", f.Name)
 		}
 		if f.FileInfo().IsDir() {
 			if err := os.MkdirAll(target, 0755); err != nil {
-				return err
+				return nil, err
 			}
 			continue
 		}
 		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
-			return err
+			return nil, err
 		}
 		rc, err := f.Open()
 		if err != nil {
-			return err
+			return nil, err
 		}
 		out, err := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0644)
 		if err != nil {
 			rc.Close()
-			return err
+			name := strings.ToLower(filepath.Base(f.Name))
+			if _, optional := antivirusOptionalDependencies[name]; allowOptional && optional && isAntimalwareBlockError(err) {
+				blocked = append(blocked, name)
+				continue
+			}
+			return nil, err
 		}
 		_, cerr := io.Copy(out, rc)
-		out.Close()
+		closeErr := out.Close()
 		rc.Close()
-		if cerr != nil {
-			return cerr
+		if cerr != nil || closeErr != nil {
+			writeErr := cerr
+			if writeErr == nil {
+				writeErr = closeErr
+			}
+			name := strings.ToLower(filepath.Base(f.Name))
+			if _, optional := antivirusOptionalDependencies[name]; allowOptional && optional && isAntimalwareBlockError(writeErr) {
+				_ = os.Remove(target)
+				blocked = append(blocked, name)
+				continue
+			}
+			return nil, writeErr
 		}
 	}
-	return nil
+	sort.Strings(blocked)
+	return blocked, nil
 }

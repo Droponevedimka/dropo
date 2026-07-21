@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -122,6 +123,106 @@ func TestExtractZipRejectsTraversal(t *testing.T) {
 
 	if err := extractZip(zipPath, filepath.Join(dir, "bin")); err == nil {
 		t.Fatal("path traversal entry must be rejected")
+	}
+}
+
+func TestAntimalwareBlockErrorRecognizesWindowsDefenderCodes(t *testing.T) {
+	for _, code := range []syscall.Errno{225, 226} {
+		if !isAntimalwareBlockError(&os.PathError{Op: "open", Path: `C:\ProgramData\dropo\winws2.exe`, Err: code}) {
+			t.Fatalf("Defender error %d was not recognized", code)
+		}
+	}
+	if isAntimalwareBlockError(os.ErrNotExist) {
+		t.Fatal("ordinary missing file was classified as an antivirus block")
+	}
+}
+
+func TestArchiveVerificationAllowsOnlyRecordedMissingWinws2(t *testing.T) {
+	dir := t.TempDir()
+	zipPath := filepath.Join(dir, "deps.zip")
+	zf, err := os.Create(zipPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw := zip.NewWriter(zf)
+	for name, body := range map[string]string{"sing-box.exe": "sing", "winws2.exe": "zapret"} {
+		w, createErr := zw.Create(name)
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		if _, writeErr := w.Write([]byte(body)); writeErr != nil {
+			t.Fatal(writeErr)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := zf.Close(); err != nil {
+		t.Fatal(err)
+	}
+	dest := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(dest, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dest, "sing-box.exe"), []byte("sing"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	blocked, err := extractedFilesMatchArchiveAllowBlocked(zipPath, dest, map[string]struct{}{"winws2.exe": {}})
+	if err != nil || len(blocked) != 1 || blocked[0] != "winws2.exe" {
+		t.Fatalf("recorded blocked component result = %v, %v", blocked, err)
+	}
+	if err := extractedFilesMatchArchive(zipPath, dest); err == nil {
+		t.Fatal("strict archive verification accepted a missing executable")
+	}
+	if err := os.Remove(filepath.Join(dest, "sing-box.exe")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := extractedFilesMatchArchiveAllowBlocked(zipPath, dest, map[string]struct{}{"winws2.exe": {}}); err == nil {
+		t.Fatal("policy accepted a missing mandatory executable")
+	}
+}
+
+func TestExtractSelectedDependenciesRestoresOnlyBlockedOptionalFile(t *testing.T) {
+	dir := t.TempDir()
+	zipPath := filepath.Join(dir, "deps.zip")
+	zf, err := os.Create(zipPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw := zip.NewWriter(zf)
+	for name, body := range map[string]string{"sing-box.exe": "trusted-sing", "winws2.exe": "trusted-zapret"} {
+		w, createErr := zw.Create(name)
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		if _, writeErr := w.Write([]byte(body)); writeErr != nil {
+			t.Fatal(writeErr)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := zf.Close(); err != nil {
+		t.Fatal(err)
+	}
+	dest := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(dest, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dest, "sing-box.exe"), []byte("keep-running-version"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	blocked, err := extractSelectedDependencies(zipPath, dest, []string{"winws2.exe"})
+	if err != nil || len(blocked) != 0 {
+		t.Fatalf("restore blocked component = %v, %v", blocked, err)
+	}
+	winws, err := os.ReadFile(filepath.Join(dest, "winws2.exe"))
+	if err != nil || string(winws) != "trusted-zapret" {
+		t.Fatalf("restored winws2 = %q, %v", winws, err)
+	}
+	singbox, err := os.ReadFile(filepath.Join(dest, "sing-box.exe"))
+	if err != nil || string(singbox) != "keep-running-version" {
+		t.Fatalf("unselected sing-box was overwritten = %q, %v", singbox, err)
 	}
 }
 

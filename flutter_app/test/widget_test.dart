@@ -312,6 +312,24 @@ void main() {
     expect(info.selfUpdate, isFalse);
   });
 
+  test('DepsStatus preserves Defender degraded-mode diagnostics', () {
+    final status = DepsStatus.fromJson(const {
+      'managed': true,
+      'ready': true,
+      'degraded': true,
+      'required': 'abc123',
+      'installed': 'abc123',
+      'sizeMB': 65,
+      'blockedComponents': ['winws2.exe'],
+      'warning': 'Defender blocked zapret2',
+    });
+
+    expect(status.ready, isTrue);
+    expect(status.degraded, isTrue);
+    expect(status.blockedComponents, ['winws2.exe']);
+    expect(status.warning, 'Defender blocked zapret2');
+  });
+
   test('UpdateInfo rejects incomplete bridge responses', () {
     final info = UpdateInfo.fromJson(const {});
 

@@ -18,6 +18,9 @@ import (
 const (
 	discordRealtimePollInterval   = 2 * time.Second
 	discordRealtimeDialDeadline   = 10 * time.Second
+	discordRealtimeStallDeadline  = 30 * time.Second
+	discordRealtimeProvenDeadline = 45 * time.Second
+	discordRealtimeInboundGrace   = 20 * time.Second
 	discordRealtimeMediaWarmup    = 6 * time.Second
 	discordRealtimeSwitchCooldown = 5 * time.Second
 	discordRealtimeFlowRetention  = 30 * time.Second
@@ -27,28 +30,30 @@ const (
 	discordRealtimeMinMediaBytes  = 512
 	discordRealtimeMinMediaPolls  = 3
 	discordRealtimeMinUploadBytes = 64
-	discordRealtimeStallBytes     = 64
+	discordRealtimeStallBytes     = 1024
 )
 
 type discordRealtimeController struct {
 	mu sync.Mutex
 
-	cancel          context.CancelFunc
-	running         bool
-	automatic       bool
-	profileIndex    int
-	attempt         int
-	fallbackVPN     bool
-	initialBusy     bool
-	initialReady    bool
-	initialIdle     time.Time
-	vpnTried        map[string]bool
-	lastSwitch      time.Time
-	lastDiagnostics time.Time
-	learnedPorts    map[int]time.Time
-	learnedUDPPorts map[int]time.Time
-	learnedUDPIPs   map[string]time.Time
-	flows           map[string]*discordRealtimeFlow
+	cancel           context.CancelFunc
+	running          bool
+	automatic        bool
+	profileIndex     int
+	attempt          int
+	fallbackVPN      bool
+	initialBusy      bool
+	initialReady     bool
+	initialIdle      time.Time
+	vpnTried         map[string]bool
+	lastSwitch       time.Time
+	lastMediaInbound time.Time
+	routeHealthyAt   time.Time
+	lastDiagnostics  time.Time
+	learnedPorts     map[int]time.Time
+	learnedUDPPorts  map[int]time.Time
+	learnedUDPIPs    map[string]time.Time
+	flows            map[string]*discordRealtimeFlow
 }
 
 type discordRealtimeFlow struct {
@@ -70,6 +75,7 @@ type discordRealtimeFlow struct {
 	MediaDownload    int64
 	InboundPolls     int
 	FirstInbound     time.Time
+	LastInbound      time.Time
 	Healthy          bool
 	FailureReported  bool
 	Announced        bool
@@ -103,6 +109,7 @@ type discordRealtimeAction struct {
 	learnedUDPPort int
 	learnedUDPIP   string
 	failure        string
+	suppressed     string
 	connectionID   string
 	started        bool
 	healthy        bool
@@ -131,20 +138,23 @@ type discordRealtimeFlowDiagnostic struct {
 	InboundPolls    int
 	Healthy         bool
 	FailureReported bool
+	LastInboundAgo  time.Duration
 }
 
 type discordRealtimeDiagnostic struct {
-	Automatic    bool
-	FallbackVPN  bool
-	Attempt      int
-	Profile      discordRealtimeProfile
-	InitialBusy  bool
-	InitialReady bool
-	TCPPorts     []int
-	UDPPorts     []int
-	UDPIPs       []string
-	NewFlows     []discordRealtimeFlowDiagnostic
-	Flows        []discordRealtimeFlowDiagnostic
+	Automatic      bool
+	FallbackVPN    bool
+	Attempt        int
+	Profile        discordRealtimeProfile
+	InitialBusy    bool
+	InitialReady   bool
+	RouteHealthy   bool
+	LastInboundAgo time.Duration
+	TCPPorts       []int
+	UDPPorts       []int
+	UDPIPs         []string
+	NewFlows       []discordRealtimeFlowDiagnostic
+	Flows          []discordRealtimeFlowDiagnostic
 }
 
 func newDiscordRealtimeController() *discordRealtimeController {
@@ -167,10 +177,24 @@ func (c *discordRealtimeController) resetLocked() {
 	c.initialIdle = time.Time{}
 	c.vpnTried = make(map[string]bool)
 	c.lastSwitch = time.Time{}
+	c.lastMediaInbound = time.Time{}
+	c.routeHealthyAt = time.Time{}
 	c.lastDiagnostics = time.Time{}
 	c.learnedPorts = make(map[int]time.Time)
 	c.learnedUDPPorts = make(map[int]time.Time)
 	c.learnedUDPIPs = make(map[string]time.Time)
+	c.flows = make(map[string]*discordRealtimeFlow)
+}
+
+// resetRouteObservationLocked starts a fresh health window after a selector
+// change while preserving learned Discord endpoints and the visible initial
+// check. Counters returned by Clash for the old route must not influence the
+// decision for the new one.
+func (c *discordRealtimeController) resetRouteObservationLocked() {
+	c.initialReady = false
+	c.initialIdle = time.Time{}
+	c.lastMediaInbound = time.Time{}
+	c.routeHealthyAt = time.Time{}
 	c.flows = make(map[string]*discordRealtimeFlow)
 }
 
@@ -356,6 +380,9 @@ func (a *App) runDiscordRealtimeMonitor(ctx context.Context, controller *discord
 				if action.failure != "" {
 					a.handleDiscordRealtimeFailure(action.failure)
 				}
+				if action.suppressed != "" {
+					a.writeLog("[DiscordRealtime][Health] ignored isolated flow failure while another established Discord UDP flow remained active: " + action.suppressed)
+				}
 			}
 			diagnostic, summaryDue := controller.collectDiagnostics(now)
 			for _, flow := range diagnostic.NewFlows {
@@ -385,6 +412,10 @@ func (c *discordRealtimeController) collectDiagnostics(now time.Time) (discordRe
 		Profile:      profile,
 		InitialBusy:  c.initialBusy,
 		InitialReady: c.initialReady,
+		RouteHealthy: !c.routeHealthyAt.IsZero(),
+	}
+	if !c.lastMediaInbound.IsZero() {
+		result.LastInboundAgo = now.Sub(c.lastMediaInbound)
 	}
 	cutoff := now.Add(-discordRealtimeLearnedTTL)
 	for port, seen := range c.learnedPorts {
@@ -442,6 +473,9 @@ func (c *discordRealtimeController) collectDiagnostics(now time.Time) (discordRe
 			Healthy:         flow.Healthy,
 			FailureReported: flow.FailureReported,
 		}
+		if !flow.LastInbound.IsZero() {
+			diagnostic.LastInboundAgo = now.Sub(flow.LastInbound)
+		}
 		if !flow.Announced {
 			result.NewFlows = append(result.NewFlows, diagnostic)
 			flow.Announced = true
@@ -479,7 +513,11 @@ func formatDiscordFlowDiagnostic(event string, flow discordRealtimeFlowDiagnosti
 		chains = strings.Join(flow.Chains, " -> ")
 	}
 	destination := net.JoinHostPort(flow.DestinationIP, strconv.Itoa(flow.DestinationPort))
-	return fmt.Sprintf("[DiscordRealtime][Flow] %s id=%s process=%s network=%s host=%s destination=%s chains=%s total_up=%d total_down=%d delta_up=%d delta_down=%d media_up=%d media_down=%d inbound_polls=%d age=%s stalled=%s healthy=%v failure_reported=%v", event, flow.ID, process, flow.Network, host, destination, chains, flow.Upload, flow.Download, flow.UploadDelta, flow.DownloadDelta, flow.MediaUpload, flow.MediaDownload, flow.InboundPolls, flow.Age.Round(time.Second), flow.StalledFor.Round(time.Second), flow.Healthy, flow.FailureReported)
+	lastInbound := "never"
+	if flow.LastInboundAgo > 0 {
+		lastInbound = flow.LastInboundAgo.Round(time.Second).String()
+	}
+	return fmt.Sprintf("[DiscordRealtime][Flow] %s id=%s process=%s network=%s host=%s destination=%s chains=%s total_up=%d total_down=%d delta_up=%d delta_down=%d media_up=%d media_down=%d inbound_polls=%d age=%s stalled=%s last_inbound=%s healthy=%v failure_reported=%v", event, flow.ID, process, flow.Network, host, destination, chains, flow.Upload, flow.Download, flow.UploadDelta, flow.DownloadDelta, flow.MediaUpload, flow.MediaDownload, flow.InboundPolls, flow.Age.Round(time.Second), flow.StalledFor.Round(time.Second), lastInbound, flow.Healthy, flow.FailureReported)
 }
 
 func (a *App) logDiscordRealtimeDiagnostic(diagnostic discordRealtimeDiagnostic) {
@@ -491,7 +529,11 @@ func (a *App) logDiscordRealtimeDiagnostic(diagnostic discordRealtimeDiagnostic)
 	} else if diagnostic.InitialReady {
 		state = "ready"
 	}
-	a.writeLog(fmt.Sprintf("[DiscordRealtime][Status] route=%s vpn_node=%s automatic=%v vpn_mode=%v state=%s attempt=%d/%d profile=%s active_flows=%d learned_tcp=%v learned_udp=%v learned_ips=%v realtime_candidates=%v vpn_candidates=%v", realtimeCurrent, vpnCurrent, diagnostic.Automatic, diagnostic.FallbackVPN, state, diagnostic.Attempt, discordRealtimeMaxTrials, diagnostic.Profile.Tag, len(diagnostic.Flows), diagnostic.TCPPorts, diagnostic.UDPPorts, diagnostic.UDPIPs, realtimeCandidates, vpnCandidates))
+	lastInbound := "never"
+	if diagnostic.LastInboundAgo > 0 {
+		lastInbound = diagnostic.LastInboundAgo.Round(time.Second).String()
+	}
+	a.writeLog(fmt.Sprintf("[DiscordRealtime][Status] route=%s vpn_node=%s automatic=%v vpn_mode=%v state=%s route_healthy=%v last_media_inbound=%s attempt=%d/%d profile=%s active_flows=%d learned_tcp=%v learned_udp=%v learned_ips=%v realtime_candidates=%v vpn_candidates=%v", realtimeCurrent, vpnCurrent, diagnostic.Automatic, diagnostic.FallbackVPN, state, diagnostic.RouteHealthy, lastInbound, diagnostic.Attempt, discordRealtimeMaxTrials, diagnostic.Profile.Tag, len(diagnostic.Flows), diagnostic.TCPPorts, diagnostic.UDPPorts, diagnostic.UDPIPs, realtimeCandidates, vpnCandidates))
 	if len(diagnostic.Flows) == 0 {
 		a.writeLog("[DiscordRealtime][Flow] snapshot: no active Discord realtime flows")
 		return
@@ -550,6 +592,7 @@ func (c *discordRealtimeController) observeConnections(connections []clashConnec
 		return nil
 	}
 	actions := make([]discordRealtimeAction, 0, 2)
+	pendingFailures := make([]discordRealtimeAction, 0, 2)
 	seen := make(map[string]struct{}, len(connections))
 	activeDiscordUDP := false
 	for _, connection := range connections {
@@ -570,7 +613,7 @@ func (c *discordRealtimeController) observeConnections(connections []clashConnec
 			}
 			seen[connection.ID] = struct{}{}
 			if failure, _ := c.observeDiscordFlow(connection, network, host, port, now); failure != "" {
-				actions = append(actions, discordRealtimeAction{failure: failure, connectionID: connection.ID})
+				pendingFailures = append(pendingFailures, discordRealtimeAction{failure: failure, connectionID: connection.ID})
 			}
 			continue
 		}
@@ -607,10 +650,11 @@ func (c *discordRealtimeController) observeConnections(connections []clashConnec
 		seen[connection.ID] = struct{}{}
 		failure, healthy := c.observeDiscordFlow(connection, network, host, port, now)
 		if failure != "" {
-			actions = append(actions, discordRealtimeAction{failure: failure, connectionID: connection.ID})
+			pendingFailures = append(pendingFailures, discordRealtimeAction{failure: failure, connectionID: connection.ID})
 		}
 		if !c.initialReady && healthy {
 			c.initialReady = true
+			c.routeHealthyAt = now
 			c.initialBusy = false
 			c.initialIdle = time.Time{}
 			flow := c.flows[connection.ID]
@@ -621,6 +665,32 @@ func (c *discordRealtimeController) observeConnections(connections []clashConnec
 				action.inboundPolls = flow.InboundPolls
 			}
 			actions = append(actions, action)
+		}
+	}
+	if len(pendingFailures) > 0 {
+		pendingIDs := make(map[string]struct{}, len(pendingFailures))
+		pendingIncludesHealthyUDP := false
+		for _, pending := range pendingFailures {
+			pendingIDs[pending.connectionID] = struct{}{}
+			if flow := c.flows[pending.connectionID]; flow != nil && flow.Network == "udp" && flow.Healthy {
+				pendingIncludesHealthyUDP = true
+			}
+		}
+		recentInbound := !c.lastMediaInbound.IsZero() && now.Sub(c.lastMediaInbound) <= discordRealtimeInboundGrace
+		establishedSibling := !pendingIncludesHealthyUDP && c.hasEstablishedUDPSiblingLocked(pendingIDs)
+		if recentInbound || establishedSibling {
+			for _, pending := range pendingFailures {
+				if flow := c.flows[pending.connectionID]; flow != nil {
+					flow.FailureReported = true
+				}
+			}
+			actions = append(actions, discordRealtimeAction{suppressed: pendingFailures[0].failure, connectionID: pendingFailures[0].connectionID})
+		} else {
+			pending := pendingFailures[0]
+			if flow := c.flows[pending.connectionID]; flow != nil {
+				flow.FailureReported = true
+			}
+			actions = append(actions, pending)
 		}
 	}
 	for id, flow := range c.flows {
@@ -644,6 +714,18 @@ func (c *discordRealtimeController) observeConnections(connections []clashConnec
 		}
 	}
 	return actions
+}
+
+func (c *discordRealtimeController) hasEstablishedUDPSiblingLocked(excluded map[string]struct{}) bool {
+	for id, flow := range c.flows {
+		if _, skip := excluded[id]; skip || flow == nil {
+			continue
+		}
+		if flow.Network == "udp" && flow.Healthy {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *discordRealtimeController) observeDiscordFlow(connection clashConnection, network, host string, port int, now time.Time) (string, bool) {
@@ -685,6 +767,7 @@ func (c *discordRealtimeController) observeDiscordFlow(connection clashConnectio
 		flow.MediaDownload = 0
 		flow.InboundPolls = 0
 		flow.FirstInbound = time.Time{}
+		flow.LastInbound = time.Time{}
 		flow.Healthy = false
 		flow.FailureReported = false
 	} else {
@@ -696,6 +779,10 @@ func (c *discordRealtimeController) observeDiscordFlow(connection clashConnectio
 		if downloadDelta > 0 {
 			flow.MediaDownload += downloadDelta
 			flow.InboundPolls++
+			flow.LastInbound = now
+			if network == "udp" {
+				c.lastMediaInbound = now
+			}
 			if flow.FirstInbound.IsZero() {
 				flow.FirstInbound = now
 			}
@@ -715,17 +802,31 @@ func (c *discordRealtimeController) observeDiscordFlow(connection clashConnectio
 		flow.InboundPolls >= discordRealtimeMinMediaPolls &&
 		!flow.FirstInbound.IsZero() && now.Sub(flow.FirstInbound) >= discordRealtimeMediaWarmup {
 		flow.Healthy = true
+		if network == "udp" {
+			c.routeHealthyAt = now
+		}
 	}
 	sentWithoutReply := connection.Upload - flow.WindowUpload
 	if !flow.FailureReported && network == "udp" && connection.Download == 0 && connection.Upload >= 64 && now.Sub(flow.FirstSeen) >= discordRealtimeDialDeadline {
-		flow.FailureReported = true
 		return fmt.Sprintf("UDP %s:%d did not receive the Discord discovery response within %s", flow.DestinationIP, flow.DestinationPort, discordRealtimeDialDeadline), flow.Healthy
 	}
-	if flow.FailureReported || sentWithoutReply < discordRealtimeStallBytes || now.Sub(flow.WindowStarted) < discordRealtimeDialDeadline {
+	// The voice gateway is a mostly-idle WebSocket. Once it has received any
+	// bytes, an outgoing heartbeat without a matching byte delta is normal and
+	// must never evict a working UDP media route.
+	if network == "tcp" {
+		if !flow.FailureReported && connection.Download == 0 && connection.Upload >= 64 && now.Sub(flow.FirstSeen) >= discordRealtimeDialDeadline {
+			return fmt.Sprintf("TCP %s:%d did not receive a Discord voice gateway response within %s", flow.DestinationIP, flow.DestinationPort, discordRealtimeDialDeadline), flow.Healthy
+		}
 		return "", flow.Healthy
 	}
-	flow.FailureReported = true
-	return fmt.Sprintf("%s %s:%d sent %d media bytes without inbound progress for %s", strings.ToUpper(network), flow.DestinationIP, flow.DestinationPort, sentWithoutReply, discordRealtimeDialDeadline), flow.Healthy
+	deadline := discordRealtimeStallDeadline
+	if !c.routeHealthyAt.IsZero() {
+		deadline = discordRealtimeProvenDeadline
+	}
+	if flow.FailureReported || sentWithoutReply < discordRealtimeStallBytes || now.Sub(flow.WindowStarted) < deadline {
+		return "", flow.Healthy
+	}
+	return fmt.Sprintf("%s %s:%d sent %d media bytes without inbound progress for %s", strings.ToUpper(network), flow.DestinationIP, flow.DestinationPort, sentWithoutReply, deadline), flow.Healthy
 }
 
 func discordProcessLabel(metadata clashConnectionMetadata) string {
@@ -887,7 +988,7 @@ func (a *App) activateDiscordRealtimeFallback(reason string) {
 		controller.mu.Lock()
 		controller.fallbackVPN = true
 		controller.vpnTried = make(map[string]bool)
-		controller.flows = make(map[string]*discordRealtimeFlow)
+		controller.resetRouteObservationLocked()
 		initialBusy := controller.initialBusy
 		controller.mu.Unlock()
 		if a.switchOutboundSelector(discordRealtimeGroupTag, discordVPNGroupTag) {
@@ -1000,20 +1101,17 @@ func (a *App) rotateDiscordVPNNode(reason string) {
 		a.switchOutboundSelector(discordRealtimeGroupTag, "direct")
 		controller.mu.Lock()
 		controller.fallbackVPN = false
-		controller.automatic = false
-		controller.initialBusy = false
-		controller.initialReady = true
-		controller.initialIdle = time.Time{}
+		controller.vpnTried = make(map[string]bool)
+		controller.resetRouteObservationLocked()
 		controller.mu.Unlock()
-		a.endBusy(discordRealtimeBusyID)
-		a.writeLog("[DiscordRealtime] every available VPN node failed realtime UDP; switched to direct")
+		a.writeLog(fmt.Sprintf("[DiscordRealtime] every available VPN node failed the current realtime health window (%s); switched to direct but kept automatic recovery enabled", reason))
 		a.closeDiscordRealtimeConnections()
 		return
 	}
 	a.writeLog(fmt.Sprintf("[DiscordRealtime] VPN realtime failure (%s); rotated subscription node %s -> %s", reason, current, next))
 	controller.mu.Lock()
 	initialBusy := controller.initialBusy
-	controller.flows = make(map[string]*discordRealtimeFlow)
+	controller.resetRouteObservationLocked()
 	controller.mu.Unlock()
 	if initialBusy {
 		a.updateBusy(discordRealtimeBusyID, fmt.Sprintf("Проверяем следующий VPN-узел для Discord voice: %s", next))

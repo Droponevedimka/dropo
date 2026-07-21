@@ -294,12 +294,70 @@ func TestDiscordRealtimeDetectsPreviouslyHealthyFlowThatStalls(t *testing.T) {
 	}
 	controller.observeConnections([]clashConnection{connection}, started)
 
-	connection.Upload = 300
-	if actions := controller.observeConnections([]clashConnection{connection}, started.Add(discordRealtimeDialDeadline-time.Second)); len(actions) != 0 {
+	connection.Upload = 1500
+	if actions := controller.observeConnections([]clashConnection{connection}, started.Add(discordRealtimeStallDeadline-time.Second)); len(actions) != 0 {
 		t.Fatalf("healthy flow failed before the deadline: %#v", actions)
 	}
-	if actions := controller.observeConnections([]clashConnection{connection}, started.Add(discordRealtimeDialDeadline)); len(actions) != 1 || actions[0].failure == "" {
+	if actions := controller.observeConnections([]clashConnection{connection}, started.Add(discordRealtimeStallDeadline)); len(actions) != 1 || actions[0].failure == "" {
 		t.Fatalf("stalled healthy flow actions = %#v, want failure", actions)
+	}
+}
+
+func TestDiscordRealtimeDoesNotFailIdleVoiceGatewayAfterHandshake(t *testing.T) {
+	controller := newDiscordRealtimeController()
+	controller.running = true
+	started := time.Unix(2300, 0)
+	connection := clashConnection{
+		ID: "voice-gateway",
+		Metadata: clashConnectionMetadata{
+			Network:         "tcp",
+			Host:            "arn-voice.discord.media",
+			DestinationIP:   "203.0.113.30",
+			DestinationPort: "2053",
+			Process:         "Discord.exe",
+		},
+		Upload:   512,
+		Download: 1024,
+	}
+	controller.observeConnections([]clashConnection{connection}, started)
+	connection.Upload += 4096 // a heartbeat/control write; the gateway may stay quiet
+	if actions := controller.observeConnections([]clashConnection{connection}, started.Add(2*discordRealtimeProvenDeadline)); len(actions) != 0 {
+		t.Fatalf("idle voice WebSocket evicted the realtime route: %#v", actions)
+	}
+}
+
+func TestDiscordRealtimeSuppressesIsolatedUDPFailureWhileMediaProgresses(t *testing.T) {
+	controller := newDiscordRealtimeController()
+	controller.running = true
+	started := time.Unix(2325, 0)
+	stale := clashConnection{
+		ID:       "discovery-without-reply",
+		Metadata: clashConnectionMetadata{Network: "udp", DestinationIP: "203.0.113.20", DestinationPort: "19304", Process: "Discord.exe"},
+		Upload:   74,
+	}
+	media := clashConnection{
+		ID:       "active-media",
+		Metadata: clashConnectionMetadata{Network: "udp", DestinationIP: "203.0.113.20", DestinationPort: "19304", Process: "Discord.exe"},
+		Upload:   74, Download: 74,
+	}
+	controller.observeConnections([]clashConnection{stale, media}, started)
+	for i := 1; i <= 5; i++ {
+		media.Upload += 200
+		media.Download += 300
+		actions := controller.observeConnections([]clashConnection{stale, media}, started.Add(time.Duration(i)*2*time.Second))
+		if i == 5 {
+			if len(actions) != 1 || actions[0].failure != "" || actions[0].suppressed == "" {
+				t.Fatalf("isolated stale flow was not suppressed: %#v", actions)
+			}
+		}
+	}
+	lateStale := stale
+	lateStale.ID = "late-discovery-without-reply"
+	if actions := controller.observeConnections([]clashConnection{media, lateStale}, started.Add(30*time.Second)); len(actions) != 0 {
+		t.Fatalf("late discovery setup produced actions: %#v", actions)
+	}
+	if actions := controller.observeConnections([]clashConnection{media, lateStale}, started.Add(40*time.Second)); len(actions) != 1 || actions[0].suppressed == "" {
+		t.Fatalf("established media sibling did not suppress late isolated failure: %#v", actions)
 	}
 }
 

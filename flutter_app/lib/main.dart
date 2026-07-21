@@ -2036,24 +2036,33 @@ class DepsStatus {
   const DepsStatus({
     required this.managed,
     required this.ready,
+    required this.degraded,
     required this.required,
     required this.installed,
     required this.sizeMb,
+    required this.blockedComponents,
+    required this.warning,
   });
 
   final bool managed;
   final bool ready;
+  final bool degraded;
   final String required;
   final String installed;
   final int sizeMb;
+  final List<String> blockedComponents;
+  final String warning;
 
   factory DepsStatus.fromJson(Map<String, dynamic> json) {
     return DepsStatus(
       managed: json['managed'] == true,
       ready: json['ready'] == true,
+      degraded: json['degraded'] == true,
       required: json['required']?.toString() ?? '',
       installed: json['installed']?.toString() ?? '',
       sizeMb: _asInt(json['sizeMB']),
+      blockedComponents: _asStringList(json['blockedComponents']),
+      warning: json['warning']?.toString() ?? '',
     );
   }
 }
@@ -3940,10 +3949,21 @@ class _DropoHomePageState extends State<DropoHomePage>
         await _refresh(all: true);
         return;
       }
+      final dependencyResult = DepsStatus.fromJson(
+        _asMap(result['dependencies']),
+      );
       setState(() {
-        statusMessage = 'Компоненты готовы';
-        connectionHint = 'Зависимости скачаны, проверены и распакованы.';
-        connectionHintDanger = false;
+        if (dependencyResult.degraded) {
+          statusMessage = 'zapret2 заблокирован Defender';
+          connectionHint = dependencyResult.warning.isEmpty
+              ? 'VPN/VLESS работает, локальный обход временно отключён.'
+              : dependencyResult.warning;
+          connectionHintDanger = true;
+        } else {
+          statusMessage = 'Компоненты готовы';
+          connectionHint = 'Зависимости скачаны, проверены и распакованы.';
+          connectionHintDanger = false;
+        }
         depsProgress = '';
       });
       await _refresh(all: true);
@@ -6283,8 +6303,26 @@ class _DependencyStrip extends StatelessWidget {
     if (!status.managed) {
       return const SizedBox.shrink();
     }
-    if (status.ready) {
+    if (status.ready && !status.degraded) {
       return const SizedBox.shrink();
+    }
+    if (status.degraded) {
+      final warning = status.warning.trim();
+      return MouseRegion(
+        cursor: onDownload == null
+            ? SystemMouseCursors.basic
+            : SystemMouseCursors.click,
+        child: GestureDetector(
+          onTap: onDownload,
+          child: _MiniStrip(
+            icon: Icons.security,
+            color: const Color(0xFFF59E0B),
+            text: warning.isEmpty
+                ? 'Defender заблокировал zapret2. VPN работает; обновите базы Defender и нажмите для повторной проверки.'
+                : '$warning Нажмите для повторной проверки.',
+          ),
+        ),
+      );
     }
     return MouseRegion(
       cursor: onDownload == null
@@ -10108,10 +10146,14 @@ class _SettingsDialogState extends State<_SettingsDialog> {
             if (!isMobile)
               _ButtonSetting(
                 title: 'Компоненты',
-                description: widget.currentStatus.dependencies.ready
+                description: widget.currentStatus.dependencies.degraded
+                    ? 'Defender блокирует zapret2; VPN/VLESS остаётся активным'
+                    : widget.currentStatus.dependencies.ready
                     ? 'Зависимости загружены'
                     : 'Скачать архив зависимостей',
-                label: 'Скачать',
+                label: widget.currentStatus.dependencies.degraded
+                    ? 'Повторить'
+                    : 'Скачать',
                 icon: Icons.download,
                 onPressed: canChangeRuntime
                     ? widget.onDownloadDependencies

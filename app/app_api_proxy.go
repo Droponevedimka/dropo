@@ -15,7 +15,10 @@ import (
 const (
 	routeSummaryPingTTL     = 15 * time.Second
 	routeSummaryPingTimeout = 2500 * time.Millisecond
+	routeSummaryMaxParallel = 3
 )
+
+var routeSummaryProbeSlots = make(chan struct{}, routeSummaryMaxParallel)
 
 type routeSummaryLatencyEntry struct {
 	Delay     int
@@ -670,6 +673,9 @@ func (a *App) cachedRouteServiceDelay(svc FreeAccessService) int {
 }
 
 func (a *App) refreshRouteServiceDelay(tag, name, target string) {
+	routeSummaryProbeSlots <- struct{}{}
+	defer func() { <-routeSummaryProbeSlots }()
+
 	ctx, cancel := context.WithTimeout(context.Background(), routeSummaryPingTimeout)
 	defer cancel()
 

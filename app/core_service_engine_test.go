@@ -236,6 +236,40 @@ func TestGeneratedFreeAccessConfigPassesDiscordRealtimeMigrationGate(t *testing.
 	}
 }
 
+func TestDefenderDegradedModePinsBlockedServicesToSubscription(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "active.json")
+	config := map[string]interface{}{
+		"outbounds": []interface{}{
+			map[string]interface{}{"type": "direct", "tag": "direct"},
+			map[string]interface{}{"type": "vless", "tag": "node-a"},
+			map[string]interface{}{"type": "selector", "tag": "auto-select", "outbounds": []interface{}{"node-a"}},
+			map[string]interface{}{"type": "urltest", "tag": ServiceBypassGroupTag("discord"), "outbounds": []interface{}{"direct", "auto-select"}, "url": "https://discord.com", "interval": "90s"},
+			map[string]interface{}{"type": "urltest", "tag": SmartBypassGroupTag, "outbounds": []interface{}{"direct", "auto-select"}, "url": "https://example.com"},
+		},
+	}
+	if err := writeJSONConfig(path, config); err != nil {
+		t.Fatal(err)
+	}
+	app := &App{}
+	changed, err := app.forceSubscriptionFallbackForTransparentRuntime(path)
+	if err != nil || !changed {
+		t.Fatalf("force subscription fallback changed=%v err=%v", changed, err)
+	}
+	updated, err := readJSONConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tag := range []string{ServiceBypassGroupTag("discord"), SmartBypassGroupTag} {
+		group := findOutboundMap(updated["outbounds"].([]interface{}), tag)
+		if group == nil || group["type"] != "selector" || group["default"] != "auto-select" {
+			t.Fatalf("degraded group %s = %#v", tag, group)
+		}
+		if _, exists := group["url"]; exists {
+			t.Fatalf("degraded group %s retained an active health probe: %#v", tag, group)
+		}
+	}
+}
+
 func TestPackagedZapret2ComposedDryRun(t *testing.T) {
 	exePath := os.Getenv("DROPO_TEST_ZAPRET2_EXE")
 	if exePath == "" {
