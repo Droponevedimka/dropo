@@ -39,8 +39,8 @@ func (a *App) startRouteStrategyMaintenanceListener() {
 				return
 			}
 			serviceTag, serviceReason := parseServiceStrategyMaintenanceReason(reason)
-			// Dequeuing the job counts as the one search this service gets for
-			// the current VPN session, no matter which branch handles it below.
+			// Dequeuing starts this service's cooldown, no matter which branch
+			// handles it below.
 			if serviceTag != "" {
 				a.finishRouteStrategyService(serviceTag)
 			}
@@ -58,7 +58,7 @@ func (a *App) startRouteStrategyMaintenanceListener() {
 					// service keep its own method, so a failing service is
 					// retuned on its own ladder (cache → next working → VPN /
 					// direct) without disturbing the others. The dequeue above
-					// already enforced one search per service per session.
+					// starts the anti-churn cooldown.
 					if a.zapret != nil && a.zapret.ActiveTag() == composedStrategyTag {
 						if err := a.retunePerServiceStrategy(serviceTag, serviceReason); err != nil {
 							a.writeLog(fmt.Sprintf("[FreeAccess] per-service retune failed (%s): %v", serviceReason, err))
@@ -123,7 +123,7 @@ func (a *App) requestRouteStrategyMaintenance(reason string) {
 	}
 	serviceTag, _ := parseServiceStrategyMaintenanceReason(reason)
 	if serviceTag != "" && !a.markRouteStrategyQueued(serviceTag) {
-		a.writeLog("[FreeAccess] strategy maintenance skipped for " + serviceTag + " (already searched this session or queued)")
+		a.writeLog("[FreeAccess] strategy maintenance skipped for " + serviceTag + " (queued or still in cooldown)")
 		return
 	}
 	select {
@@ -139,7 +139,10 @@ func (a *App) requestRouteStrategyMaintenance(reason string) {
 	}
 }
 
-const routeStrategyMaintenancePause = 3 * time.Second
+const (
+	routeStrategyMaintenancePause = 3 * time.Second
+	routeStrategyRetryCooldown    = 30 * time.Second
+)
 
 // sleepRouteStrategyMaintenancePause paces consecutive searches without blocking
 // shutdown for the full interval.
@@ -166,11 +169,11 @@ func (a *App) routeStrategyWorkAllowed() bool {
 	return !stopping
 }
 
-// resetRouteStrategySession clears the per-session "searched once" state so the
-// next VPN session is allowed exactly one strategy search per service again.
+// resetRouteStrategySession clears all background retry cooldowns for a new VPN
+// session.
 func (a *App) resetRouteStrategySession() {
 	a.routeStrategyMu.Lock()
-	a.routeStrategyAttempted = nil
+	a.routeStrategyLastAttempt = nil
 	a.routeStrategyQueued = nil
 	a.transparentReselectionDone = false
 	a.routeStrategyMu.Unlock()
@@ -188,13 +191,16 @@ func (a *App) beginTransparentReselectionOncePerSession() bool {
 	return true
 }
 
-// markRouteStrategyQueued reserves a service for a single strategy search. It
-// returns false when the service was already searched this session or is still
-// queued, which is how the one-search-per-service rule is enforced.
+// markRouteStrategyQueued reserves a service for a background strategy search.
+// Bursts are coalesced and recently completed searches are held behind a short
+// cooldown, but a later failure in the same VPN session is allowed to retune.
 func (a *App) markRouteStrategyQueued(serviceTag string) bool {
 	a.routeStrategyMu.Lock()
 	defer a.routeStrategyMu.Unlock()
-	if a.routeStrategyAttempted[serviceTag] || a.routeStrategyQueued[serviceTag] {
+	if a.routeStrategyQueued[serviceTag] {
+		return false
+	}
+	if last := a.routeStrategyLastAttempt[serviceTag]; !last.IsZero() && time.Since(last) < routeStrategyRetryCooldown {
 		return false
 	}
 	if a.routeStrategyQueued == nil {
@@ -210,15 +216,14 @@ func (a *App) releaseRouteStrategyQueued(serviceTag string) {
 	a.routeStrategyMu.Unlock()
 }
 
-// finishRouteStrategyService records that a service has used its single search
-// for this session and drops it from the queued set.
+// finishRouteStrategyService starts the cooldown and drops the queued marker.
 func (a *App) finishRouteStrategyService(serviceTag string) {
 	a.routeStrategyMu.Lock()
 	defer a.routeStrategyMu.Unlock()
-	if a.routeStrategyAttempted == nil {
-		a.routeStrategyAttempted = map[string]bool{}
+	if a.routeStrategyLastAttempt == nil {
+		a.routeStrategyLastAttempt = map[string]time.Time{}
 	}
-	a.routeStrategyAttempted[serviceTag] = true
+	a.routeStrategyLastAttempt[serviceTag] = time.Now()
 	delete(a.routeStrategyQueued, serviceTag)
 }
 

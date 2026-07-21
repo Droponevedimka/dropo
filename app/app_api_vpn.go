@@ -110,8 +110,7 @@ func (a *App) Start() map[string]interface{} {
 		a.mu.Unlock()
 	}()
 
-	// Fresh VPN session: allow exactly one background strategy search per
-	// service again (see requestRouteStrategyMaintenance / the maintenance loop).
+	// Fresh VPN session: clear per-service maintenance cooldowns and queued jobs.
 	a.resetRouteStrategySession()
 	a.tgProxyPromptedSession.Store(false)
 
@@ -228,7 +227,9 @@ func (a *App) Start() map[string]interface{} {
 	cacheApplied, cacheFresh := false, false
 	if hasVPNCandidates, err := configHasVPNProbeCandidates(configPath); err != nil {
 		a.writeLog(fmt.Sprintf("[RouteProbe] failed to inspect VPN candidates before start: %v", err))
-	} else if startupVPNRouteComparisonEnabled && hasVPNCandidates {
+	} else if !hasVPNCandidates {
+		a.writeLog("[RouteProbe] startup VPN comparison skipped: no VPN/VLESS subscription candidates")
+	} else if startupVPNRouteComparisonEnabled {
 		a.writeLog("[RouteProbe] VPN/VLESS candidates found; comparing them with free strategies before start")
 		report, err := a.runRouteProbeAndApply(configPath, activeFreeAccessTags, "startup vpn comparison")
 		if err != nil {
@@ -243,7 +244,7 @@ func (a *App) Start() map[string]interface{} {
 				routeProbeSuccessCount(report.Services), len(report.Services)))
 		}
 	} else {
-		a.writeLog("[RouteProbe] startup VPN comparison skipped: no VPN/VLESS subscription candidates")
+		a.writeLog("[RouteProbe] VPN/VLESS candidates found; full comparison is disabled, per-service startup validation will be used")
 	}
 	if startupRouteProbeCacheApplyEnabled && !cacheApplied {
 		a.updateBusy(busyID, "Применяем сохраненный подбор маршрутов...")
@@ -349,24 +350,14 @@ func (a *App) Start() map[string]interface{} {
 	a.isRunning = true
 	a.hasError.Store(false)
 	a.mu.Unlock()
-	UpdateTrayIcon("connected")
-	a.setRestoreVPNOnStartup(true)
-	a.writeLog("VPN started successfully")
-	a.AddToLogBuffer("VPN запущен")
 	// Drain logs while the first-run strategy search is using sing-box. Waiting
 	// until after the search can fill child-process pipes and stall the runtime.
 	go a.logOutput(stdout, "sing-box/out")
 	go a.logOutput(stderr, "sing-box/log")
 
-	// Start tracking traffic statistics
-	if a.trafficStats != nil {
-		a.trafficStats.StartSession()
-		a.startTrafficStatsPolling()
-	}
-
 	// Windows Unified: sing-box owns TUN routing and one composed winws2 owns
-	// every per-service zapret2 profile. Uncached services are tested in ranked
-	// order and stop at the first successful strategy.
+	// every per-service zapret2 profile. Every enabled service validates its
+	// current strategy; failing services advance in ranked order.
 	// Camouflage must be installed before native WireGuard sends its first
 	// initiation packet. It remains a sidecar; WireGuard owns the tunnel.
 	a.resetWireGuardCamouflageSession()
@@ -398,6 +389,24 @@ func (a *App) Start() map[string]interface{} {
 		a.updateBusy(busyID, "Запускаем рабочие WireGuard-сети...")
 		a.startNativeWireGuardTunnels()
 	}
+
+	// Start user-visible session accounting only after the mandatory strategy
+	// gate succeeds. A failed validation must not leave a phantom traffic session.
+	if a.trafficStats != nil {
+		a.trafficStats.StartSession()
+		a.startTrafficStatsPolling()
+	}
+
+	// Publish the connected state only after every enabled blocked service has
+	// either confirmed its current transparent strategy or exhausted its bounded
+	// ladder and selected the configured VPN/direct fallback. Do this before the
+	// waiter starts so an immediate process exit always overwrites it with the
+	// final disconnected/error state, never the other way around.
+	UpdateTrayIcon("connected")
+	a.setRestoreVPNOnStartup(true)
+	a.writeLog("VPN started successfully; initial service strategies validated")
+	a.AddToLogBuffer("VPN запущен, стратегии сервисов проверены")
+	startupSucceeded = true
 
 	// Monitor process in goroutine
 	go func(cmd *exec.Cmd, done chan error) {
@@ -458,8 +467,6 @@ func (a *App) Start() map[string]interface{} {
 			a.emitEvent("vpn-status-changed", false)
 		}
 	}(cmd, cmdDone)
-	startupSucceeded = true
-
 	a.updateBusy(busyID, "Подключение запущено")
 	return map[string]interface{}{
 		"success": true,
@@ -822,6 +829,10 @@ func (a *App) ensureActiveConfigForStart() error {
 		// is configured but the cached config has no VPN candidates (e.g. it was
 		// built before the subscription was added → VPN would never be used).
 		needsRebuild := subscriptionURL != "" && !profile.XrayConfigReady
+		if !needsRebuild && !configSupportsDiscordRealtimeRouting(config) {
+			a.writeLog("Active config predates Discord realtime routing; rebuilding before start")
+			needsRebuild = true
+		}
 		if !needsRebuild && subscriptionURL != "" {
 			if path := a.storage.ActiveConfigFilePath(); path != "" {
 				if hasVPN, verr := configHasVPNProbeCandidates(path); verr == nil && !hasVPN {
@@ -844,6 +855,63 @@ func (a *App) ensureActiveConfigForStart() error {
 
 	a.writeLog("Active profile has no generated config, building it before start")
 	return a.configBuilder.BuildConfigForProfile(profile.ID, subscriptionURL, profile.WireGuardConfigs)
+}
+
+// configSupportsDiscordRealtimeRouting is the structural migration gate for
+// cached profile configs. Profile configs intentionally survive application
+// updates, so new runtime selectors and rules must be required explicitly;
+// otherwise a new binary can start an old active_config.json and every Clash
+// selector switch will fail with HTTP 404.
+func configSupportsDiscordRealtimeRouting(config map[string]interface{}) bool {
+	outbounds, ok := config["outbounds"].([]interface{})
+	if !ok {
+		return false
+	}
+	realtime := configOutboundByTag(outbounds, discordRealtimeGroupTag)
+	if realtime == nil || !stringSliceContains(interfaceStringSlice(realtime["outbounds"]), "direct") {
+		return false
+	}
+	if outboundTagExists(outbounds, "auto-select") {
+		vpn := configOutboundByTag(outbounds, discordVPNGroupTag)
+		if vpn == nil || len(interfaceStringSlice(vpn["outbounds"])) == 0 ||
+			!stringSliceContains(interfaceStringSlice(realtime["outbounds"]), discordVPNGroupTag) {
+			return false
+		}
+	}
+	route, ok := config["route"].(map[string]interface{})
+	if !ok {
+		return false
+	}
+	rules, ok := route["rules"].([]interface{})
+	if !ok {
+		return false
+	}
+	hasUDPProcessRule := false
+	hasVoiceGatewayRule := false
+	for _, raw := range rules {
+		rule, ok := raw.(map[string]interface{})
+		if !ok || rule["outbound"] != discordRealtimeGroupTag {
+			continue
+		}
+		networks := interfaceStringSlice(rule["network"])
+		if stringSliceContains(networks, "udp") && stringSliceContains(interfaceStringSlice(rule["process_name"]), "Discord.exe") {
+			hasUDPProcessRule = true
+		}
+		if stringSliceContains(networks, "tcp") && stringSliceContains(interfaceStringSlice(rule["domain_suffix"]), "discord.media") {
+			hasVoiceGatewayRule = true
+		}
+	}
+	return hasUDPProcessRule && hasVoiceGatewayRule
+}
+
+func configOutboundByTag(outbounds []interface{}, tag string) map[string]interface{} {
+	for _, raw := range outbounds {
+		outbound, ok := raw.(map[string]interface{})
+		if ok && outbound["tag"] == tag {
+			return outbound
+		}
+	}
+	return nil
 }
 
 func (a *App) requireRouteSourceWhenFreeMethodsDisabled(configPath string) error {

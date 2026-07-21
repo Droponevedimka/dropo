@@ -41,9 +41,9 @@ func (a *App) handleClientQuickCheckFailures(results []clientQuickCheckResult) {
 			continue
 		}
 		queued[serviceTag] = true
-		if a.switchServiceToVPNFallback(serviceTag) {
-			a.writeLog(fmt.Sprintf("[FreeAccess] %s failed TUN quick check; switched service group to VPN fallback", serviceTag))
-		}
+		// Do not change the live selector on a single quick-check result. The
+		// maintenance worker first confirms the current strategy; a transient
+		// failure must leave a proven working selection untouched.
 		a.requestRouteStrategyMaintenance(fmt.Sprintf("service:%s quick-check failure: %s", serviceTag, firstNonEmpty(result.NormalError, result.ProxyError, result.StatusText)))
 	}
 }

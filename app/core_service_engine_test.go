@@ -159,6 +159,83 @@ func TestWindowsUnifiedCatalogUsesPerServiceWorkingCache(t *testing.T) {
 	}
 }
 
+func TestStartupServiceSearchLadderKeepsWorkingCachedMethodFirst(t *testing.T) {
+	ranked := rankedMethodsForService("discord")
+	if len(ranked) < 3 {
+		t.Fatalf("Discord strategy ladder is too short: %d", len(ranked))
+	}
+	cached := ranked[2]
+	ladder := startupServiceSearchLadder("discord", cached)
+	if len(ladder) != len(ranked) || ladder[0].Tag != cached.Tag {
+		t.Fatalf("startup ladder = %#v, want cached method %q first and %d unique methods", ladder, cached.Tag, len(ranked))
+	}
+	seen := map[string]bool{}
+	for _, method := range ladder {
+		if seen[method.Tag] {
+			t.Fatalf("startup ladder contains duplicate method %q", method.Tag)
+		}
+		seen[method.Tag] = true
+	}
+}
+
+func TestConfigSupportsDiscordRealtimeRoutingMigrationGate(t *testing.T) {
+	stale := map[string]interface{}{
+		"outbounds": []interface{}{
+			map[string]interface{}{"type": "direct", "tag": "direct"},
+			map[string]interface{}{"type": "selector", "tag": "auto-select", "outbounds": []interface{}{"node-a"}},
+		},
+		"route": map[string]interface{}{"rules": []interface{}{}},
+	}
+	if configSupportsDiscordRealtimeRouting(stale) {
+		t.Fatal("config without Discord realtime selectors passed the migration gate")
+	}
+
+	current := map[string]interface{}{
+		"outbounds": []interface{}{
+			map[string]interface{}{"type": "direct", "tag": "direct"},
+			map[string]interface{}{"type": "selector", "tag": "auto-select", "outbounds": []interface{}{"node-a"}},
+			map[string]interface{}{"type": "selector", "tag": discordVPNGroupTag, "outbounds": []interface{}{"node-a"}},
+			map[string]interface{}{"type": "selector", "tag": discordRealtimeGroupTag, "outbounds": []interface{}{"direct", discordVPNGroupTag}},
+		},
+		"route": map[string]interface{}{"rules": []interface{}{
+			map[string]interface{}{"process_name": []interface{}{"Discord.exe"}, "network": "udp", "outbound": discordRealtimeGroupTag},
+			map[string]interface{}{"domain_suffix": []interface{}{"discord.media"}, "network": "tcp", "outbound": discordRealtimeGroupTag},
+		}},
+	}
+	if !configSupportsDiscordRealtimeRouting(current) {
+		t.Fatal("current Discord realtime config did not pass the migration gate")
+	}
+
+	withoutVPNSelector := map[string]interface{}{
+		"outbounds": []interface{}{
+			map[string]interface{}{"type": "direct", "tag": "direct"},
+			map[string]interface{}{"type": "selector", "tag": "auto-select", "outbounds": []interface{}{"node-a"}},
+			map[string]interface{}{"type": "selector", "tag": discordRealtimeGroupTag, "outbounds": []interface{}{"direct"}},
+		},
+		"route": current["route"],
+	}
+	if configSupportsDiscordRealtimeRouting(withoutVPNSelector) {
+		t.Fatal("config with VPN candidates but no Discord VPN selector passed the migration gate")
+	}
+}
+
+func TestGeneratedFreeAccessConfigPassesDiscordRealtimeMigrationGate(t *testing.T) {
+	template := map[string]interface{}{
+		"outbounds": []interface{}{
+			map[string]interface{}{"type": "direct", "tag": "direct"},
+			map[string]interface{}{"type": "selector", "tag": "auto-select", "outbounds": []interface{}{"node-a"}},
+		},
+	}
+	builder := &ConfigBuilderForStorage{}
+	builder.addFreeAccessOutbounds(template, GlobalAppSettings{})
+	template["route"] = map[string]interface{}{
+		"rules": builder.buildFreeAccessRules(GlobalAppSettings{}, true),
+	}
+	if !configSupportsDiscordRealtimeRouting(template) {
+		t.Fatal("config produced by the current builder did not pass the Discord realtime migration gate")
+	}
+}
+
 func TestPackagedZapret2ComposedDryRun(t *testing.T) {
 	exePath := os.Getenv("DROPO_TEST_ZAPRET2_EXE")
 	if exePath == "" {

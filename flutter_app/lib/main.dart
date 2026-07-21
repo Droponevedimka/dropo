@@ -2900,6 +2900,7 @@ class _DropoHomePageState extends State<DropoHomePage>
 
   bool get connectionBusy {
     return busyTasks.containsKey('vpn-connect') ||
+        busyTasks.containsKey('discord-realtime-connect') ||
         busyTasks.containsKey('vpn-disconnect') ||
         status.connecting ||
         status.disconnecting;
@@ -3353,14 +3354,18 @@ class _DropoHomePageState extends State<DropoHomePage>
           if (id == 'app-exit' && message.trim().isNotEmpty) {
             quitProgressMessage = message;
           }
-          if (id == 'vpn-connect' || id == 'vpn-disconnect') {
+          if (id == 'vpn-connect' ||
+              id == 'discord-realtime-connect' ||
+              id == 'vpn-disconnect') {
             connectionHintDanger = false;
             connectionHint = id == 'vpn-disconnect'
                 ? (message.isEmpty ? 'Выполняется операция...' : message)
-                : '';
+                : (id == 'discord-realtime-connect' ? message : '');
             statusMessage = id == 'vpn-disconnect'
                 ? 'Отключаем VPN'
-                : 'Подключаем VPN';
+                : (id == 'discord-realtime-connect'
+                      ? 'Проверяем Discord voice'
+                      : 'Подключаем VPN');
           }
         } else {
           busyTasks.remove(id);
@@ -4454,6 +4459,9 @@ class _DropoHomePageState extends State<DropoHomePage>
     if (busyTasks.containsKey('vpn-connect')) {
       return 'Подключаем VPN';
     }
+    if (busyTasks.containsKey('discord-realtime-connect')) {
+      return 'Проверяем Discord voice';
+    }
     if (connectionBusy) {
       return status.connected ? 'VPN работает' : 'Подключаем VPN';
     }
@@ -4779,6 +4787,9 @@ class _DropoHomePageState extends State<DropoHomePage>
     }
     if (busyTasks.containsKey('vpn-connect')) {
       return 'Подключение';
+    }
+    if (busyTasks.containsKey('discord-realtime-connect')) {
+      return 'Подбор Discord voice';
     }
     if (connectionBusy) {
       return status.connected ? 'Отключение' : 'Подключение';

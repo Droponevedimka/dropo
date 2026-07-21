@@ -311,7 +311,8 @@ func (a *App) enabledTransparentServices() []FreeAccessService {
 // resolveServiceSelections builds the per-service method selection for the
 // composed engine: a cached method when present (and still valid), otherwise the
 // top-ranked method. Services without a cache entry are returned in needSearch
-// so the first-run search can find their first working method.
+// for diagnostics; startup validation itself deliberately checks every composed
+// service so a stale cached method can never bypass the initial loading gate.
 func (a *App) resolveServiceSelections(dir string, cache map[string]serviceStrategyCacheEntry) (map[string]serviceWinwsSelection, []string) {
 	selections := map[string]serviceWinwsSelection{}
 	needSearch := []string{}
@@ -449,9 +450,9 @@ func (a *App) prepareServiceWinwsDebugLog() (string, error) {
 }
 
 // startWindowsUnifiedServiceEngine composes and starts the shared winws2 engine
-// from the per-service selections (cache or top-ranked) and then, on first run,
-// searches the first working method for any service that has no cached choice.
-// Subsequent starts are instant because every service hits the cache.
+// from the per-service selections (cache or top-ranked), then validates every
+// selected service before Start returns. A working cached method wins on the
+// first round and stays unchanged; only a confirmed failure advances its ladder.
 func (a *App) startWindowsUnifiedServiceEngine(busyID string) error {
 	if a == nil || a.zapret == nil || a.storage == nil {
 		return nil
@@ -480,7 +481,7 @@ func (a *App) startWindowsUnifiedServiceEngine(busyID string) error {
 	if err := a.composeAndStartServiceEngine(selections); err != nil {
 		return fmt.Errorf("start per-service engine: %w", err)
 	}
-	a.writeLog(fmt.Sprintf("[FreeAccess] per-service engine started for %d service(s); %d need first-run search",
+	a.writeLog(fmt.Sprintf("[FreeAccess] per-service engine started for %d service(s); validating all, %d have no cached strategy",
 		len(selections), len(needSearch)))
 	if !a.winwsDebugEnabled() {
 		if marker := a.winwsDebugMarkerPath(); marker != "" {
@@ -490,17 +491,14 @@ func (a *App) startWindowsUnifiedServiceEngine(busyID string) error {
 		}
 	}
 
-	if len(needSearch) > 0 {
-		if err := a.firstRunServiceSearch(busyID, selections, needSearch); err != nil {
-			// The initial composed engine was already started successfully above.
-			// A transient probe/recomposition failure must not tear down sing-box
-			// and an otherwise usable VPN session; the manager restores the last
-			// working composed arguments and maintenance can retry later.
-			a.writeLog(fmt.Sprintf("[FreeAccess] first-run strategy search deferred after error: %v", err))
-			return nil
+	validationTags := make([]string, 0, len(selections))
+	for _, service := range DefaultFreeAccessServices {
+		if _, ok := selections[service.Tag]; ok {
+			validationTags = append(validationTags, service.Tag)
 		}
-	} else {
-		a.logServiceStrategySummary("loaded from cache")
+	}
+	if err := a.firstRunServiceSearch(busyID, selections, validationTags); err != nil {
+		return fmt.Errorf("startup service strategy validation: %w", err)
 	}
 	return nil
 }
@@ -534,8 +532,8 @@ func serviceSearchStatusList(tags []string) string {
 }
 
 // startComposedTransparentEngine starts the single Windows Unified winws2
-// process. Service selectors force probes through direct, so every uncached
-// service can run the same first-success search while sing-box TUN is active.
+// process. Service selectors force probes through direct, so every service can
+// run the same first-success validation while sing-box TUN is active.
 func (a *App) startComposedTransparentEngine(busyID string) error {
 	if a == nil || a.storage == nil {
 		return fmt.Errorf("Windows Unified storage is not initialized")
@@ -555,16 +553,19 @@ func (a *App) startComposedTransparentEngine(busyID string) error {
 	return a.startWindowsUnifiedServiceEngine(busyID)
 }
 
-// firstRunServiceSearch finds, for each uncached service, the first ranked
-// method that works. It is round-based: round R sets every still-failing service
-// to its method[R] and recomposes the engine ONCE, then probes all of them in
-// parallel. So the whole search costs at most (ladder length) restarts — not
-// (services × methods) — keeping first enable bounded even with many services.
+// firstRunServiceSearch validates each requested service and finds the first
+// ranked method that works. It is round-based: round R sets every still-failing
+// service to its method[R] and recomposes the engine ONCE, then probes all of
+// them in parallel. So the whole search costs at most (ladder length) restarts
+// — not (services × methods) — keeping first enable bounded with many services.
 // Round 0 reuses the already-running top-method engine without a restart.
 func (a *App) firstRunServiceSearch(busyID string, selections map[string]serviceWinwsSelection, needSearch []string) error {
+	ladders := make(map[string][]ServiceBypassMethod, len(needSearch))
 	maxRounds := 0
 	for _, tag := range needSearch {
-		if n := len(rankedMethodsForService(tag)); n > maxRounds {
+		ladder := startupServiceSearchLadder(tag, selections[tag].Method)
+		ladders[tag] = ladder
+		if n := len(ladder); n > maxRounds {
 			maxRounds = n
 		}
 	}
@@ -575,13 +576,13 @@ func (a *App) firstRunServiceSearch(busyID string, selections map[string]service
 			return fmt.Errorf("first-run strategy search interrupted because VPN is stopping")
 		}
 		if busyID != "" {
-			a.updateBusy(busyID, fmt.Sprintf("Ищем рабочий обход блокировки: %s", serviceSearchStatusList(pending)))
+			a.updateBusy(busyID, fmt.Sprintf("Проверяем стратегии, попытка %d/%d: %s", round+1, maxRounds, serviceSearchStatusList(pending)))
 		}
 		if round > 0 {
 			for _, tag := range pending {
-				ranked := rankedMethodsForService(tag)
-				if round < len(ranked) {
-					selections[tag] = serviceWinwsSelection{ServiceTag: tag, HostlistPath: selections[tag].HostlistPath, Method: ranked[round]}
+				ladder := ladders[tag]
+				if round < len(ladder) {
+					selections[tag] = serviceWinwsSelection{ServiceTag: tag, HostlistPath: selections[tag].HostlistPath, Method: ladder[round]}
 				}
 			}
 			if err := a.composeAndStartServiceEngine(selections); err != nil {
@@ -594,11 +595,14 @@ func (a *App) firstRunServiceSearch(busyID string, selections map[string]service
 		next := make([]string, 0, len(pending))
 		for _, tag := range pending {
 			if !failing[tag] {
-				a.cacheServiceMethod(tag, selections[tag].Method.Tag, "first-run")
+				a.cacheServiceMethod(tag, selections[tag].Method.Tag, "startup-validation")
+				if !a.switchServiceRoute(tag, "direct") {
+					return fmt.Errorf("activate confirmed startup strategy for %s", tag)
+				}
 				a.writeLog(fmt.Sprintf("[FreeAccess] %s: working method = %s", tag, selections[tag].Method.Label))
 				continue
 			}
-			if round+1 < len(rankedMethodsForService(tag)) {
+			if round+1 < len(ladders[tag]) {
 				next = append(next, tag)
 			} else {
 				a.writeLog(fmt.Sprintf("[FreeAccess] %s: no transparent method worked; using VPN/direct fallback", tag))
@@ -619,6 +623,24 @@ func (a *App) firstRunServiceSearch(busyID string, selections map[string]service
 	}
 	a.logServiceStrategySummary("first-run search complete")
 	return nil
+}
+
+// startupServiceSearchLadder keeps the current (usually cached) strategy first.
+// If it still works the startup gate never changes it; only a confirmed failure
+// advances through the remaining ranked methods.
+func startupServiceSearchLadder(serviceTag string, current ServiceBypassMethod) []ServiceBypassMethod {
+	ranked := rankedMethodsForService(serviceTag)
+	ladder := make([]ServiceBypassMethod, 0, len(ranked))
+	if strings.TrimSpace(current.Tag) != "" {
+		ladder = append(ladder, current)
+	}
+	for _, method := range ranked {
+		if method.Tag == current.Tag {
+			continue
+		}
+		ladder = append(ladder, method)
+	}
+	return ladder
 }
 
 // logServiceStrategySummary emits one line listing the chosen method per service
@@ -792,9 +814,9 @@ func (a *App) applyServiceFallbackSelectionToConfig(configPath string, result ro
 	return true
 }
 
-// retunePerServiceStrategy is the in-session, once-per-service reaction to a
-// service that stopped working: search its ladder for a new first-working
-// method, cache+prioritise it, and recompose. If nothing works, fall back to
+// retunePerServiceStrategy is the in-session reaction to a service that stopped
+// working: confirm its current strategy, then search its ladder for a new first-
+// working method, cache it, and recompose. If nothing works, fall back to
 // VPN/direct. Runs under the discovery lock so the quick-check feedback guard
 // suppresses spurious re-triggers.
 func (a *App) retunePerServiceStrategy(serviceTag, reason string) error {
@@ -813,12 +835,50 @@ func (a *App) retunePerServiceStrategy(serviceTag, reason string) error {
 	dir := a.serviceHostlistDir()
 	cache := a.loadServiceStrategyCache()
 	selections, _ := a.resolveServiceSelections(dir, cache)
-	if _, ok := selections[serviceTag]; !ok {
-		return fmt.Errorf("service %q is not handled by the transparent engine", serviceTag)
+	selection, handled := selections[serviceTag]
+	if !handled {
+		// A temporary VPN/direct fallback is not part of the composed engine. If
+		// that fallback later fails, immediately give an automatic service's free
+		// ladder another chance instead of waiting for the fallback TTL.
+		service, exists := findFreeAccessService(serviceTag)
+		if !exists || service.RequiresVPN || !serviceHasFreeBypass(serviceTag) {
+			return fmt.Errorf("service %q has no transparent strategy to retune", serviceTag)
+		}
+		settings := a.storage.GetAppSettings()
+		if !FreeMethodsAllowed(settings) {
+			return fmt.Errorf("transparent strategies are disabled for service %q", serviceTag)
+		}
+		if method := FreeAccessServiceMethod(settings, serviceTag); method == FreeAccessMethodVPN || method == FreeAccessMethodDirect {
+			return fmt.Errorf("service %q uses the explicit %s route", serviceTag, method)
+		}
+		hostlistPath, err := ensureServiceHostlist(dir, service)
+		if err != nil {
+			return fmt.Errorf("restore %s hostlist: %w", serviceTag, err)
+		}
+		ranked := rankedMethodsForService(serviceTag)
+		if len(ranked) == 0 {
+			return fmt.Errorf("service %q has an empty strategy ladder", serviceTag)
+		}
+		selection = serviceWinwsSelection{ServiceTag: serviceTag, HostlistPath: hostlistPath, Method: ranked[0]}
+		selections[serviceTag] = selection
+		if err := a.composeAndStartServiceEngine(selections); err != nil {
+			return fmt.Errorf("restore %s to transparent engine: %w", serviceTag, err)
+		}
+		if !a.probeServicesThroughEngine([]string{serviceTag})[serviceTag] {
+			a.cacheServiceMethod(serviceTag, selection.Method.Tag, "fallback-recovery")
+			if !a.switchServiceRoute(serviceTag, "direct") {
+				return fmt.Errorf("restore %s selector to confirmed transparent route", serviceTag)
+			}
+			a.writeLog(fmt.Sprintf("[FreeAccess] %s recovered from fallback with %s", serviceTag, selection.Method.Label))
+			return nil
+		}
 	}
 
 	// Confirm it actually still fails before disrupting the engine.
-	if !a.probeServicesThroughEngine([]string{serviceTag})[serviceTag] {
+	if handled && !a.probeServicesThroughEngine([]string{serviceTag})[serviceTag] {
+		if !a.switchServiceRoute(serviceTag, "direct") {
+			return fmt.Errorf("keep %s on its confirmed transparent route", serviceTag)
+		}
 		a.writeLog(fmt.Sprintf("[FreeAccess] %s already works; keeping current method", serviceTag))
 		return nil
 	}
@@ -840,6 +900,9 @@ func (a *App) retunePerServiceStrategy(serviceTag, reason string) error {
 	}
 	if err := a.composeAndStartServiceEngine(selections); err != nil {
 		return fmt.Errorf("re-compose after retune: %w", err)
+	}
+	if ok && !a.switchServiceRoute(serviceTag, "direct") {
+		return fmt.Errorf("activate confirmed transparent route for %s", serviceTag)
 	}
 	return nil
 }

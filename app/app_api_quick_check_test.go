@@ -150,7 +150,7 @@ func TestRouteStrategyMaintenanceCoalescesByService(t *testing.T) {
 	}
 }
 
-func TestRouteStrategyMaintenanceSearchesEachServiceOncePerSession(t *testing.T) {
+func TestRouteStrategyMaintenanceAllowsLaterRetryAfterCooldown(t *testing.T) {
 	app := NewApp()
 	defer close(app.routeStrategyJobs)
 
@@ -162,11 +162,21 @@ func TestRouteStrategyMaintenanceSearchesEachServiceOncePerSession(t *testing.T)
 	app.requestRouteStrategyMaintenance("service:discord second failure")
 	select {
 	case reason := <-app.routeStrategyJobs:
-		t.Fatalf("service must not be searched twice in one session, got %q", reason)
+		t.Fatalf("service must not be searched during cooldown, got %q", reason)
 	default:
 	}
 
-	// A new session resets the budget.
+	app.routeStrategyMu.Lock()
+	app.routeStrategyLastAttempt["discord"] = time.Now().Add(-routeStrategyRetryCooldown - time.Second)
+	app.routeStrategyMu.Unlock()
+	app.requestRouteStrategyMaintenance("service:discord later failure")
+	select {
+	case <-app.routeStrategyJobs:
+	default:
+		t.Fatal("later failure must allow another search after cooldown")
+	}
+
+	// A new session also resets the cooldown immediately.
 	app.resetRouteStrategySession()
 	app.requestRouteStrategyMaintenance("service:discord new session")
 	select {

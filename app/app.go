@@ -55,12 +55,11 @@ type App struct {
 	routeProbeDone    chan struct{}
 	routeStrategyJobs chan string
 	routeStrategyLoop atomic.Bool
-	// routeStrategy* enforce a single, unhurried, in-order strategy search per
-	// service for the lifetime of one VPN session: once a service has been
-	// searched (regardless of outcome) it is not searched again until the next
-	// VPN start. routeStrategyQueued de-duplicates jobs that are still pending.
+	// routeStrategy* keep per-service background searches unhurried and in order.
+	// Pending jobs are coalesced and completed searches use a cooldown, so a
+	// later confirmed failure can retune the same service again without churn.
 	routeStrategyMu             sync.Mutex
-	routeStrategyAttempted      map[string]bool
+	routeStrategyLastAttempt    map[string]time.Time
 	routeStrategyQueued         map[string]bool
 	transparentReselectionDone  bool
 	serviceStrategyCacheMu      sync.Mutex

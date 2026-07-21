@@ -91,7 +91,7 @@ func TestDiscordRealtimeLearnsDynamicTCPPortAndDetectsMissingUDPReply(t *testing
 		},
 	}
 	actions := controller.observeConnections(connections, started)
-	if len(actions) != 1 || actions[0].learnedPort != 32123 || actions[0].failure != "" {
+	if len(actions) != 2 || actions[0].learnedPort != 32123 || !actions[1].started || actions[0].failure != "" {
 		t.Fatalf("initial actions = %#v", actions)
 	}
 	actions = controller.observeConnections(connections, started.Add(discordRealtimeDialDeadline))
@@ -119,9 +119,43 @@ func TestDiscordRealtimeAcceptsBidirectionalUDP(t *testing.T) {
 		Upload:   74,
 		Download: 74,
 	}
-	controller.observeConnections([]clashConnection{connection}, started)
+	initial := controller.observeConnections([]clashConnection{connection}, started)
+	if len(initial) != 2 || !initial[0].started || !initial[1].healthy {
+		t.Fatalf("initial bidirectional actions = %#v, want loading start and healthy completion", initial)
+	}
 	if actions := controller.observeConnections([]clashConnection{connection}, started.Add(2*discordRealtimeDialDeadline)); len(actions) != 0 {
 		t.Fatalf("bidirectional UDP was treated as failed: %#v", actions)
+	}
+}
+
+func TestDiscordRealtimeInitialLoaderEndsWhenVoiceFlowDisappears(t *testing.T) {
+	controller := newDiscordRealtimeController()
+	controller.running = true
+	started := time.Unix(2100, 0)
+	connection := clashConnection{
+		ID: "voice-udp",
+		Metadata: clashConnectionMetadata{
+			Network:         "udp",
+			DestinationIP:   "203.0.113.20",
+			DestinationPort: "55000",
+			Process:         "Discord.exe",
+		},
+		Upload: 74,
+	}
+	if actions := controller.observeConnections([]clashConnection{connection}, started); len(actions) != 1 || !actions[0].started {
+		t.Fatalf("initial actions = %#v, want loader start", actions)
+	}
+	if actions := controller.observeConnections(nil, started.Add(time.Second)); len(actions) != 0 {
+		t.Fatalf("loader ended before retry grace period: %#v", actions)
+	}
+	if actions := controller.observeConnections(nil, started.Add(time.Second+discordRealtimeFlowRetention)); len(actions) != 1 || !actions[0].cancelled {
+		t.Fatalf("idle actions = %#v, want loader cancellation", actions)
+	}
+	// Cancellation is not success: a later voice attempt must start a fresh
+	// initial check instead of silently trusting an unverified strategy.
+	connection.ID = "voice-udp-retry"
+	if actions := controller.observeConnections([]clashConnection{connection}, started.Add(2*discordRealtimeFlowRetention)); len(actions) != 1 || !actions[0].started {
+		t.Fatalf("retry actions = %#v, want a new loader start", actions)
 	}
 }
 

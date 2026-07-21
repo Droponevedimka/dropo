@@ -10,6 +10,7 @@ import (
 const (
 	discordRealtimeGroupTag  = "discord-realtime"
 	discordVPNGroupTag       = "discord-vpn"
+	discordRealtimeBusyID    = "discord-realtime-connect"
 	discordRealtimeMaxTrials = 20
 )
 
