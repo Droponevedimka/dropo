@@ -419,6 +419,8 @@ type serviceWinwsSelection struct {
 	Method                ServiceBypassMethod
 	DiscordRealtime       discordRealtimeProfile
 	DiscordMediaTCPPorts  []int
+	DiscordMediaUDPPorts  []int
+	DiscordMediaUDPIPs    []string
 	DiscordMediaRawFilter string
 }
 
@@ -466,7 +468,9 @@ func composeServiceAndWireGuardWinwsArgs(selections []serviceWinwsSelection, wir
 	}
 
 	discordSelected := hasDiscordSelection(selections)
-	var discordPorts []int
+	var discordTCPPorts []int
+	var discordUDPPorts []int
+	var discordUDPIPs []string
 	var discordRawFilter string
 
 	profiles := make([][]string, 0, len(selections)*3+len(wireGuardTargets)+2)
@@ -486,14 +490,23 @@ func composeServiceAndWireGuardWinwsArgs(selections []serviceWinwsSelection, wir
 		profiles = append(profiles, http, tcp, udp)
 		if strings.EqualFold(sel.ServiceTag, "discord") {
 			realtime := effectiveDiscordRealtimeProfile(sel.DiscordRealtime)
-			discordPorts = normalizedDiscordTCPPorts(sel.DiscordMediaTCPPorts)
+			discordTCPPorts = normalizedDiscordTCPPorts(sel.DiscordMediaTCPPorts)
+			discordUDPPorts = normalizedDiscordUDPPorts(sel.DiscordMediaUDPPorts)
+			discordUDPIPs = normalizedDiscordUDPIPs(sel.DiscordMediaUDPIPs)
 			discordRawFilter = strings.TrimSpace(sel.DiscordMediaRawFilter)
 			mediaTCP := []string{
-				"--filter-tcp=" + discordTCPPortList(discordPorts),
+				"--filter-tcp=" + discordTCPPortList(discordTCPPorts),
 				"--hostlist-domains=discord.media",
 			}
 			mediaTCP = append(mediaTCP, resolve(realtime.VoiceTCPArgs)...)
 			voiceUDP := resolve(realtime.VoiceUDPArgs)
+			if udpPortList := discordUDPPortList(discordUDPPorts); udpPortList != "" {
+				mediaFilter := []string{"--filter-udp=" + udpPortList}
+				if len(discordUDPIPs) > 0 {
+					mediaFilter = append(mediaFilter, "--ipset-ip="+strings.Join(discordUDPIPs, ","))
+				}
+				voiceUDP = append(mediaFilter, resolve(realtime.VoiceMediaUDPArgs)...)
+			}
 			profiles = append(profiles, mediaTCP, voiceUDP)
 		}
 	}
@@ -522,7 +535,7 @@ func composeServiceAndWireGuardWinwsArgs(selections []serviceWinwsSelection, wir
 		ports = append(ports, port)
 	}
 	sort.Ints(ports)
-	args := zapret2BootstrapArgsWithRealtime(binPrefix, discordSelected, ports, discordPorts, discordRawFilter)
+	args := zapret2BootstrapArgsWithRealtime(binPrefix, discordSelected, ports, discordTCPPorts, discordRawFilter)
 	for i, profile := range profiles {
 		if i > 0 {
 			args = append(args, "--new")
