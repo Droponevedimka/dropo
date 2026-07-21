@@ -1,6 +1,7 @@
 package main
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -39,7 +40,8 @@ func TestDiscordSelectionKeepsStableUpstreamFiltersAfterLearningEndpoints(t *tes
 		Method:       methodMultisplit("m1", "M1", 652, 2, googleQUICPayload),
 	})
 	joined := strings.Join(composeServiceWinwsArgs([]serviceWinwsSelection{selection}, `C:\dropo\bin`), " ")
-	if !strings.Contains(joined, `--wf-raw-part=@C:\dropo\bin\windivert_part.discord_media.txt`) {
+	expectedFilter := "--wf-raw-part=@" + filepath.Join(`C:\dropo\bin`, discordMediaRawFilter)
+	if !strings.Contains(joined, expectedFilter) {
 		t.Fatalf("bundled upstream Discord filter is not used: %s", joined)
 	}
 	for _, forbidden := range []string{"32123", "--filter-udp=19328", "--ipset-ip=203.0.113.20", "--payload=all", "--out-range=-d"} {
