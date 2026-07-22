@@ -412,12 +412,23 @@ function Ensure-WireGuardWindowsDependency {
         }
         New-Item -ItemType Directory -Path $wireGuardDir | Out-Null
         foreach ($entry in $expectedFiles.GetEnumerator()) {
-            $matches = @(Get-ChildItem -LiteralPath $extractDir -Recurse -File -Filter $entry.Key)
-            if ($matches.Count -ne 1) {
-                throw "WireGuard MSI must contain exactly one $($entry.Key); found $($matches.Count)."
+            if ($entry.Key -eq "wintun.dll") {
+                # WireGuard's MSI embeds Wintun and does not expose it in an
+                # administrative extraction. Xray's official Windows archive
+                # ships the same pinned upstream Wintun DLL as a normal file.
+                $sourceFile = Join-Path $XrayDir "wintun.dll"
+                if (-not (Test-Path -LiteralPath $sourceFile -PathType Leaf)) {
+                    throw "Official Xray archive does not contain the pinned Wintun DLL."
+                }
+            } else {
+                $matches = @(Get-ChildItem -LiteralPath $extractDir -Recurse -File -Filter $entry.Key)
+                if ($matches.Count -ne 1) {
+                    throw "WireGuard MSI must contain exactly one $($entry.Key); found $($matches.Count)."
+                }
+                $sourceFile = $matches[0].FullName
             }
-            Assert-FileSHA256 -Path $matches[0].FullName -ExpectedSHA256 $entry.Value -Label "WireGuard $($entry.Key)"
-            Copy-Item -LiteralPath $matches[0].FullName -Destination (Join-Path $wireGuardDir $entry.Key)
+            Assert-FileSHA256 -Path $sourceFile -ExpectedSHA256 $entry.Value -Label "WireGuard $($entry.Key)"
+            Copy-Item -LiteralPath $sourceFile -Destination (Join-Path $wireGuardDir $entry.Key)
         }
         Download-File -Url "https://raw.githubusercontent.com/WireGuard/wireguard-windows/v$WireGuardVersion/LICENSE" -Destination (Join-Path $wireGuardDir "LICENSE")
         Write-Host "[OK] Downloaded and verified WireGuard for Windows v$WireGuardVersion" -ForegroundColor Green
