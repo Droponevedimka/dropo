@@ -430,7 +430,7 @@ function Ensure-WireGuardWindowsDependency {
             Assert-FileSHA256 -Path $sourceFile -ExpectedSHA256 $entry.Value -Label "WireGuard $($entry.Key)"
             Copy-Item -LiteralPath $sourceFile -Destination (Join-Path $wireGuardDir $entry.Key)
         }
-        Download-File -Url "https://raw.githubusercontent.com/WireGuard/wireguard-windows/v$WireGuardVersion/LICENSE" -Destination (Join-Path $wireGuardDir "LICENSE")
+        Download-File -Url "https://raw.githubusercontent.com/WireGuard/wireguard-windows/v$WireGuardVersion/COPYING" -Destination (Join-Path $wireGuardDir "LICENSE")
         Write-Host "[OK] Downloaded and verified WireGuard for Windows v$WireGuardVersion" -ForegroundColor Green
     } finally {
         Remove-Item -LiteralPath $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
