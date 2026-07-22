@@ -75,7 +75,23 @@ jobs:
             Write-Host "Tracked/untracked paths left by first build:"
             $postBuildStatus | ForEach-Object { Write-Host $_ }
           }
-          .\scripts\build\build.ps1 -Build -AppOnly -ReuseFlutterWindowsOutput -AllowDirtySource
+          $generatedFlutterFiles = @(
+            "flutter_app/windows/flutter/generated_plugin_registrant.cc",
+            "flutter_app/windows/flutter/generated_plugin_registrant.h",
+            "flutter_app/windows/flutter/generated_plugins.cmake"
+          )
+          $unexpected = @($postBuildStatus | Where-Object {
+            $path = $_.Substring(3).Replace("\", "/")
+            $path -notin $generatedFlutterFiles
+          })
+          if ($unexpected.Count -gt 0) {
+            throw "First build changed unexpected source paths: $($unexpected -join ', ')"
+          }
+          if ($postBuildStatus.Count -gt 0) {
+            git restore -- $generatedFlutterFiles
+            if ($LASTEXITCODE -ne 0) { throw "Could not restore Flutter-generated source files" }
+          }
+          .\scripts\build\build.ps1 -Build -AppOnly -ReuseFlutterWindowsOutput
           $folder = Get-ChildItem release -Directory | Where-Object Name -Like "dropo-$version-*" | Select-Object -First 1
           $secondSetup = (Get-FileHash (Join-Path $folder.FullName "dropo-Windows-Setup-x64.exe") -Algorithm SHA256).Hash
           $secondPortable = (Get-FileHash (Join-Path $folder.FullName "dropo-Windows-Portable-x64.zip") -Algorithm SHA256).Hash
