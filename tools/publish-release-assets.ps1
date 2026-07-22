@@ -121,10 +121,11 @@ if (-not $ReleaseFolder -or -not (Test-Path -LiteralPath $ReleaseFolder -PathTyp
     throw "Release folder for $version was not found. Build it locally first."
 }
 
-$windowsExe = Join-Path $ReleaseFolder "dropo-Windows-x64.exe"
+$windowsInstaller = Join-Path $ReleaseFolder "dropo-Windows-Setup-x64.exe"
+$windowsPortable = Join-Path $ReleaseFolder "dropo-Windows-Portable-x64.zip"
 $androidApk = Join-Path $ReleaseFolder "dropo-Android-arm64.apk"
 $tag = "v$version"
-$releaseAssets = @($windowsExe, $androidApk)
+$releaseAssets = @($windowsInstaller, $windowsPortable, $androidApk)
 foreach ($path in $releaseAssets) {
 	if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
 		throw "Required release asset was not found: $path"
@@ -161,13 +162,15 @@ foreach ($assetPath in $releaseAssets) {
 	Upload-ReleaseAsset -ReleaseId $release.id -Path $assetPath -ExistingAssets $release.assets
 }
 
-$windowsSha = (Get-FileHash -LiteralPath $windowsExe -Algorithm SHA256).Hash.ToLowerInvariant()
+$windowsInstallerSha = (Get-FileHash -LiteralPath $windowsInstaller -Algorithm SHA256).Hash.ToLowerInvariant()
+$windowsPortableSha = (Get-FileHash -LiteralPath $windowsPortable -Algorithm SHA256).Hash.ToLowerInvariant()
 $androidSha = (Get-FileHash -LiteralPath $androidApk -Algorithm SHA256).Hash.ToLowerInvariant()
 $body = [string]$release.body
-$body = $body.Replace("__WINDOWS_SHA256_PENDING_LOCAL_UPLOAD__", $windowsSha)
+$body = $body.Replace("__WINDOWS_INSTALLER_SHA256_PENDING_LOCAL_UPLOAD__", $windowsInstallerSha)
+$body = $body.Replace("__WINDOWS_PORTABLE_SHA256_PENDING_LOCAL_UPLOAD__", $windowsPortableSha)
 $body = $body.Replace("__ANDROID_SHA256_PENDING_LOCAL_UPLOAD__", $androidSha)
-if (-not $body.Contains($windowsSha) -or -not $body.Contains($androidSha)) {
-    $body += "`n`n### Local artifact integrity`n`nWindows SHA-256: $windowsSha`n`nAndroid SHA-256: $androidSha`n"
+if (-not $body.Contains($windowsInstallerSha) -or -not $body.Contains($windowsPortableSha) -or -not $body.Contains($androidSha)) {
+    $body += "`n`n### Local artifact integrity`n`nWindows installer SHA-256: $windowsInstallerSha`n`nWindows portable SHA-256: $windowsPortableSha`n`nAndroid SHA-256: $androidSha`n"
 }
 Invoke-GitHubApi -Method Patch -Uri "https://api.github.com/repos/$Repository/releases/$($release.id)" -Body @{ body = $body } | Out-Null
 

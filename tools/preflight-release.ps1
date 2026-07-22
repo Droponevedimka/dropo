@@ -8,6 +8,7 @@ param(
     [switch]$SkipInstall,
     [switch]$SkipFlutterChecks,
     [switch]$SkipLifecycleSmoke,
+    [switch]$RequireWindowsSigning,
     [string]$SubscriptionUrl = $env:DROPO_TEST_SUBSCRIPTION_URL,
     [string]$WireGuardConfigPath,
     [string]$ReleaseFolder
@@ -124,31 +125,21 @@ function Assert-NotRequireAdministrator {
 }
 
 function Assert-AuthenticodeSigned {
-    param([string]$ExePath)
+    param(
+        [string]$ExePath,
+        [switch]$AllowUnsigned
+    )
 
     $signature = Get-AuthenticodeSignature -FilePath $ExePath
+    if ($signature.SignerCertificate -and $signature.SignerCertificate.Subject -eq $signature.SignerCertificate.Issuer) {
+        throw "Self-signed public release binary is forbidden: $ExePath"
+    }
     if ($signature.Status -eq [System.Management.Automation.SignatureStatus]::Valid) {
         return
     }
-    $petCertPath = Join-Path $RepoRoot "scripts\signing\certificate\dropo-pet-code-signing.cer"
-    if ($signature.Status -eq [System.Management.Automation.SignatureStatus]::UnknownError -and
-        (Test-Path -LiteralPath $petCertPath -PathType Leaf) -and $signature.SignerCertificate) {
-        $petCert = [Security.Cryptography.X509Certificates.X509Certificate2]::new($petCertPath)
-        $chain = [Security.Cryptography.X509Certificates.X509Chain]::new()
-        try {
-            $chain.ChainPolicy.RevocationMode = [Security.Cryptography.X509Certificates.X509RevocationMode]::NoCheck
-            $null = $chain.Build($signature.SignerCertificate)
-            $statuses = @($chain.ChainStatus | ForEach-Object Status)
-            $onlyUntrustedRoot = $statuses.Count -gt 0 -and
-                @($statuses | Where-Object { $_ -ne [Security.Cryptography.X509Certificates.X509ChainStatusFlags]::UntrustedRoot }).Count -eq 0
-            if ($onlyUntrustedRoot -and
-                $signature.SignerCertificate.Thumbprint.Equals($petCert.Thumbprint, [StringComparison]::OrdinalIgnoreCase)) {
-                return
-            }
-        } finally {
-            $chain.Dispose()
-            $petCert.Dispose()
-        }
+    if (($AllowUnsigned -or -not $RequireWindowsSigning) -and $signature.Status -eq [System.Management.Automation.SignatureStatus]::NotSigned) {
+        Write-Host "  unsigned by policy: $([IO.Path]::GetFileName($ExePath))" -ForegroundColor DarkYellow
+        return
     }
     throw "Invalid or missing Authenticode signature on $ExePath (status: $($signature.Status))"
 }
@@ -221,14 +212,16 @@ function Invoke-ArtifactValidation {
 
     $appFolder = Join-Path $folder "dropo"
     $runtimeFolder = Join-Path $appFolder "resources"
-    $windowsExePath = Join-Path $folder "dropo-Windows-x64.exe"
+    $windowsInstallerPath = Join-Path $folder "dropo-Windows-Setup-x64.exe"
+    $windowsPortablePath = Join-Path $folder "dropo-Windows-Portable-x64.zip"
     $androidAssetName = "dropo-Android-arm64.apk"
     $androidApkPath = Join-Path $folder $androidAssetName
     $androidShaPath = Join-Path $folder "$androidAssetName.sha256"
 
     Write-Host "Release folder: $folder" -ForegroundColor Gray
     Write-Host "App folder:     $appFolder" -ForegroundColor Gray
-    Write-Host "Windows EXE:    $windowsExePath" -ForegroundColor Gray
+    Write-Host "Windows setup:  $windowsInstallerPath" -ForegroundColor Gray
+    Write-Host "Windows ZIP:    $windowsPortablePath" -ForegroundColor Gray
     Write-Host "Android APK:    $androidApkPath" -ForegroundColor Gray
 
     $dropoExe = Join-Path $appFolder "dropo.exe"
@@ -291,7 +284,8 @@ function Invoke-ArtifactValidation {
 		throw "Build provenance does not bind the trusted runtime manifest."
 	}
 	Assert-FileExists (Join-Path $runtimeFolder "resources\template.json")
-    Assert-FileExists $windowsExePath
+    Assert-FileExists $windowsInstallerPath
+    Assert-FileExists $windowsPortablePath
     Assert-NoRuntimeFiles $appFolder
 
     $androidApkExists = Test-Path $androidApkPath -PathType Leaf
@@ -309,25 +303,17 @@ function Invoke-ArtifactValidation {
     }
 
     Assert-NotRequireAdministrator $dropoExe
-    Assert-NotRequireAdministrator $windowsExePath
     Assert-NotRequireAdministrator (Join-Path $runtimeFolder "dropo-ui.exe")
     Assert-AuthenticodeSigned $dropoExe
-    Assert-AuthenticodeSigned $windowsExePath
+    Assert-AuthenticodeSigned $windowsInstallerPath
     Assert-AuthenticodeSigned (Join-Path $runtimeFolder "dropo-ui.exe")
     Assert-AuthenticodeSigned (Join-Path $runtimeFolder "dropo-core.exe")
 	foreach ($nestedPE in @(Get-ChildItem -LiteralPath (Join-Path $runtimeFolder "bin") -File | Where-Object { $_.Extension -in @(".exe", ".dll") })) {
-		Assert-AuthenticodeSigned $nestedPE.FullName
+		Assert-AuthenticodeSigned $nestedPE.FullName -AllowUnsigned
 	}
 
-    $certificateFolder = Join-Path $runtimeFolder "cert"
-    foreach ($name in @(
-        "dropo-pet-code-signing.cer",
-        "install-dropo-pet-certificate.cmd",
-        "install-dropo-pet-certificate.ps1",
-        "remove-dropo-pet-certificate.cmd",
-        "remove-dropo-pet-certificate.ps1"
-    )) {
-        Assert-FileExists (Join-Path $certificateFolder $name)
+    if (Test-Path -LiteralPath (Join-Path $runtimeFolder "cert")) {
+        throw "Public packages must not bundle a private/self-signed trust installer."
     }
 
     $rootItems = @(Get-ChildItem -Path $appFolder | ForEach-Object { $_.Name } | Sort-Object)
@@ -339,31 +325,24 @@ function Invoke-ArtifactValidation {
         throw "Portable app root must contain only dropo.exe and resources/. Got: $($rootItems -join ', ')"
     }
 
-    # Exercise the actual embedded payload without launching the application or
-    # touching the user's real AppData. The bootstrap verifies its signed
-    # manifest and every extracted file before returning from --install-only.
-    $bootstrapSmokeRoot = Join-Path $env:TEMP ("dropo-bootstrap-smoke-" + [guid]::NewGuid().ToString("N"))
-    $previousLocalAppData = [string]$env:LOCALAPPDATA
+    # Exercise the actual portable archive without launching the application or
+    # touching user state. Every executable remains covered by the runtime and
+    # launcher file-level manifests.
+    $portableSmokeRoot = Join-Path $env:TEMP ("dropo-portable-smoke-" + [guid]::NewGuid().ToString("N"))
     try {
-        $env:LOCALAPPDATA = $bootstrapSmokeRoot
-        $bootstrapProcess = Start-Process -FilePath $windowsExePath -ArgumentList "--install-only" -PassThru -Wait
-        if ($bootstrapProcess.ExitCode -ne 0) {
-            $bootstrapLog = Join-Path $bootstrapSmokeRoot "dropo\bootstrap-error.log"
-            $detail = if (Test-Path -LiteralPath $bootstrapLog) { Get-Content -LiteralPath $bootstrapLog -Raw } else { "no bootstrap error log" }
-            throw "Windows single-file extraction smoke failed (exit $($bootstrapProcess.ExitCode)): $detail"
+        Expand-Archive -LiteralPath $windowsPortablePath -DestinationPath $portableSmokeRoot -Force
+        Assert-FileExists (Join-Path $portableSmokeRoot "dropo.exe")
+        Assert-FileExists (Join-Path $portableSmokeRoot "resources\dropo-core.exe")
+        Assert-FileExists (Join-Path $portableSmokeRoot "resources\dropo-ui.exe")
+        Assert-FileExists (Join-Path $portableSmokeRoot "resources\runtime-manifest.json")
+        Assert-FileExists (Join-Path $portableSmokeRoot "resources\bin\WinDivert.dll")
+        Assert-FileExists (Join-Path $portableSmokeRoot "resources\bin\WinDivert64.sys")
+        if (Test-Path -LiteralPath (Join-Path $portableSmokeRoot "install-mode.json")) {
+            throw "Portable archive must not contain the installer mode marker."
         }
-        $installedRoot = Join-Path $bootstrapSmokeRoot "dropo\app\$version"
-        Assert-FileExists (Join-Path $installedRoot "dropo.exe")
-        Assert-FileExists (Join-Path $installedRoot "install-manifest.json")
-        Assert-FileExists (Join-Path $installedRoot "resources\dropo-core.exe")
-        Assert-FileExists (Join-Path $installedRoot "resources\dropo-ui.exe")
-        Assert-FileExists (Join-Path $installedRoot "resources\runtime-manifest.json")
-        Assert-FileExists (Join-Path $installedRoot "resources\bin\WinDivert.dll")
-        Assert-FileExists (Join-Path $installedRoot "resources\bin\WinDivert64.sys")
-        Assert-NoRuntimeFiles $installedRoot
+        Assert-NoRuntimeFiles $portableSmokeRoot
     } finally {
-        $env:LOCALAPPDATA = $previousLocalAppData
-        Remove-Item -LiteralPath $bootstrapSmokeRoot -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $portableSmokeRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
 
     return $appFolder
@@ -799,8 +778,7 @@ function Invoke-TrayLifecycleSmoke {
 
     try {
         $env:DROPO_TRAY_LABEL = $trayLabel
-        # Automated smoke tests must never display or answer the interactive
-        # self-signed certificate trust prompt.
+        # Autostart mode avoids interactive first-run UI during smoke tests.
         $process = Start-Process -FilePath $exePath -ArgumentList "--autostart" -WorkingDirectory $runtimeFolder -PassThru
         Assert-DropoProcessAlive -Process $process -ExpectedPath $exePath -Stage "after Start-Process"
         Wait-ProcessMainWindow -Process $process
@@ -853,8 +831,7 @@ function Invoke-BridgeStartupSmoke {
     }
 
     try {
-        # Automated smoke tests must never display or answer the interactive
-        # self-signed certificate trust prompt.
+        # Autostart mode avoids interactive first-run UI during smoke tests.
         $process = Start-Process -FilePath $exePath -ArgumentList "--autostart" -WorkingDirectory $runtimeFolder -WindowStyle Hidden -PassThru
         Assert-DropoProcessAlive -Process $process -ExpectedPath $exePath -Stage "after Start-Process"
 

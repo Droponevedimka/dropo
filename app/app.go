@@ -251,12 +251,24 @@ func (a *App) isShuttingDown() bool {
 // applyAutoStart applies the OS-level launch-at-logon entry. It is a package var
 // so tests can stub it out and never touch the real registry / Scheduled Task.
 var applyAutoStart = SetAutoStart
+var consumeInstallerAutoStartPreference = ConsumeInstallerAutoStartPreference
 
 func (a *App) ensureAutoStartRegistration() {
 	if a.storage == nil {
 		return
 	}
 	settings := a.storage.GetAppSettings()
+	if !settings.AutoStartPrompted {
+		if enabled, ok := consumeInstallerAutoStartPreference(); ok {
+			settings.AutoStart = enabled
+			settings.AutoStartPrompted = true
+			if err := a.storage.UpdateAppSettings(settings); err != nil {
+				a.writeLog(fmt.Sprintf("Failed to import installer autostart choice: %v", err))
+				return
+			}
+			a.writeLog(fmt.Sprintf("Imported installer autostart choice: %v", enabled))
+		}
+	}
 	// Until the user answers the first-run autostart prompt, do not touch the
 	// system autostart entry. The UI shows the prompt and then calls
 	// ResolveAutoStartPrompt, which persists the choice and applies it. This is

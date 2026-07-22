@@ -6,8 +6,8 @@ package main
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -23,24 +23,25 @@ func (a *App) CheckForUpdates() map[string]interface{} {
 	}
 
 	return map[string]interface{}{
-		"success":        true,
-		"hasUpdate":      updateInfo.Available,
-		"currentVersion": updateInfo.CurrentVersion,
-		"latestVersion":  updateInfo.Version,
-		"downloadURL":    updateInfo.DownloadURL,
-		"releaseNotes":   updateInfo.Description,
-		"publishedAt":    updateInfo.PublishedAt,
-		"releaseURL":     updateInfo.ReleaseURL,
-		"fileSize":       updateInfo.FileSize,
-		"assetName":      updateInfo.AssetName,
-		"platform":       CurrentPlatformTarget().ReleaseOS,
-		"selfUpdate":     CurrentPlatformTarget().SelfUpdate,
+		"success":          true,
+		"hasUpdate":        updateInfo.Available,
+		"currentVersion":   updateInfo.CurrentVersion,
+		"latestVersion":    updateInfo.Version,
+		"downloadURL":      updateInfo.DownloadURL,
+		"releaseNotes":     updateInfo.Description,
+		"publishedAt":      updateInfo.PublishedAt,
+		"releaseURL":       updateInfo.ReleaseURL,
+		"fileSize":         updateInfo.FileSize,
+		"assetName":        updateInfo.AssetName,
+		"platform":         CurrentPlatformTarget().ReleaseOS,
+		"selfUpdate":       runtime.GOOS == "windows" && updateInfo.DistributionMode == distributionModeInstalled,
+		"distributionMode": updateInfo.DistributionMode,
 	}
 }
 
 // DownloadAndInstallUpdate загружает и устанавливает обновление
 func (a *App) DownloadAndInstallUpdate() map[string]interface{} {
-	if !CurrentPlatformTarget().SelfUpdate {
+	if runtime.GOOS != "windows" || currentDistributionMode() != distributionModeInstalled {
 		return map[string]interface{}{
 			"success": false,
 			"error":   "Self-update is not implemented for " + CurrentPlatformTarget().ReleaseOS,
@@ -87,48 +88,22 @@ func (a *App) DownloadAndInstallUpdate() map[string]interface{} {
 
 	a.AddToLogBuffer("Update downloaded to: " + tempFile)
 
-	// Get current executable path
-	execPath, err := os.Executable()
+	stagedFile, err := stageInstalledUpdate(tempFile, updateInfo.Version, updateInfo.FileSize, updateInfo.SHA256)
 	if err != nil {
+		_ = os.Remove(tempFile)
 		return map[string]interface{}{
 			"success": false,
-			"error":   "Failed to get executable path: " + err.Error(),
+			"error":   "Failed to stage installer securely: " + err.Error(),
 		}
 	}
-	execDir := filepath.Dir(execPath)
-	installDir, launchExe := resolvePortableInstallRoot(execDir)
-
-	updateScript, scriptContent, err := makeProtectedUpdateScript(tempFile, launchExe, installDir, updateInfo.SHA256)
-	if err != nil {
+	if err := startInstalledUpdate(stagedFile, updateInfo.FileSize, updateInfo.SHA256); err != nil {
 		return map[string]interface{}{
 			"success": false,
-			"error":   "Failed to prepare update script: " + err.Error(),
+			"error":   "Failed to start installer: " + err.Error(),
 		}
 	}
 
-	if err := os.WriteFile(updateScript, []byte(scriptContent), 0755); err != nil {
-		return map[string]interface{}{
-			"success": false,
-			"error":   "Failed to create update script: " + err.Error(),
-		}
-	}
-
-	// Run the update script
-	var cmd *exec.Cmd
-	if strings.EqualFold(filepath.Ext(updateScript), ".ps1") {
-		cmd = exec.Command("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", updateScript)
-	} else {
-		cmd = exec.Command("cmd", "/C", "start", "/b", updateScript)
-	}
-	configureBackgroundCommand(cmd)
-	if err := cmd.Start(); err != nil {
-		return map[string]interface{}{
-			"success": false,
-			"error":   "Failed to start update script: " + err.Error(),
-		}
-	}
-
-	a.AddToLogBuffer("Update script started, restarting app...")
+	a.AddToLogBuffer("Update installer started; the current app will close...")
 
 	// Quit the app
 	go func() {

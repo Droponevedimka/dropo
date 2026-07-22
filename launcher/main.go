@@ -20,11 +20,6 @@ func main() {
 		return
 	}
 	root := filepath.Dir(exePath)
-	if !hasLauncherArg("--autostart") {
-		if err := maybeOfferPetCertificateTrust(root); err != nil {
-			_ = showLauncherError(fmt.Sprintf("Не удалось установить сертификат dropo. Windows продолжит показывать предупреждение издателя:\n%v", err))
-		}
-	}
 	if len(os.Args) > 1 && os.Args[1] == "--start-core" {
 		corePath := filepath.Join(root, "resources", "dropo-core.exe")
 		if err := verifyFileSHA256(corePath, expectedCoreSHA256); err != nil {

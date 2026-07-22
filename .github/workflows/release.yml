@@ -1,22 +1,22 @@
 name: Create Release Record
 
-# GitHub Actions only creates the immutable tag and the information page.
-# Verified Windows/Android artifacts are uploaded from the owner's local machine
-# with tools/publish-release-assets.ps1; no signing keys are stored in Actions.
+# GitHub Actions creates the immutable tag and information page only after the
+# clean-Windows package workflow has passed. Verified Windows/Android artifacts
+# are uploaded separately; no signing keys are stored in Actions.
 on:
-  push:
-    branches: [main]
-    paths:
-      - "version.json"
-      - ".github/workflows/release.yml"
-      - ".github/release-notes-template.md"
   workflow_dispatch: {}
+  workflow_run:
+    workflows: ["Windows package release gate"]
+    types: [completed]
 
 permissions:
   contents: read
 
 jobs:
   release-record:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main')
     runs-on: windows-latest
     permissions:
       contents: write
@@ -26,6 +26,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Reject generated contributor metadata
         shell: pwsh
@@ -76,6 +77,6 @@ jobs:
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           tag_name: ${{ steps.version.outputs.tag }}
-          target_commitish: ${{ github.sha }}
+          target_commitish: ${{ github.event.workflow_run.head_sha || github.sha }}
           name: dropo ${{ steps.version.outputs.tag }}
           body_path: release-notes.md

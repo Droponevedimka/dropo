@@ -24,6 +24,11 @@ try {
         }
 
         $path = Join-Path $RepoRoot $relativePath
+        # git ls-files also lists tracked files staged/deleted in the current
+        # worktree. Deletion is not an encoding failure.
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+            continue
+        }
         try {
             $text = $strictUtf8.GetString([IO.File]::ReadAllBytes($path))
         } catch {

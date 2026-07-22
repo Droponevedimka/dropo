@@ -18,34 +18,21 @@ The expected release certificate SHA-256 is stored in
 
 ## Local Windows release
 
-Production builds require either a certificate already installed in the
+Windows builds are left unsigned when no publicly trusted signing identity is
+configured. To sign them, use either a certificate already installed in the
 Windows certificate store (`DROPO_WINDOWS_CERT_SHA1`) or:
 
 - `DROPO_WINDOWS_PFX_PATH`
 - `DROPO_WINDOWS_PFX_PASSWORD`
 
-`-AllowUnsignedWindows` is only for local development and must not be used for
-published artifacts.
+Use `-RequireWindowsSigning` (or `DROPO_REQUIRE_WINDOWS_SIGNING=1`) in a release
+environment that must fail closed. Self-signed certificates are not bundled or
+offered to public users.
 
-For this pet project, `scripts/signing/certificate/dropo-pet-code-signing.cer` is the public self-signed
-certificate bundled under `resources/cert/` in the portable app. Its private `.pfx` backup and random
-password are stored only in `%USERPROFILE%\.dropo-signing`. Build with the
-certificate thumbprint and `-AllowUntrustedSelfSignedWindows`; this permits only
-the expected untrusted-root result before the public certificate is installed.
-
-On an interactive launch, the Windows launcher validates the bundled public
-certificate against the pinned SHA-1 fingerprint and offers once to install it
-into the current user's `Root` and `TrustedPublisher` stores. The launcher never
-installs trust silently, and it skips the prompt during autostart. If the user
-declines, the app continues and Windows may keep showing an unknown-publisher
-warning.
-
-As a manual fallback, users can inspect and run
-`resources/cert/install-dropo-pet-certificate.cmd` to trust the certificate for their current
-Windows account, and `resources/cert/remove-dropo-pet-certificate.cmd` to remove it later.
-The CMD wrappers avoid downloaded-script execution-policy problems. Installing
-a self-signed root means trusting every binary signed by the corresponding
-private key, so the private `.pfx` must never be distributed.
+For an OSI-licensed, fully open-source release, the preferred free option is the
+SignPath Foundation program. Until a project is accepted, unsigned artifacts
+are safer and less misleading than installing a private root certificate on a
+user's machine.
 
 ## GitHub release publishing
 

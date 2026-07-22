@@ -5,12 +5,11 @@ param(
     [switch]$Build,
     [switch]$Portable,
     # Build every implemented release artifact in one pass:
-    # Windows single-file app + Android arm64 APK.
+    # Windows installer + portable ZIP + Android arm64 APK.
     [switch]$All,
     [switch]$Clean,
     [string]$Version,
-    # CI mode: build the complete Windows EXE without an additional portable
-    # repack pass. Native runtime files are still embedded in the EXE.
+    # CI mode: build the complete Windows installer and portable archive.
     [switch]$AppOnly,
     # Backward-compatible alias: Windows is now built with Flutter + Go core.
     [switch]$Flutter,
@@ -23,18 +22,18 @@ param(
     # Local/offline signing aid. Production CI leaves this disabled and uses
     # the configured RFC3161 timestamp server.
     [switch]$SkipWindowsTimestamp,
-    # Development-only escape hatch. Production Windows artifacts must be
-    # Authenticode-signed and the build fails closed when no certificate exists.
+    # Backward-compatible switch. Unsigned Windows output is now the normal
+    # fallback when no publicly trusted signing identity is configured.
     [switch]$AllowUnsignedWindows,
-    # Pet-project mode: require an exact certificate thumbprint and accept only
-    # the expected "untrusted root" verification result before users install
-    # the bundled public certificate. CI never enables this switch.
-    [switch]$AllowUntrustedSelfSignedWindows
+    # Fail closed for publishers that configure a production signing gate.
+    [switch]$RequireWindowsSigning,
+    # Development-only escape hatch. Public/reproducible packages must always
+    # be built from a clean commit.
+    [switch]$AllowDirtySource
 )
 
 $ErrorActionPreference = "Stop"
 $ScriptRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
-$CertificateSourceDir = Join-Path $ScriptRoot "scripts\signing\certificate"
 
 # Read version from version.json
 function Get-VersionInfo {
@@ -71,12 +70,14 @@ function Get-LatestRelease {
     return $null
 }
 
-# Generate short random hash for build identification
 function Get-BuildHash {
-    $bytes = New-Object byte[] 4
-    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
-    $rng.GetBytes($bytes)
-    return [BitConverter]::ToString($bytes).Replace("-", "").ToLower().Substring(0, 7)
+    param([string]$Revision)
+    if ($Revision -match '^[0-9a-fA-F]{7,}$') {
+        return $Revision.Substring(0, 7).ToLowerInvariant()
+    }
+    $bytes = [Text.Encoding]::UTF8.GetBytes($Revision)
+    $digest = [Security.Cryptography.SHA256]::Create().ComputeHash($bytes)
+    return ([BitConverter]::ToString($digest).Replace("-", "").ToLowerInvariant()).Substring(0, 7)
 }
 
 function Copy-LicenseFile {
@@ -168,20 +169,49 @@ if ($PubspecAppVersion -ne [string]$VersionInfo.version) {
     throw "Version mismatch: version.json=$($VersionInfo.version), flutter_app/pubspec.yaml=$PubspecAppVersion. Keep version.json as the release source of truth."
 }
 $SingBoxVersion = $VersionInfo.singbox.version
+$SingBoxArchiveSHA256 = ([string]$VersionInfo.singbox.archiveSha256).ToLowerInvariant()
+$SingBoxExeSHA256 = ([string]$VersionInfo.singbox.executableSha256).ToLowerInvariant()
 $WireGuardVersion = $VersionInfo.wireguard.version
+$WireGuardExeSHA256 = ([string]$VersionInfo.wireguard.wireguardSha256).ToLowerInvariant()
+$WireGuardWgSHA256 = ([string]$VersionInfo.wireguard.wgSha256).ToLowerInvariant()
+$WireGuardWintunSHA256 = ([string]$VersionInfo.wireguard.wintunSha256).ToLowerInvariant()
 $WinDivertVersion = $VersionInfo.windivert.version
 $WinDivertArchiveSHA256 = ([string]$VersionInfo.windivert.archiveSha256).ToLowerInvariant()
+$WinDivertDllSHA256 = ([string]$VersionInfo.windivert.dllSha256).ToLowerInvariant()
+$WinDivertDriverSHA256 = ([string]$VersionInfo.windivert.driverSha256).ToLowerInvariant()
 $WinDivertArchiveURL = [string]$VersionInfo.windivert.url
 $XrayVersion = $VersionInfo.xray.version
+$XrayArchiveSHA256 = ([string]$VersionInfo.xray.archiveSha256).ToLowerInvariant()
+$XrayExeSHA256 = ([string]$VersionInfo.xray.executableSha256).ToLowerInvariant()
 $TgWsProxyVersion = $VersionInfo.tgwsproxy.version
-$BuildTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-$BuildHash = Get-BuildHash
+$TgWsProxyHeadlessSHA256 = ([string]$VersionInfo.tgwsproxy.headlessSha256).ToLowerInvariant()
+$TgWsProxyOfficialSHA256 = ([string]$VersionInfo.tgwsproxy.officialWindowsSha256).ToLowerInvariant()
 $SourceRevision = (& git -C $ScriptRoot rev-parse HEAD 2>$null | Select-Object -First 1)
 if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace([string]$SourceRevision)) {
     $SourceRevision = "unknown"
 }
 $SourceRevision = ([string]$SourceRevision).Trim()
 $SourceDirty = @(& git -C $ScriptRoot status --porcelain 2>$null).Count -gt 0
+$dirtyBuildAllowed = $AllowDirtySource -or $env:DROPO_ALLOW_DIRTY_BUILD -eq "1"
+$willBuildWindows = $Build -or $Flutter -or $AppOnly -or $All -or (-not $Portable -and -not $Android -and -not $Clean)
+if ($willBuildWindows -and $SourceDirty -and -not $dirtyBuildAllowed) {
+    throw "Reproducible Windows packages require a clean Git worktree. Commit the intended source first, or use -AllowDirtySource for a development-only build."
+}
+$BuildHash = Get-BuildHash -Revision $SourceRevision
+$sourceEpoch = 0L
+if ([long]::TryParse([string]$env:SOURCE_DATE_EPOCH, [ref]$sourceEpoch) -and $sourceEpoch -gt 0) {
+    $BuildDate = [DateTimeOffset]::FromUnixTimeSeconds($sourceEpoch).UtcDateTime
+} elseif ($SourceRevision -ne "unknown") {
+    $commitEpoch = (& git -C $ScriptRoot show -s --format=%ct $SourceRevision 2>$null | Select-Object -First 1)
+    if (-not [long]::TryParse(([string]$commitEpoch).Trim(), [ref]$sourceEpoch) -or $sourceEpoch -le 0) {
+        throw "Could not resolve the source commit timestamp."
+    }
+    $BuildDate = [DateTimeOffset]::FromUnixTimeSeconds($sourceEpoch).UtcDateTime
+} else {
+    $BuildDate = [DateTime]::UnixEpoch
+}
+$BuildTime = $BuildDate.ToString("yyyy-MM-dd HH:mm:ss")
+$BuildTimestampISO = $BuildDate.ToString("yyyy-MM-ddTHH:mm:ssZ")
 
 # Build folder and archive names include the app name, version and hash for unique test environments.
 $ArtifactBaseName = "dropo-$AppVersion-$BuildHash"
@@ -214,7 +244,8 @@ $ReleasePlatform = "windows"
 $ReleaseArch = "x64"
 $RequiredDepFiles = @("sing-box.exe", "xray.exe", "wireguard.exe", "wg.exe", "wintun.dll", "WinDivert.dll", "WinDivert64.sys")
 $ForbiddenDepFiles = @("winws.exe", "winws2.exe", "cygwin1.dll", "zapret-lib.lua", "zapret-antidpi.lua")
-$WindowsAppAsset = "dropo-Windows-x64.exe"
+$WindowsInstallerAsset = "dropo-Windows-Setup-x64.exe"
+$WindowsPortableAsset = "dropo-Windows-Portable-x64.zip"
 $AndroidReleaseArch = "arm64"
 $AndroidFlutterTargetPlatform = "android-arm64"
 $AndroidGoMobileTarget = "android/arm64"
@@ -223,6 +254,7 @@ $AndroidAppAsset = "dropo-Android-$AndroidReleaseArch.apk"
 
 function Ensure-SingBoxWindowsDependency {
     if (Test-Path $SingBoxExe) {
+        Assert-FileSHA256 -Path $SingBoxExe -ExpectedSHA256 $SingBoxExeSHA256 -Label "sing-box executable"
         return
     }
 
@@ -233,6 +265,7 @@ function Ensure-SingBoxWindowsDependency {
     New-Item -ItemType Directory -Path $tmpDir | Out-Null
     try {
         Download-File -Url $archiveUrl -Destination $zipPath
+        Assert-FileSHA256 -Path $zipPath -ExpectedSHA256 $SingBoxArchiveSHA256 -Label "sing-box archive"
         if (-not (Test-Path $SingBoxDir)) {
             New-Item -ItemType Directory -Path $SingBoxDir | Out-Null
         }
@@ -245,6 +278,7 @@ function Ensure-SingBoxWindowsDependency {
         if (-not (Test-Path $SingBoxExe)) {
             throw "Downloaded archive did not contain expected file: $SingBoxExe"
         }
+        Assert-FileSHA256 -Path $SingBoxExe -ExpectedSHA256 $SingBoxExeSHA256 -Label "sing-box executable"
         Write-Host "[OK] Downloaded sing-box.exe v$SingBoxVersion" -ForegroundColor Green
     } finally {
         Remove-Item -LiteralPath $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
@@ -254,6 +288,8 @@ function Ensure-SingBoxWindowsDependency {
 function Ensure-WinDivertWindowsDependency {
     $expected = Join-Path $WinDivertX64Dir "WinDivert.dll"
     if (Test-Path $expected) {
+        Assert-FileSHA256 -Path $expected -ExpectedSHA256 $WinDivertDllSHA256 -Label "WinDivert DLL"
+        Assert-FileSHA256 -Path (Join-Path $WinDivertX64Dir "WinDivert64.sys") -ExpectedSHA256 $WinDivertDriverSHA256 -Label "WinDivert driver"
         return
     }
     if ($WinDivertArchiveSHA256 -notmatch '^[0-9a-f]{64}$') {
@@ -283,10 +319,128 @@ function Ensure-WinDivertWindowsDependency {
         if (-not (Test-Path $expected)) {
             throw "Downloaded archive did not contain expected file: $expected"
         }
+        Assert-FileSHA256 -Path $expected -ExpectedSHA256 $WinDivertDllSHA256 -Label "WinDivert DLL"
+        Assert-FileSHA256 -Path (Join-Path $WinDivertX64Dir "WinDivert64.sys") -ExpectedSHA256 $WinDivertDriverSHA256 -Label "WinDivert driver"
         Write-Host "[OK] Downloaded and SHA-256 verified official WinDivert v$WinDivertVersion" -ForegroundColor Green
     } finally {
         Remove-Item -LiteralPath $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
     }
+}
+
+function Assert-FileSHA256 {
+    param(
+        [string]$Path,
+        [string]$ExpectedSHA256,
+        [string]$Label
+    )
+    if ($ExpectedSHA256 -notmatch '^[0-9a-f]{64}$') {
+        throw "$Label has no pinned SHA-256 in version.json."
+    }
+    $actual = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actual -ne $ExpectedSHA256) {
+        throw "$Label SHA-256 mismatch: expected $ExpectedSHA256, got $actual"
+    }
+}
+
+function Ensure-XrayWindowsDependency {
+    if (Test-Path -LiteralPath $XrayExe -PathType Leaf) {
+        Assert-FileSHA256 -Path $XrayExe -ExpectedSHA256 $XrayExeSHA256 -Label "Xray executable"
+        return
+    }
+    $tmpDir = Join-Path $env:TEMP ("dropo-xray-" + [Guid]::NewGuid().ToString("N"))
+    $zipPath = Join-Path $tmpDir "Xray-windows-64.zip"
+    try {
+        New-Item -ItemType Directory -Path $tmpDir | Out-Null
+        Download-File -Url "https://github.com/XTLS/Xray-core/releases/download/v$XrayVersion/Xray-windows-64.zip" -Destination $zipPath
+        Assert-FileSHA256 -Path $zipPath -ExpectedSHA256 $XrayArchiveSHA256 -Label "Xray archive"
+        if (Test-Path -LiteralPath $XrayDir) {
+            Remove-Item -LiteralPath $XrayDir -Recurse -Force
+        }
+        New-Item -ItemType Directory -Path $XrayDir | Out-Null
+        Expand-Archive -LiteralPath $zipPath -DestinationPath $XrayDir -Force
+        if (-not (Test-Path -LiteralPath $XrayExe -PathType Leaf)) {
+            throw "Official Xray archive does not contain xray.exe."
+        }
+        Assert-FileSHA256 -Path $XrayExe -ExpectedSHA256 $XrayExeSHA256 -Label "Xray executable"
+        Write-Host "[OK] Downloaded and verified Xray-core v$XrayVersion" -ForegroundColor Green
+    } finally {
+        Remove-Item -LiteralPath $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Ensure-WireGuardWindowsDependency {
+    $wireGuardDir = Join-Path $DepsDir "wireguard-windows-v$WireGuardVersion"
+    $expectedFiles = [ordered]@{
+        "wireguard.exe" = $WireGuardExeSHA256
+        "wg.exe"        = $WireGuardWgSHA256
+        "wintun.dll"    = $WireGuardWintunSHA256
+    }
+    $complete = $true
+    foreach ($entry in $expectedFiles.GetEnumerator()) {
+        $candidate = Join-Path $wireGuardDir $entry.Key
+        if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+            $complete = $false
+            break
+        }
+        Assert-FileSHA256 -Path $candidate -ExpectedSHA256 $entry.Value -Label "WireGuard $($entry.Key)"
+    }
+    if ($complete) {
+        return
+    }
+
+    $tmpDir = Join-Path $env:TEMP ("dropo-wireguard-" + [Guid]::NewGuid().ToString("N"))
+    $msiPath = Join-Path $tmpDir "wireguard-amd64-$WireGuardVersion.msi"
+    $extractDir = Join-Path $tmpDir "extract"
+    try {
+        New-Item -ItemType Directory -Path $tmpDir | Out-Null
+        Download-File -Url "https://download.wireguard.com/windows-client/wireguard-amd64-$WireGuardVersion.msi" -Destination $msiPath
+        $signature = Get-AuthenticodeSignature -LiteralPath $msiPath
+        if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid -or
+            -not $signature.SignerCertificate -or
+            $signature.SignerCertificate.Subject -notmatch 'WireGuard') {
+            throw "Official WireGuard MSI has no valid WireGuard Authenticode signature."
+        }
+        New-Item -ItemType Directory -Path $extractDir | Out-Null
+        $process = Start-Process msiexec.exe -ArgumentList @('/a', ('"' + $msiPath + '"'), '/qn', ('TARGETDIR="' + $extractDir + '"')) -Wait -PassThru
+        if ($process.ExitCode -ne 0) {
+            throw "WireGuard administrative MSI extraction failed with exit code $($process.ExitCode)."
+        }
+        if (Test-Path -LiteralPath $wireGuardDir) {
+            Remove-Item -LiteralPath $wireGuardDir -Recurse -Force
+        }
+        New-Item -ItemType Directory -Path $wireGuardDir | Out-Null
+        foreach ($entry in $expectedFiles.GetEnumerator()) {
+            $matches = @(Get-ChildItem -LiteralPath $extractDir -Recurse -File -Filter $entry.Key)
+            if ($matches.Count -ne 1) {
+                throw "WireGuard MSI must contain exactly one $($entry.Key); found $($matches.Count)."
+            }
+            Assert-FileSHA256 -Path $matches[0].FullName -ExpectedSHA256 $entry.Value -Label "WireGuard $($entry.Key)"
+            Copy-Item -LiteralPath $matches[0].FullName -Destination (Join-Path $wireGuardDir $entry.Key)
+        }
+        Download-File -Url "https://raw.githubusercontent.com/WireGuard/wireguard-windows/v$WireGuardVersion/LICENSE" -Destination (Join-Path $wireGuardDir "LICENSE")
+        Write-Host "[OK] Downloaded and verified WireGuard for Windows v$WireGuardVersion" -ForegroundColor Green
+    } finally {
+        Remove-Item -LiteralPath $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Ensure-TgWsProxyWindowsDependency {
+    $tgDir = Join-Path $DepsDir "tg-ws-proxy-v$TgWsProxyVersion"
+    $headless = Join-Path $tgDir "TgWsProxy_headless_windows.exe"
+    $official = Join-Path $tgDir "TgWsProxy_windows.exe"
+    if (Test-Path -LiteralPath $headless -PathType Leaf) {
+        Assert-FileSHA256 -Path $headless -ExpectedSHA256 $TgWsProxyHeadlessSHA256 -Label "tg-ws-proxy headless executable"
+        return
+    }
+    if (Test-Path -LiteralPath $official -PathType Leaf) {
+        Assert-FileSHA256 -Path $official -ExpectedSHA256 $TgWsProxyOfficialSHA256 -Label "tg-ws-proxy official executable"
+        return
+    }
+    New-Item -ItemType Directory -Path $tgDir -Force | Out-Null
+    Download-File -Url "https://github.com/Flowseal/tg-ws-proxy/releases/download/v$TgWsProxyVersion/TgWsProxy_windows.exe" -Destination $official
+    Assert-FileSHA256 -Path $official -ExpectedSHA256 $TgWsProxyOfficialSHA256 -Label "tg-ws-proxy official executable"
+    Download-File -Url "https://raw.githubusercontent.com/Flowseal/tg-ws-proxy/v$TgWsProxyVersion/LICENSE" -Destination (Join-Path $tgDir "LICENSE")
+    Write-Host "[OK] Downloaded and verified tg-ws-proxy v$TgWsProxyVersion" -ForegroundColor Green
 }
 
 # Clean build
@@ -307,76 +461,94 @@ function New-AppOnlyArchive {
         [string]$DestinationZip
     )
 
-    $stageDir = Join-Path $env:TEMP ("dropo-appzip-" + [Guid]::NewGuid().ToString("N"))
-    New-Item -ItemType Directory -Path $stageDir | Out-Null
+    New-DeterministicZip -SourceDirectory $SourceAppFolder -DestinationZip $DestinationZip
+}
+
+function New-DeterministicZip {
+    param(
+        [string]$SourceDirectory,
+        [string]$DestinationZip
+    )
+
+    Add-Type -AssemblyName System.IO.Compression
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $sourceRoot = (Resolve-Path -LiteralPath $SourceDirectory).Path.TrimEnd('\')
+    if (Test-Path -LiteralPath $DestinationZip) {
+        Remove-Item -LiteralPath $DestinationZip -Force
+    }
+    $zipParent = Split-Path -Parent $DestinationZip
+    if ($zipParent -and -not (Test-Path -LiteralPath $zipParent)) {
+        New-Item -ItemType Directory -Path $zipParent -Force | Out-Null
+    }
+    $fileStream = [IO.File]::Open($DestinationZip, [IO.FileMode]::CreateNew, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+    $archive = [IO.Compression.ZipArchive]::new($fileStream, [IO.Compression.ZipArchiveMode]::Create, $false)
     try {
-        Copy-Item -Path (Join-Path $SourceAppFolder "*") -Destination $stageDir -Recurse -Force
-        if (Test-Path $DestinationZip) { Remove-Item $DestinationZip -Force }
-        Compress-Archive -Path (Get-ChildItem -Path $stageDir).FullName -DestinationPath $DestinationZip -CompressionLevel Optimal
+        $entryTime = [DateTimeOffset]::new($BuildDate)
+        if ($entryTime.Year -lt 1980) {
+            $entryTime = [DateTimeOffset]::new([DateTime]::new(1980, 1, 1, 0, 0, 0, [DateTimeKind]::Utc))
+        }
+        foreach ($file in @(Get-ChildItem -LiteralPath $sourceRoot -Recurse -File | Sort-Object FullName)) {
+            $relative = $file.FullName.Substring($sourceRoot.Length).TrimStart([char[]]"\/").Replace('\', '/')
+            $entry = $archive.CreateEntry($relative, [IO.Compression.CompressionLevel]::Optimal)
+            $entry.LastWriteTime = $entryTime
+            $input = [IO.File]::OpenRead($file.FullName)
+            $output = $entry.Open()
+            try {
+                $input.CopyTo($output)
+            } finally {
+                $output.Dispose()
+                $input.Dispose()
+            }
+        }
     } finally {
-        Remove-Item -LiteralPath $stageDir -Recurse -Force -ErrorAction SilentlyContinue
+        $archive.Dispose()
+        $fileStream.Dispose()
     }
 }
 
-function New-WindowsSingleExecutable {
+function Get-InnoSetupCommand {
+    $fromPath = Get-Command ISCC.exe -ErrorAction SilentlyContinue
+    if ($fromPath) {
+        return $fromPath.Source
+    }
+    foreach ($candidate in @(
+        (Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 6\ISCC.exe"),
+        (Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe"),
+        (Join-Path $env:ProgramFiles "Inno Setup 6\ISCC.exe")
+    )) {
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+            return $candidate
+        }
+    }
+    return $null
+}
+
+function New-WindowsInstaller {
     param(
         [string]$SourceAppFolder,
         [string]$DestinationExe,
         [string]$PackageVersion
     )
 
-    $stageDir = Join-Path $env:TEMP ("dropo-appstage-" + [Guid]::NewGuid().ToString("N"))
-    $bootstrapDir = Join-Path $env:TEMP ("dropo-bootstrap-" + [Guid]::NewGuid().ToString("N"))
-    $payloadZip = Join-Path $bootstrapDir "payload.zip"
-    New-Item -ItemType Directory -Path $stageDir | Out-Null
-    New-Item -ItemType Directory -Path $bootstrapDir | Out-Null
-    try {
-        Copy-Item -Path (Join-Path $SourceAppFolder "*") -Destination $stageDir -Recurse -Force
-        $manifestFiles = @()
-        foreach ($file in @(Get-ChildItem -LiteralPath $stageDir -Recurse -File | Sort-Object FullName)) {
-            $relative = $file.FullName.Substring($stageDir.Length).TrimStart([char[]]"\/").Replace('\', '/')
-            $manifestFiles += [ordered]@{
-                path   = $relative
-                size   = [long]$file.Length
-                sha256 = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-            }
-        }
-        $installManifest = [ordered]@{
-            version = $PackageVersion
-            files   = $manifestFiles
-        }
-        $manifestPath = Join-Path $stageDir "install-manifest.json"
-        [System.IO.File]::WriteAllText($manifestPath, ($installManifest | ConvertTo-Json -Depth 10), (New-Object System.Text.UTF8Encoding($false)))
-        $manifestSHA256 = (Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
-
-        Compress-Archive -Path (Get-ChildItem -LiteralPath $stageDir).FullName -DestinationPath $payloadZip -CompressionLevel Optimal
-        $payloadSHA256 = (Get-FileHash -LiteralPath $payloadZip -Algorithm SHA256).Hash.ToLowerInvariant()
-
-        Copy-Item -Path (Join-Path $ScriptRoot "bootstrap\*.go") -Destination $bootstrapDir -Force
-        Copy-Item -LiteralPath (Join-Path $ScriptRoot "bootstrap\go.mod") -Destination $bootstrapDir -Force
-        $launcherResource = Join-Path $ScriptRoot "launcher\dropo_icon_windows_amd64.syso"
-        if (Test-Path -LiteralPath $launcherResource -PathType Leaf) {
-            Copy-Item -LiteralPath $launcherResource -Destination $bootstrapDir -Force
-        }
-
-        if (Test-Path -LiteralPath $DestinationExe) {
-            Remove-Item -LiteralPath $DestinationExe -Force
-        }
-        Push-Location $bootstrapDir
-        try {
-            $bootstrapLdflags = "-X 'main.appVersion=$PackageVersion' -X 'main.expectedPayloadSHA256=$payloadSHA256' -X 'main.expectedManifestSHA256=$manifestSHA256' -s -w -H=windowsgui"
-            & go build -tags releasepayload -ldflags $bootstrapLdflags -o $DestinationExe .
-            if ($LASTEXITCODE -ne 0) {
-                throw "Windows single-file bootstrap build failed."
-            }
-        } finally {
-            Pop-Location
-        }
-        Invoke-WindowsCodeSigning -Paths @($DestinationExe)
-    } finally {
-        Remove-Item -LiteralPath $stageDir -Recurse -Force -ErrorAction SilentlyContinue
-        Remove-Item -LiteralPath $bootstrapDir -Recurse -Force -ErrorAction SilentlyContinue
+    $iscc = Get-InnoSetupCommand
+    if (-not $iscc) {
+        throw "Inno Setup 6 was not found. Install it with: winget install --id JRSoftware.InnoSetup -e"
     }
+    $script = Join-Path $ScriptRoot "packaging\windows\dropo.iss"
+    $setupIcon = Join-Path $ScriptRoot "flutter_app\windows\runner\resources\app_icon.ico"
+    if (-not (Test-Path -LiteralPath $setupIcon -PathType Leaf)) {
+        throw "Windows installer icon was not found: $setupIcon"
+    }
+    $outputDir = Split-Path -Parent $DestinationExe
+    $baseName = [IO.Path]::GetFileNameWithoutExtension($DestinationExe)
+    & $iscc "/DSourceDir=$SourceAppFolder" "/DOutputDir=$outputDir" "/DAppVersion=$PackageVersion" "/DSetupBaseName=$baseName" "/DSetupIconFile=$setupIcon" $script
+    if ($LASTEXITCODE -ne 0) {
+        throw "Inno Setup compilation failed with exit code $LASTEXITCODE."
+    }
+    if (-not (Test-Path -LiteralPath $DestinationExe -PathType Leaf)) {
+        throw "Inno Setup did not create the expected installer: $DestinationExe"
+    }
+    Invoke-WindowsCodeSigning -Paths @($DestinationExe)
 }
 
 function Get-SignToolCommand {
@@ -401,22 +573,18 @@ function Invoke-WindowsCodeSigning {
     $pfxPath = [string]$env:DROPO_WINDOWS_PFX_PATH
     $pfxPassword = [string]$env:DROPO_WINDOWS_PFX_PASSWORD
     $certificateSha1 = ([string]$env:DROPO_WINDOWS_CERT_SHA1) -replace '\s', ''
-    if ($AllowUntrustedSelfSignedWindows -and [string]::IsNullOrWhiteSpace($certificateSha1)) {
-        $bundledCertificatePath = Join-Path $CertificateSourceDir "dropo-pet-code-signing.cer"
-        if (Test-Path -LiteralPath $bundledCertificatePath -PathType Leaf) {
-            $bundledCertificate = [Security.Cryptography.X509Certificates.X509Certificate2]::new($bundledCertificatePath)
-            $certificateSha1 = $bundledCertificate.Thumbprint
-        }
-    }
     $hasPfx = -not [string]::IsNullOrWhiteSpace($pfxPath)
     $hasCertificateSha1 = -not [string]::IsNullOrWhiteSpace($certificateSha1)
 
     if (-not $hasPfx -and -not $hasCertificateSha1) {
-        if ($AllowUnsignedWindows) {
-            Write-Host "[WARNING] Windows binaries are unsigned (-AllowUnsignedWindows). Do not publish this build." -ForegroundColor Yellow
-            return
+        if ($RequireWindowsSigning -or $env:DROPO_REQUIRE_WINDOWS_SIGNING -eq "1") {
+            throw "Windows signing is required, but no public certificate is configured."
         }
-        throw "Windows release signing is required. Set DROPO_WINDOWS_CERT_SHA1, or DROPO_WINDOWS_PFX_PATH and DROPO_WINDOWS_PFX_PASSWORD. Use -AllowUnsignedWindows only for local development."
+        if (-not $script:UnsignedWindowsNoticeShown) {
+            Write-Host "[WARNING] No public Windows signing identity configured; Windows artifacts will remain unsigned." -ForegroundColor Yellow
+            $script:UnsignedWindowsNoticeShown = $true
+        }
+        return
     }
     if ($hasPfx -and (-not (Test-Path -LiteralPath $pfxPath -PathType Leaf))) {
         throw "Windows signing certificate not found: $pfxPath"
@@ -424,10 +592,6 @@ function Invoke-WindowsCodeSigning {
     if ($hasPfx -and [string]::IsNullOrWhiteSpace($pfxPassword)) {
         throw "DROPO_WINDOWS_PFX_PASSWORD is required with DROPO_WINDOWS_PFX_PATH."
     }
-    if ($AllowUntrustedSelfSignedWindows -and -not $hasCertificateSha1) {
-        throw "-AllowUntrustedSelfSignedWindows requires an exact certificate thumbprint or dropo-pet-code-signing.cer."
-    }
-
     $signTool = Get-SignToolCommand
     if (-not $signTool) {
         throw "signtool.exe was not found. Install the Windows SDK signing tools."
@@ -457,47 +621,9 @@ function Invoke-WindowsCodeSigning {
         }
         & $signTool verify /pa /all $path | Out-Null
         if ($LASTEXITCODE -ne 0) {
-            if (-not $AllowUntrustedSelfSignedWindows) {
-                throw "Authenticode verification failed for $path (exit code $LASTEXITCODE)."
-            }
-            $signature = Get-AuthenticodeSignature -FilePath $path
-            $actualThumbprint = ([string]$signature.SignerCertificate.Thumbprint) -replace '\s', ''
-            $chain = [Security.Cryptography.X509Certificates.X509Chain]::new()
-            try {
-                $chain.ChainPolicy.RevocationMode = [Security.Cryptography.X509Certificates.X509RevocationMode]::NoCheck
-                $null = $chain.Build($signature.SignerCertificate)
-                $chainStatuses = @($chain.ChainStatus | ForEach-Object Status)
-                $untrustedRoot = $signature.Status -eq [System.Management.Automation.SignatureStatus]::UnknownError -and
-                    $chainStatuses.Count -gt 0 -and
-                    @($chainStatuses | Where-Object { $_ -ne [Security.Cryptography.X509Certificates.X509ChainStatusFlags]::UntrustedRoot }).Count -eq 0
-            } finally {
-                $chain.Dispose()
-            }
-            if (-not $untrustedRoot -or -not $actualThumbprint.Equals($certificateSha1, [StringComparison]::OrdinalIgnoreCase)) {
-                throw "Self-signed Authenticode verification failed for $path (status: $($signature.Status), thumbprint: $actualThumbprint)."
-            }
-            Write-Host "[WARNING] Signature integrity and thumbprint verified; root is not trusted until the bundled certificate is installed." -ForegroundColor Yellow
+            throw "Authenticode verification failed for $path (exit code $LASTEXITCODE)."
         }
         Write-Host "[OK] Signed $([IO.Path]::GetFileName($path))" -ForegroundColor Green
-    }
-}
-
-function Copy-PetCertificateBundle {
-    param([string]$Destination)
-
-    $certificateDestination = Join-Path $Destination "resources\cert"
-    New-Item -ItemType Directory -Path $certificateDestination -Force | Out-Null
-    foreach ($name in @(
-        "dropo-pet-code-signing.cer",
-        "install-dropo-pet-certificate.cmd",
-        "install-dropo-pet-certificate.ps1",
-        "remove-dropo-pet-certificate.cmd",
-        "remove-dropo-pet-certificate.ps1"
-    )) {
-        $source = Join-Path $CertificateSourceDir $name
-        if (Test-Path -LiteralPath $source -PathType Leaf) {
-            Copy-Item -LiteralPath $source -Destination (Join-Path $certificateDestination $name) -Force
-        }
     }
 }
 
@@ -520,12 +646,19 @@ function Build-Application {
     # Every Windows artifact is self-contained, including CI/AppOnly requests.
     Ensure-SingBoxWindowsDependency
     Ensure-WinDivertWindowsDependency
+    Ensure-XrayWindowsDependency
+    Ensure-WireGuardWindowsDependency
+    Ensure-TgWsProxyWindowsDependency
     # Every build, including AppOnly/CI builds, verifies the repository-owned
     # blocked catalog and refreshes it when upstream published a new release.
     # End-user startup never downloads routing data.
     & (Join-Path $ScriptRoot "scripts\filters\update-blocked-lists.ps1") -RepositoryRoot $ScriptRoot -SingBoxPath $SingBoxExe
     if ($LASTEXITCODE -ne 0) {
         throw "Bundled blocked-list update failed with exit code $LASTEXITCODE"
+    }
+    $postCatalogDirty = @(& git -C $ScriptRoot status --porcelain 2>$null).Count -gt 0
+    if ($postCatalogDirty -and -not $dirtyBuildAllowed) {
+        throw "The blocked catalog changed during the build. Review and commit the refreshed catalog, then rebuild from that clean commit."
     }
 
     # Keep release/ clean: every new build removes ALL previous build containers
@@ -577,7 +710,7 @@ function Build-Application {
     Push-Location $AppDir
     try {
         Write-Host "Building dropo-core.exe $AppVersion (hash: $BuildHash)..." -ForegroundColor Gray
-        & go build -ldflags $ldflags -o (Join-Path $RuntimeFolder "dropo-core.exe") .
+        & go build -trimpath -buildvcs=false -ldflags $ldflags -o (Join-Path $RuntimeFolder "dropo-core.exe") .
 
         if ($LASTEXITCODE -ne 0) {
             Write-Host "[ERROR] Go core build failed!" -ForegroundColor Red
@@ -629,7 +762,7 @@ function Build-Application {
     try {
         Write-Host "Building dropo launcher..." -ForegroundColor Gray
         $launcherLdflags = "-X 'main.expectedCoreSHA256=$coreSHA256' -X 'main.expectedUISHA256=$uiSHA256' -s -w -H=windowsgui"
-        & go build -ldflags $launcherLdflags -o (Join-Path $AppFolder "dropo.exe") .
+        & go build -trimpath -buildvcs=false -ldflags $launcherLdflags -o (Join-Path $AppFolder "dropo.exe") .
         if ($LASTEXITCODE -ne 0) {
             Write-Host "[ERROR] dropo launcher build failed!" -ForegroundColor Red
             exit 1
@@ -640,9 +773,6 @@ function Build-Application {
     Write-Host "[OK] Built launcher dropo.exe" -ForegroundColor Green
 
     Invoke-WindowsCodeSigning -Paths @((Join-Path $AppFolder "dropo.exe"))
-    if ($AllowUntrustedSelfSignedWindows) {
-        Copy-PetCertificateBundle -Destination $AppFolder
-    }
 
     # Create bin directory for sing-box
     $binDir = Join-Path $RuntimeFolder "bin"
@@ -695,9 +825,9 @@ function Build-Application {
         Write-Host "[WARNING] xray.exe not found at: $XrayExe" -ForegroundColor Yellow
     }
 
-    # Bundle the locally cached tg-ws-proxy dependency (local
-    # MTProto-over-WebSocket proxy for Telegram). The upstream repository is no
-    # longer publicly available, so builds must not depend on its URLs.
+    # Bundle the pinned tg-ws-proxy dependency (local MTProto-over-WebSocket
+    # proxy for Telegram). Prefer the verified headless build when present;
+    # clean builders use the verified official upstream Windows release.
     $TgWsProxyDir = Join-Path $DepsDir "tg-ws-proxy-v$TgWsProxyVersion"
     $TgWsProxyHeadlessSrc = Join-Path $TgWsProxyDir "TgWsProxy_headless_windows.exe"
     $TgWsProxyTraySrc = Join-Path $TgWsProxyDir "TgWsProxy_windows.exe"
@@ -719,16 +849,14 @@ function Build-Application {
     }
 
     # Defender evaluates extracted child PE files independently from the outer
-    # signed installer. Preserve valid upstream signatures and sign only the
-    # otherwise unsigned EXE/DLL payloads with the same publisher identity as
-    # Dropo before their hashes enter the trusted runtime manifest.
+    # installer. Preserve upstream signatures and report unsigned dependencies,
+    # but never re-sign third-party files as though dropo authored them.
     $unsignedNestedPE = @(Get-ChildItem -LiteralPath $binDir -File | Where-Object {
         $_.Extension -in @(".exe", ".dll") -and
         (Get-AuthenticodeSignature -FilePath $_.FullName).Status -eq [System.Management.Automation.SignatureStatus]::NotSigned
     } | Select-Object -ExpandProperty FullName)
     if ($unsignedNestedPE.Count -gt 0) {
-        Invoke-WindowsCodeSigning -Paths $unsignedNestedPE
-        Write-Host "[OK] Signed $($unsignedNestedPE.Count) previously unsigned nested PE runtime file(s)" -ForegroundColor Green
+        Write-Host "[INFO] $($unsignedNestedPE.Count) upstream PE runtime file(s) are unsigned and remain attributed to upstream." -ForegroundColor DarkYellow
     }
     # tg-ws-proxy is MIT licensed; ship the locally cached license notice.
     $TgWsProxyLicense = Join-Path $TgWsProxyDir "LICENSE"
@@ -851,7 +979,7 @@ function Build-Application {
     Write-Host "[OK] Wrote trusted runtime manifest (version=$RuntimeVersion, files=$($runtimeManifestFiles.Count))" -ForegroundColor Green
 
     # A compact SPDX 2.3 software bill of materials travels inside the signed
-    # single-file package. It describes every native runtime file by SHA-256 and
+    # Windows packages. It describes every native runtime file by SHA-256 and
     # the independently versioned components that produced the bundle.
     $spdxSHA1Values = @(Get-ChildItem -LiteralPath $binDir -Recurse -File | Sort-Object FullName | ForEach-Object {
         (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA1).Hash.ToLowerInvariant()
@@ -887,7 +1015,7 @@ function Build-Application {
         SPDXID = "SPDXRef-DOCUMENT"
         name = "dropo-$AppVersion-windows-x64"
         documentNamespace = "https://k-ampus.dev/spdx/dropo/$AppVersion/$BuildHash"
-        creationInfo = [ordered]@{ created = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ"); creators = @("Organization: Droponevedimka") }
+        creationInfo = [ordered]@{ created = $BuildTimestampISO; creators = @("Organization: Droponevedimka") }
         packages = $spdxPackages
         files = $spdxFiles
         relationships = $spdxRelationships
@@ -895,16 +1023,16 @@ function Build-Application {
     $spdxPath = Join-Path $RuntimeFolder "dropo-sbom.spdx.json"
     [System.IO.File]::WriteAllText($spdxPath, ($spdxDocument | ConvertTo-Json -Depth 12), (New-Object System.Text.UTF8Encoding($false)))
 
-    # This provenance statement is intentionally local and self-contained. Its
-    # trust comes from being embedded in the Authenticode-signed package; it
-    # records the exact source revision and runtime-manifest subject.
+    # This provenance statement is intentionally local and self-contained. It
+    # records the exact source revision and runtime-manifest subject; a public
+    # Authenticode identity strengthens origin when one is configured.
     $provenance = [ordered]@{
         _type = "https://in-toto.io/Statement/v1"
         subject = @([ordered]@{ name = "runtime-manifest.json"; digest = [ordered]@{ sha256 = $runtimeManifestSHA256 } })
         predicateType = "https://slsa.dev/provenance/v1"
         predicate = [ordered]@{
             buildDefinition = [ordered]@{
-                buildType = "https://k-ampus.dev/build/windows-single-exe/v1"
+                buildType = "https://k-ampus.dev/build/windows-installer-portable/v1"
                 externalParameters = [ordered]@{ version = $AppVersion; platform = $ReleasePlatform; architecture = $ReleaseArch }
                 internalParameters = [ordered]@{ buildHash = $BuildHash; sourceRevision = $SourceRevision; sourceDirty = $SourceDirty }
                 resolvedDependencies = @(
@@ -915,17 +1043,17 @@ function Build-Application {
                     [ordered]@{ uri = "pkg:generic/tg-ws-proxy@$TgWsProxyVersion" }
                 )
             }
-            runDetails = [ordered]@{ builder = [ordered]@{ id = "dropo-local-windows-builder" }; metadata = [ordered]@{ invocationId = $BuildHash; startedOn = (Get-Date).ToUniversalTime().ToString("o") } }
+            runDetails = [ordered]@{ builder = [ordered]@{ id = "dropo-local-windows-builder" }; metadata = [ordered]@{ invocationId = $BuildHash; startedOn = $BuildTimestampISO } }
         }
     }
     $provenancePath = Join-Path $RuntimeFolder "dropo-build-provenance.json"
     [System.IO.File]::WriteAllText($provenancePath, ($provenance | ConvertTo-Json -Depth 12), (New-Object System.Text.UTF8Encoding($false)))
-    Write-Host "[OK] Wrote SPDX SBOM and signed-package provenance metadata" -ForegroundColor Green
+    Write-Host "[OK] Wrote SPDX SBOM and package provenance metadata" -ForegroundColor Green
 
     $finalLdflags = "-X 'main.trustedRuntimeVersion=$RuntimeVersion' -X 'main.trustedRuntimeManifestSHA256=$runtimeManifestSHA256' -X 'main.Version=$AppVersion' -X 'main.BuildTime=$BuildTime' -X 'main.BuildHash=$BuildHash' -X 'main.SingBoxVersion=$SingBoxVersion' -X 'main.WireGuardVersion=$WireGuardVersion' -s -w -H=windowsgui"
     Push-Location $AppDir
     try {
-        & go build -ldflags $finalLdflags -o $coreExe .
+        & go build -trimpath -buildvcs=false -ldflags $finalLdflags -o $coreExe .
         if ($LASTEXITCODE -ne 0) {
             throw "Go core rebuild with final bundled-runtime identity failed."
         }
@@ -938,7 +1066,7 @@ function Build-Application {
     Push-Location (Join-Path $ScriptRoot "launcher")
     try {
         $launcherLdflags = "-X 'main.expectedCoreSHA256=$coreSHA256' -X 'main.expectedUISHA256=$uiSHA256' -s -w -H=windowsgui"
-        & go build -ldflags $launcherLdflags -o (Join-Path $AppFolder "dropo.exe") .
+        & go build -trimpath -buildvcs=false -ldflags $launcherLdflags -o (Join-Path $AppFolder "dropo.exe") .
         if ($LASTEXITCODE -ne 0) {
             throw "Launcher rebuild after bundled-runtime binding failed."
         }
@@ -948,17 +1076,31 @@ function Build-Application {
     Invoke-WindowsCodeSigning -Paths @((Join-Path $AppFolder "dropo.exe"))
     Write-Host "[OK] Rebuilt core and launcher with the final bundled-runtime identity" -ForegroundColor Green
 
-    # Single self-extracting app contains UI, core and every required runtime.
-    $AppAsset = $WindowsAppAsset
-    $appExeAsset = Join-Path $VersionDir $AppAsset
-    New-WindowsSingleExecutable -SourceAppFolder $AppFolder -DestinationExe $appExeAsset -PackageVersion $AppVersion
-    $appSize = (Get-Item $appExeAsset).Length / 1MB
-    Write-Host "[OK] Created $AppAsset ($([math]::Round($appSize, 2)) MB, self-extracting complete runtime)" -ForegroundColor Green
+    # Publish the same complete offline payload in two explicit forms. The
+    # installer owns updates and protected Program Files placement; the ZIP is
+    # genuinely portable and never attempts to replace itself while running.
+    $portablePath = Join-Path $VersionDir $WindowsPortableAsset
+    New-AppOnlyArchive -SourceAppFolder $AppFolder -DestinationZip $portablePath
+    $installerPath = Join-Path $VersionDir $WindowsInstallerAsset
+    New-WindowsInstaller -SourceAppFolder $AppFolder -DestinationExe $installerPath -PackageVersion $AppVersion
+    foreach ($assetPath in @($installerPath, $portablePath)) {
+        $assetName = Split-Path -Leaf $assetPath
+        $assetSHA = (Get-FileHash -LiteralPath $assetPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        [IO.File]::WriteAllText("$assetPath.sha256", "$assetSHA  $assetName`n", [Text.UTF8Encoding]::new($false))
+        $assetSize = [math]::Round((Get-Item -LiteralPath $assetPath).Length / 1MB, 2)
+        Write-Host "[OK] Created $assetName ($assetSize MB, SHA-256 $assetSHA)" -ForegroundColor Green
+    }
+    if ($env:DROPO_SKIP_WINDOWS_RELEASE_GATE -ne "1") {
+        & (Join-Path $ScriptRoot "tools\windows-release-gate.ps1") -InstallerPath $installerPath -PortablePath $portablePath
+        if ($LASTEXITCODE -ne 0) {
+            throw "Windows MOTW/Defender release gate failed with exit code $LASTEXITCODE"
+        }
+    }
 
     Write-Host ""
     Write-Host "[SUCCESS] Build completed: release/$BuildFolderName/" -ForegroundColor Green
     Write-Host "  app folder:  dropo/  (run dropo/dropo.exe)" -ForegroundColor Gray
-	$releaseFiles = @($AppAsset)
+	$releaseFiles = @($WindowsInstallerAsset, $WindowsPortableAsset)
 	Write-Host "  release files: $($releaseFiles -join ' + ')" -ForegroundColor Gray
 
     # Show files
@@ -1247,10 +1389,10 @@ function Build-AndroidApplication {
     Write-Host "[OK] SHA256: $sha" -ForegroundColor Green
 }
 
-# Create the single-file Windows package from an existing build.
+# Create the deterministic portable ZIP from an existing build.
 function Create-Portable {
     Write-Host ""
-    Write-Host "Creating Windows single-file package..." -ForegroundColor Yellow
+    Write-Host "Creating Windows portable archive..." -ForegroundColor Yellow
 
     $sourceDir = $VersionDir
     if (-not (Test-Path $sourceDir)) {
@@ -1272,21 +1414,15 @@ function Create-Portable {
         Write-Host "[ERROR] dropo.exe not found in $appFolder" -ForegroundColor Red
         exit 1
     }
-    if ($AllowUntrustedSelfSignedWindows) {
-        Copy-PetCertificateBundle -Destination $appFolder
-    }
-
-    $appAssetPath = Join-Path $sourceDir $WindowsAppAsset
-    New-WindowsSingleExecutable -SourceAppFolder $appFolder -DestinationExe $appAssetPath -PackageVersion $AppVersion
+    $appAssetPath = Join-Path $sourceDir $WindowsPortableAsset
+    New-AppOnlyArchive -SourceAppFolder $appFolder -DestinationZip $appAssetPath
 
     $fileSize = (Get-Item $appAssetPath).Length / 1MB
-    Write-Host "[OK] Created: $WindowsAppAsset ($([math]::Round($fileSize, 2)) MB, self-extracting complete runtime)" -ForegroundColor Green
+    Write-Host "[OK] Created: $WindowsPortableAsset ($([math]::Round($fileSize, 2)) MB, complete offline runtime)" -ForegroundColor Green
 }
 
 # Main execution
-# Windows ships as one self-extracting executable. It installs the signed app
-# payload under LocalAppData and starts the normal launcher; privileged runtime
-# dependencies remain protected under ProgramData.
+# Windows ships as an offline installer plus a deterministic portable ZIP.
 if ($AppOnly) {
     Build-Application
     if ($Android) {
@@ -1294,7 +1430,6 @@ if ($AppOnly) {
     }
 } elseif ($All) {
     Build-Application
-    Create-Portable
     Build-AndroidApplication
 } else {
     $didWork = $false

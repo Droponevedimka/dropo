@@ -1,5 +1,5 @@
 {
-  "version": "3.0.11",
+  "version": "3.0.12",
   "name": "dropo",
   "productName": "dropo",
   "description": "dropo VPN client with sing-box, WireGuard, and smart routing",
@@ -9,22 +9,33 @@
   "repository": "https://github.com/Droponevedimka/dropo",
   "singbox": {
     "version": "1.13.14",
-    "minVersion": "1.12.0"
+    "minVersion": "1.12.0",
+    "archiveSha256": "f580782c6dd10f7691c66cea1d7c421813c5fbf7e305d1ee7ce0c3a40d196341",
+    "executableSha256": "db0d779948214cf761011d154c3a5da36df20394fa01a9fc798f1dc39fe9d183"
   },
   "wireguard": {
     "version": "0.5.3",
-    "wintunVersion": "0.14.1"
+    "wintunVersion": "0.14.1",
+    "wireguardSha256": "32717d15b57965adf78b33f61db32cb26e11759dd78d441a218dd349c731a160",
+    "wgSha256": "f6cfcdd6933b5d50cd2446bf8ca611c1cf9e825a0fba13db13dfe4d24eec37b9",
+    "wintunSha256": "e5da8447dc2c320edc0fc52fa01885c103de8c118481f683643cacc3220dafce"
   },
   "windivert": {
     "version": "2.2.2",
     "archiveSha256": "63cb41763bb4b20f600b6de04e991a9c2be73279e317d4d82f237b150c5f3f15",
+    "dllSha256": "c1e060ee19444a259b2162f8af0f3fe8c4428a1c6f694dce20de194ac8d7d9a2",
+    "driverSha256": "8da085332782708d8767bcace5327a6ec7283c17cfb85e40b03cd2323a90ddc2",
     "url": "https://reqrypt.org/download/WinDivert-2.2.2-A.zip"
   },
   "tgwsproxy": {
-    "version": "1.7.3"
+    "version": "1.7.3",
+    "headlessSha256": "b82f7abc5f37f972692a68ba4dfdb0032d1a7baadfad75f7bba9c76e81fc9143",
+    "officialWindowsSha256": "4ede67d8728623fad8c9a6af242693aa8e97160d9040a9c0c64c0d9dc6916a79"
   },
   "xray": {
-    "version": "26.3.27"
+    "version": "26.3.27",
+    "archiveSha256": "d004c39288ce9ada487c6f398c7c545f7d749e44bdfdd59dbc9f865afba4e1ad",
+    "executableSha256": "15c2d007954ac53ba69b80ec91242786b3c0b71d52649165b4ca1d5cc96ef8f1"
   },
   "build": {
     "appId": "in.droponevedimka.dropo",

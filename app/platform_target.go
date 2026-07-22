@@ -8,6 +8,7 @@ type PlatformTarget struct {
 	ReleaseOS         string
 	ReleaseArch       string
 	AppAsset          string
+	PortableAsset     string
 	DependenciesAsset string
 	RequiredDeps      []string
 	SplitDeps         bool
@@ -30,11 +31,12 @@ func PlatformTargetFor(goos, goarch string) PlatformTarget {
 			GOARCH:            goarch,
 			ReleaseOS:         "Windows",
 			ReleaseArch:       normalizeReleaseArch(goarch),
-			AppAsset:          "dropo-Windows-" + normalizeReleaseArch(goarch) + ".exe",
+			AppAsset:          "dropo-Windows-Setup-" + normalizeReleaseArch(goarch) + ".exe",
+			PortableAsset:     "dropo-Windows-Portable-" + normalizeReleaseArch(goarch) + ".zip",
 			DependenciesAsset: "dropo-Windows-Dependencies-" + normalizeReleaseArch(goarch) + ".zip",
 			RequiredDeps:      []string{"sing-box.exe", "xray.exe", "wireguard.exe", "wg.exe", "wintun.dll", "WinDivert.dll", "WinDivert64.sys"},
 			SplitDeps:         false,
-			SelfUpdate:        true,
+			SelfUpdate:        false,
 		}
 	case "linux":
 		return PlatformTarget{

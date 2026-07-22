@@ -10,23 +10,26 @@
 > [Droponevedimka/dropo](https://github.com/Droponevedimka/dropo). Не запускайте
 > сборки из сторонних источников.
 
+[Лицензия MIT](LICENSE) · [Политика конфиденциальности](PRIVACY.md) ·
+[Code signing policy](CODE_SIGNING_POLICY.md)
+
 ## Скачать
 
 | Платформа | Файл |
 | --- | --- |
-| Windows 10/11 x64 | Последний `dropo-Windows-x64.exe` на [странице релизов](https://github.com/Droponevedimka/dropo/releases) |
+| Windows 10/11 x64 | Рекомендуемый `dropo-Windows-Setup-x64.exe` или `dropo-Windows-Portable-x64.zip` на [странице релизов](https://github.com/Droponevedimka/dropo/releases) |
 | Android 11+ arm64 | [dropo-Android-arm64.apk](https://github.com/Droponevedimka/dropo/releases/latest/download/dropo-Android-arm64.apk) |
 
 ## Первый запуск Windows
 
-1. Запустите единый `dropo-Windows-x64.exe`; вручную распаковывать архив не нужно.
-2. Bootstrap проверит встроенный manifest и каждый файл, затем развернёт версию в `%LOCALAPPDATA%\dropo\app\<версия>`.
-3. Подтвердите UAC-запрос привилегированного core. Он проверит подписанный runtime-manifest и локально подготовит защищённую копию native-компонентов в `%PROGRAMDATA%\dropo\runtime\<runtime-id>`.
-4. Нажмите «Подключить». Исполняемые зависимости на первом запуске и при подключении из сети не скачиваются.
+1. Запустите `dropo-Windows-Setup-x64.exe` и выберите автозапуск UI и фонового core. Установщик автономный: зависимости из сети не скачиваются.
+2. Приложение устанавливается в защищённый каталог `%ProgramFiles%\dropo`. Привилегированный core проверяет runtime-manifest и готовит защищённую копию native-компонентов в `%PROGRAMDATA%\dropo\runtime\<runtime-id>`.
+3. Нажмите «Подключить». При выборе фонового core повторный запуск и подключение не требуют заново поднимать процесс через UAC.
 
-Повторный запуск проверяет уже установленный payload и сразу открывает приложение.
-Обновление скачивает новый подписанный EXE, проверяет издателя, SHA-256 и версию,
-после чего запускает обычную атомарную установку новой версии.
+Установленная версия скачивает новый Setup, проверяет размер и SHA-256, затем
+запускает обычное обновление через установщик. Portable ZIP не заменяет себя:
+кнопка обновления предлагает скачать новый архив и объясняет безопасную замену
+папки; профили и настройки остаются в AppData.
 
 ## Архитектура Windows
 
@@ -77,12 +80,16 @@ VPN-подключения, сторонние DPI-процессы и WinDivert
 
 ## Поставка и безопасность
 
-Windows EXE содержит UI, core, sing-box, Xray, WireGuard, Wintun, официальный
+Windows Setup и Portable ZIP содержат UI, core, sing-box, Xray, WireGuard, Wintun, официальный
 WinDivert и встроенные rule sets. Сборка закрепляет версии и SHA-256 бинарных
-источников, подписывает вложенные PE-файлы, создаёт file-level runtime manifest,
+источников, создаёт file-level runtime manifest,
 SPDX 2.3 SBOM и provenance statement, а также запрещает попадание внешнего
 anti-DPI runtime, Lua и Cygwin в release payload. Отключать Defender или добавлять
 антивирусные исключения не требуется и не рекомендуется.
+
+До появления публично доверенной подписи Windows-артефакты выпускаются без
+Authenticode. Самоподписанный корневой сертификат пользователям не предлагается;
+актуальная политика описана в [CODE_SIGNING_POLICY.md](CODE_SIGNING_POLICY.md).
 
 ## Исследовательские источники и лицензии
 

@@ -11,3 +11,7 @@ func SetAutoStart(enable bool) error {
 func IsAutoStartEnabled() bool {
 	return false
 }
+
+func ConsumeInstallerAutoStartPreference() (bool, bool) {
+	return false, false
+}

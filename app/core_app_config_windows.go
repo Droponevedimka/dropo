@@ -15,7 +15,29 @@ import (
 const (
 	windowsRunRegistryPath   = `Software\Microsoft\Windows\CurrentVersion\Run`
 	windowsAutoStartTaskName = "dropo-autostart"
+	windowsAppRegistryPath   = `Software\dropo`
+	installerAutoStartValue  = "InstallerAutoStartChoice"
 )
+
+// ConsumeInstallerAutoStartPreference imports the explicit checkbox choice
+// made in the installer into the per-user application settings once.
+func ConsumeInstallerAutoStartPreference() (bool, bool) {
+	key, err := registry.OpenKey(
+		registry.CURRENT_USER,
+		windowsAppRegistryPath,
+		registry.QUERY_VALUE|registry.SET_VALUE,
+	)
+	if err != nil {
+		return false, false
+	}
+	defer key.Close()
+	value, _, err := key.GetIntegerValue(installerAutoStartValue)
+	if err != nil {
+		return false, false
+	}
+	_ = key.DeleteValue(installerAutoStartValue)
+	return value != 0, true
+}
 
 // SetAutoStart registers the unelevated launcher in the current user's Run key.
 // Older builds created a HighestAvailable Scheduled Task in a user-writable

@@ -2951,6 +2951,7 @@ class UpdateInfo {
     required this.fileSize,
     required this.platform,
     required this.selfUpdate,
+    required this.distributionMode,
     required this.error,
   });
 
@@ -2964,6 +2965,7 @@ class UpdateInfo {
   final int fileSize;
   final String platform;
   final bool selfUpdate;
+  final String distributionMode;
   final String error;
 
   factory UpdateInfo.fromJson(Map<String, dynamic> json) {
@@ -2978,6 +2980,7 @@ class UpdateInfo {
       fileSize: _asInt(json['fileSize']),
       platform: json['platform']?.toString() ?? '',
       selfUpdate: json['selfUpdate'] == true,
+      distributionMode: json['distributionMode']?.toString() ?? '',
       error: json['error']?.toString() ?? '',
     );
   }
@@ -3507,6 +3510,8 @@ class _DropoHomePageState extends State<DropoHomePage>
               statusMessage = 'Доступна версия ${checked.latestVersion}';
               connectionHint = checked.selfUpdate
                   ? 'Нажмите «Обновить и перезапустить».'
+                  : checked.platform.toLowerCase() == 'windows'
+                  ? 'Скачайте portable-архив и замените папку приложения.'
                   : 'Нажмите «Скачать APK» для установки обновления.';
             }
           });
@@ -3532,7 +3537,7 @@ class _DropoHomePageState extends State<DropoHomePage>
         if (updateProgressPercent != null) {
           statusMessage =
               'Загружаем обновление: ${updateProgressPercent!.round()}%';
-          connectionHint = 'После проверки подписи dropo перезапустится.';
+          connectionHint = 'После проверки целостности dropo перезапустится.';
         }
         break;
       case 'android-service-status':
@@ -4280,6 +4285,8 @@ class _DropoHomePageState extends State<DropoHomePage>
             ? (result.hasUpdate
                   ? (result.selfUpdate
                         ? 'Нажмите «Обновить и перезапустить».'
+                        : result.platform.toLowerCase() == 'windows'
+                        ? 'Скачайте portable-архив и замените папку приложения.'
                         : 'Нажмите «Скачать APK» для установки обновления.')
                   : 'Вы используете последнюю опубликованную версию.')
             : result.error;
@@ -4331,7 +4338,11 @@ class _DropoHomePageState extends State<DropoHomePage>
         content: Text('Доступна версия ${result.latestVersion}: $asset'),
         duration: const Duration(seconds: 12),
         action: SnackBarAction(
-          label: result.selfUpdate ? 'Обновить' : 'Скачать APK',
+          label: result.selfUpdate
+              ? 'Обновить'
+              : result.platform.toLowerCase() == 'windows'
+              ? 'Скачать portable'
+              : 'Скачать APK',
           onPressed: () => unawaited(_performUpdate(result)),
         ),
       ),
@@ -4361,6 +4372,58 @@ class _DropoHomePageState extends State<DropoHomePage>
         );
         return;
       }
+      if (result.platform.toLowerCase() == 'windows') {
+        final download = await showDialog<bool>(
+          context: context,
+          barrierDismissible: false,
+          builder: (dialogContext) => _AppDialog(
+            title: 'Обновление portable-версии',
+            icon: Icons.folder_zip_outlined,
+            width: 540,
+            centered: true,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const Text(
+                  'Portable-версия не заменяет собственные запущенные файлы. Скачайте новый архив, закройте dropo и распакуйте его в новую папку.',
+                  style: TextStyle(color: Color(0xFFD8E4E0), height: 1.4),
+                ),
+                const SizedBox(height: 12),
+                const _InfoBand(
+                  icon: Icons.verified_user_outlined,
+                  title: 'Настройки сохранятся',
+                  body:
+                      'Профили и настройки хранятся отдельно в AppData. Сначала запустите новую версию, убедитесь, что всё работает, и только потом удалите старую папку.',
+                ),
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    Expanded(
+                      child: _ActionButton(
+                        label: 'Отмена',
+                        icon: Icons.close,
+                        secondary: true,
+                        onPressed: () => Navigator.of(dialogContext).pop(false),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: _ActionButton(
+                        label: 'Скачать архив',
+                        icon: Icons.download,
+                        onPressed: () => Navigator.of(dialogContext).pop(true),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        );
+        if (download != true || !mounted) {
+          return;
+        }
+      }
       await widget.bridge.openExternal(link);
       return;
     }
@@ -4377,7 +4440,7 @@ class _DropoHomePageState extends State<DropoHomePage>
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             const Text(
-              'Приложение скачает подписанную сборку через российский сервер, проверит SHA-256, установит её и перезапустится.',
+              'Приложение скачает установщик через российский сервер, проверит размер и SHA-256, запустит обновление и перезапустится.',
               style: TextStyle(color: Color(0xFFD8E4E0), height: 1.35),
             ),
             const SizedBox(height: 16),
@@ -6547,6 +6610,8 @@ class _UpdateStrip extends StatelessWidget {
     final progress = progressPercent;
     final actionLabel = info.selfUpdate
         ? 'Обновить и перезапустить'
+        : info.platform.toLowerCase() == 'windows'
+        ? 'Скачать portable'
         : 'Скачать APK';
     return Container(
       width: double.infinity,
@@ -10316,9 +10381,13 @@ class _SettingsDialogState extends State<_SettingsDialog> {
                 title: 'Доступна версия ${widget.updateInfo!.latestVersion}',
                 description: widget.updateInfo!.selfUpdate
                     ? 'Скачать, проверить и перезапустить dropo'
+                    : widget.updateInfo!.platform.toLowerCase() == 'windows'
+                    ? 'Скачать portable-архив через российский сервер'
                     : 'Скачать APK через российский сервер',
                 label: widget.updateInfo!.selfUpdate
                     ? 'Обновить'
+                    : widget.updateInfo!.platform.toLowerCase() == 'windows'
+                    ? 'Скачать portable'
                     : 'Скачать APK',
                 icon: Icons.restart_alt,
                 onPressed: canUseLiveSafe ? widget.onInstallUpdate : null,

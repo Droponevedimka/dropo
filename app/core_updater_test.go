@@ -30,6 +30,36 @@ func TestSelectUpdateAssetRejectsLegacyWindowsZip(t *testing.T) {
 	}
 }
 
+func TestSelectWindowsUpdateAssetByDistributionMode(t *testing.T) {
+	assets := []GitHubReleaseAsset{
+		{Name: "dropo-Windows-Portable-x64.zip", BrowserDownloadURL: "portable"},
+		{Name: "dropo-Windows-Setup-x64.exe", BrowserDownloadURL: "setup"},
+	}
+	installed, ok := selectUpdateAssetForMode(assets, "windows", "amd64", distributionModeInstalled)
+	if !ok || installed.BrowserDownloadURL != "setup" {
+		t.Fatalf("installed selected %+v, ok=%v", installed, ok)
+	}
+	portable, ok := selectUpdateAssetForMode(assets, "windows", "amd64", distributionModePortable)
+	if !ok || portable.BrowserDownloadURL != "portable" {
+		t.Fatalf("portable selected %+v, ok=%v", portable, ok)
+	}
+}
+
+func TestLatestPortableReleaseUsesPortableArchive(t *testing.T) {
+	digest := "sha256:" + strings.Repeat("a", 64)
+	releases := []GitHubRelease{{
+		TagName: "v3.1.0",
+		Assets: []GitHubReleaseAsset{
+			{Name: "dropo-Windows-Setup-x64.exe", BrowserDownloadURL: "https://downloads.droponevedimka.ru/releases/download/v3.1.0/dropo-Windows-Setup-x64.exe", Size: 100, Digest: digest},
+			{Name: "dropo-Windows-Portable-x64.zip", BrowserDownloadURL: "https://downloads.droponevedimka.ru/releases/download/v3.1.0/dropo-Windows-Portable-x64.zip", Size: 100, Digest: digest},
+		},
+	}}
+	_, asset, ok := selectLatestInstallableReleaseForMode(releases, "windows", "amd64", distributionModePortable)
+	if !ok || asset.Name != "dropo-Windows-Portable-x64.zip" {
+		t.Fatalf("selected %+v, ok=%v", asset, ok)
+	}
+}
+
 func TestSelectLatestCompatibleReleaseSkipsAndroidOnlyReleaseForWindows(t *testing.T) {
 	release, asset, ok := selectLatestCompatibleRelease([]GitHubRelease{
 		{

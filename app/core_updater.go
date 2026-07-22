@@ -41,16 +41,17 @@ type GitHubReleaseAsset struct {
 
 // UpdateInfo contains information about available updates.
 type UpdateInfo struct {
-	Available      bool   `json:"available"`
-	Version        string `json:"version"`
-	CurrentVersion string `json:"current_version"`
-	Description    string `json:"description"`
-	DownloadURL    string `json:"download_url"`
-	ReleaseURL     string `json:"release_url"`
-	PublishedAt    string `json:"published_at"`
-	FileSize       int64  `json:"file_size"`
-	AssetName      string `json:"asset_name"`
-	SHA256         string `json:"sha256"`
+	Available        bool   `json:"available"`
+	Version          string `json:"version"`
+	CurrentVersion   string `json:"current_version"`
+	Description      string `json:"description"`
+	DownloadURL      string `json:"download_url"`
+	ReleaseURL       string `json:"release_url"`
+	PublishedAt      string `json:"published_at"`
+	FileSize         int64  `json:"file_size"`
+	AssetName        string `json:"asset_name"`
+	SHA256           string `json:"sha256"`
+	DistributionMode string `json:"distribution_mode"`
 }
 
 // CheckForUpdates checks the trusted Russian release mirror for updates.
@@ -101,7 +102,8 @@ func CheckForUpdates() (*UpdateInfo, error) {
 	if !isReleaseVersion(currentVersion) {
 		return nil, fmt.Errorf("current application version is unavailable")
 	}
-	release, asset, found := selectLatestInstallableRelease(releases, runtime.GOOS, runtime.GOARCH)
+	distributionMode := currentDistributionMode()
+	release, asset, found := selectLatestInstallableReleaseForMode(releases, runtime.GOOS, runtime.GOARCH, distributionMode)
 	if !found {
 		return &UpdateInfo{
 			Available:      false,
@@ -115,23 +117,28 @@ func CheckForUpdates() (*UpdateInfo, error) {
 	available := compareVersions(latestVersion, currentVersion) > 0
 
 	return &UpdateInfo{
-		Available:      available,
-		Version:        latestVersion,
-		CurrentVersion: currentVersion,
-		Description:    release.Body,
-		DownloadURL:    asset.BrowserDownloadURL,
-		ReleaseURL:     release.HTMLURL,
-		PublishedAt:    release.PublishedAt.Format("02.01.2006"),
-		FileSize:       asset.Size,
-		AssetName:      asset.Name,
-		SHA256:         normalizeGitHubSHA256(asset.Digest),
+		Available:        available,
+		Version:          latestVersion,
+		CurrentVersion:   currentVersion,
+		Description:      release.Body,
+		DownloadURL:      asset.BrowserDownloadURL,
+		ReleaseURL:       release.HTMLURL,
+		PublishedAt:      release.PublishedAt.Format("02.01.2006"),
+		FileSize:         asset.Size,
+		AssetName:        asset.Name,
+		SHA256:           normalizeGitHubSHA256(asset.Digest),
+		DistributionMode: distributionMode,
 	}, nil
 }
 
 func selectLatestInstallableRelease(releases []GitHubRelease, goos, goarch string) (GitHubRelease, GitHubReleaseAsset, bool) {
+	return selectLatestInstallableReleaseForMode(releases, goos, goarch, distributionModeInstalled)
+}
+
+func selectLatestInstallableReleaseForMode(releases []GitHubRelease, goos, goarch, distributionMode string) (GitHubRelease, GitHubReleaseAsset, bool) {
 	filtered := make([]GitHubRelease, 0, len(releases))
 	for _, release := range releases {
-		asset, ok := selectUpdateAssetFor(release.Assets, goos, goarch)
+		asset, ok := selectUpdateAssetForMode(release.Assets, goos, goarch, distributionMode)
 		if !ok || asset.Size <= 0 || asset.Size > maxUpdateDownloadBytes || normalizeGitHubSHA256(asset.Digest) == "" {
 			continue
 		}
@@ -141,10 +148,14 @@ func selectLatestInstallableRelease(releases []GitHubRelease, goos, goarch strin
 		release.Assets = []GitHubReleaseAsset{asset}
 		filtered = append(filtered, release)
 	}
-	return selectLatestCompatibleRelease(filtered, goos, goarch)
+	return selectLatestCompatibleReleaseForMode(filtered, goos, goarch, distributionMode)
 }
 
 func selectLatestCompatibleRelease(releases []GitHubRelease, goos, goarch string) (GitHubRelease, GitHubReleaseAsset, bool) {
+	return selectLatestCompatibleReleaseForMode(releases, goos, goarch, distributionModeInstalled)
+}
+
+func selectLatestCompatibleReleaseForMode(releases []GitHubRelease, goos, goarch, distributionMode string) (GitHubRelease, GitHubReleaseAsset, bool) {
 	var selectedRelease GitHubRelease
 	var selectedAsset GitHubReleaseAsset
 	selectedVersion := ""
@@ -152,7 +163,7 @@ func selectLatestCompatibleRelease(releases []GitHubRelease, goos, goarch string
 		if release.Draft || release.Prerelease {
 			continue
 		}
-		asset, ok := selectUpdateAssetFor(release.Assets, goos, goarch)
+		asset, ok := selectUpdateAssetForMode(release.Assets, goos, goarch, distributionMode)
 		if !ok {
 			continue
 		}
@@ -172,10 +183,18 @@ func selectUpdateAsset(assets []GitHubReleaseAsset) (GitHubReleaseAsset, bool) {
 }
 
 func selectUpdateAssetFor(assets []GitHubReleaseAsset, goos, goarch string) (GitHubReleaseAsset, bool) {
+	return selectUpdateAssetForMode(assets, goos, goarch, distributionModeInstalled)
+}
+
+func selectUpdateAssetForMode(assets []GitHubReleaseAsset, goos, goarch, distributionMode string) (GitHubReleaseAsset, bool) {
 	target := PlatformTargetFor(goos, goarch)
-	if target.AppAsset != "" {
+	preferredAsset := target.AppAsset
+	if goos == "windows" && distributionMode == distributionModePortable {
+		preferredAsset = target.PortableAsset
+	}
+	if preferredAsset != "" {
 		for _, asset := range assets {
-			if strings.EqualFold(asset.Name, target.AppAsset) {
+			if strings.EqualFold(asset.Name, preferredAsset) {
 				return asset, true
 			}
 		}
@@ -183,7 +202,7 @@ func selectUpdateAssetFor(assets []GitHubReleaseAsset, goos, goarch string) (Git
 
 	switch goos {
 	case "windows":
-		return selectWindowsUpdateAsset(assets)
+		return selectWindowsUpdateAssetForMode(assets, distributionMode)
 	case "linux":
 		return selectAssetByPredicates(assets,
 			func(name string) bool {
@@ -219,10 +238,30 @@ func selectUpdateAssetFor(assets []GitHubReleaseAsset, goos, goarch string) (Git
 }
 
 func selectWindowsUpdateAsset(assets []GitHubReleaseAsset) (GitHubReleaseAsset, bool) {
+	return selectWindowsUpdateAssetForMode(assets, distributionModeInstalled)
+}
+
+func selectWindowsUpdateAssetForMode(assets []GitHubReleaseAsset, distributionMode string) (GitHubReleaseAsset, bool) {
 	for _, asset := range assets {
 		name := strings.ToLower(asset.Name)
-		if strings.Contains(name, "windows") && strings.HasSuffix(name, ".exe") && !strings.Contains(name, "dependencies") {
+		if distributionMode == distributionModePortable {
+			if strings.Contains(name, "windows") && strings.Contains(name, "portable") && strings.HasSuffix(name, ".zip") {
+				return asset, true
+			}
+			continue
+		}
+		if strings.Contains(name, "windows") && strings.Contains(name, "setup") && strings.HasSuffix(name, ".exe") && !strings.Contains(name, "dependencies") {
 			return asset, true
+		}
+	}
+	// Compatibility with releases published before installer/portable assets
+	// were split. New releases should always use the explicit Setup name.
+	if distributionMode != distributionModePortable {
+		for _, asset := range assets {
+			name := strings.ToLower(asset.Name)
+			if strings.Contains(name, "windows") && strings.HasSuffix(name, ".exe") && !strings.Contains(name, "dependencies") {
+				return asset, true
+			}
 		}
 	}
 	return GitHubReleaseAsset{}, false
@@ -256,7 +295,7 @@ func validateTrustedUpdateURL(rawURL string) error {
 	if err := validateTrustedUpdateHost(rawURL); err != nil {
 		return err
 	}
-	if ext := updateFileExtension(rawURL); ext != ".exe" {
+	if ext := updateFileExtension(rawURL); ext != ".exe" && ext != ".zip" {
 		return fmt.Errorf("unsupported update asset type: %s", ext)
 	}
 	return nil

@@ -1,0 +1,96 @@
+name: Windows package release gate
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches: [main]
+    paths:
+      - "app/**"
+      - "launcher/**"
+      - "flutter_app/**"
+      - "packaging/windows/**"
+      - "scripts/build/build.ps1"
+      - "scripts/filters/**"
+      - "dependencies/filters/**"
+      - "tools/windows-release-gate.ps1"
+      - "version.json"
+
+permissions:
+  contents: read
+
+jobs:
+  clean-windows-package:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.25.12"
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          flutter-version: "3.44.4"
+          channel: stable
+          cache: true
+      - name: Install Inno Setup
+        shell: powershell
+        run: |
+          $url = "https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe"
+          $installer = Join-Path $env:RUNNER_TEMP "innosetup-6.7.3.exe"
+          Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $installer
+          $expected = "9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732"
+          $actual = (Get-FileHash $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) { throw "Inno Setup SHA-256 mismatch" }
+          $signature = Get-AuthenticodeSignature $installer
+          if ($signature.Status -ne "Valid" -or $signature.SignerCertificate.Subject -notmatch "Pyrsys B.V.") {
+            throw "Inno Setup publisher signature is invalid"
+          }
+          $process = Start-Process $installer -ArgumentList @("/CURRENTUSER", "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART") -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Inno Setup install failed: $($process.ExitCode)" }
+      - name: Update Defender intelligence
+        shell: powershell
+        run: Update-MpSignature
+      - name: Build unsigned installer and portable archive
+        shell: powershell
+        env:
+          DROPO_SKIP_WINDOWS_RELEASE_GATE: "1"
+        run: .\scripts\build\build.ps1 -Build -AppOnly
+      - name: Verify reproducible Windows rebuild
+        shell: powershell
+        env:
+          DROPO_SKIP_WINDOWS_RELEASE_GATE: "1"
+        run: |
+          $version = (Get-Content version.json -Raw | ConvertFrom-Json).version
+          $folder = Get-ChildItem release -Directory | Where-Object Name -Like "dropo-$version-*" | Select-Object -First 1
+          if (-not $folder) { throw "First release folder was not produced" }
+          $firstSetup = (Get-FileHash (Join-Path $folder.FullName "dropo-Windows-Setup-x64.exe") -Algorithm SHA256).Hash
+          $firstPortable = (Get-FileHash (Join-Path $folder.FullName "dropo-Windows-Portable-x64.zip") -Algorithm SHA256).Hash
+          .\scripts\build\build.ps1 -Build -AppOnly -ReuseFlutterWindowsOutput
+          $folder = Get-ChildItem release -Directory | Where-Object Name -Like "dropo-$version-*" | Select-Object -First 1
+          $secondSetup = (Get-FileHash (Join-Path $folder.FullName "dropo-Windows-Setup-x64.exe") -Algorithm SHA256).Hash
+          $secondPortable = (Get-FileHash (Join-Path $folder.FullName "dropo-Windows-Portable-x64.zip") -Algorithm SHA256).Hash
+          if ($firstSetup -ne $secondSetup) { throw "Installer rebuild is not byte-for-byte reproducible" }
+          if ($firstPortable -ne $secondPortable) { throw "Portable rebuild is not byte-for-byte reproducible" }
+      - name: Run MOTW and Defender gate
+        shell: powershell
+        run: |
+          $version = (Get-Content version.json -Raw | ConvertFrom-Json).version
+          $folder = Get-ChildItem release -Directory | Where-Object Name -Like "dropo-$version-*" | Select-Object -First 1
+          if (-not $folder) { throw "Release folder was not produced" }
+          .\tools\windows-release-gate.ps1 `
+            -InstallerPath (Join-Path $folder.FullName "dropo-Windows-Setup-x64.exe") `
+            -PortablePath (Join-Path $folder.FullName "dropo-Windows-Portable-x64.zip") `
+            -RequireDefender `
+            -InstallSmoke
+      - name: Preserve verified Windows packages
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dropo-windows-packages
+          path: |
+            release/dropo-*/dropo-Windows-Setup-x64.exe
+            release/dropo-*/dropo-Windows-Setup-x64.exe.sha256
+            release/dropo-*/dropo-Windows-Portable-x64.zip
+            release/dropo-*/dropo-Windows-Portable-x64.zip.sha256
+          if-no-files-found: error

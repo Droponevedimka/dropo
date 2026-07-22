@@ -7,6 +7,11 @@ downloads these catalogs during startup.
 
 - `build/build.ps1` — Windows and Android build orchestration.
 - `release/bump-version.ps1` — synchronized application version update.
-- `signing/certificate/` — public pet-certificate helpers bundled with Windows builds.
+- `../packaging/windows/` — Inno Setup source for installer and portable packaging.
+
+Windows release packages require a clean Git worktree. Their source revision,
+timestamps, Go build IDs, ZIP entry order/times and Inno file timestamps are
+fixed so CI can compare a second byte-for-byte rebuild. Use
+`-AllowDirtySource` only for local development output that will not be published.
 
 Diagnostics and release validation remain in `tools/`.

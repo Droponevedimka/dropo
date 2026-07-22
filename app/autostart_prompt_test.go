@@ -39,6 +39,9 @@ func TestDefaultAutoStartAwaitsPrompt(t *testing.T) {
 func TestEnsureAutoStartRegistrationDefersUntilPrompted(t *testing.T) {
 	app := newInitializedSettingsScenarioApp(t)
 	calls := stubApplyAutoStart(t)
+	originalConsume := consumeInstallerAutoStartPreference
+	consumeInstallerAutoStartPreference = func() (bool, bool) { return false, false }
+	t.Cleanup(func() { consumeInstallerAutoStartPreference = originalConsume })
 
 	// Not prompted yet: startup must NOT touch the OS autostart entry.
 	app.ensureAutoStartRegistration()
@@ -56,6 +59,23 @@ func TestEnsureAutoStartRegistrationDefersUntilPrompted(t *testing.T) {
 	app.ensureAutoStartRegistration()
 	if len(*calls) != 1 || (*calls)[0] != true {
 		t.Fatalf("expected one apply(true) after prompt answered, got %v", *calls)
+	}
+}
+
+func TestEnsureAutoStartRegistrationImportsInstallerChoice(t *testing.T) {
+	app := newInitializedSettingsScenarioApp(t)
+	calls := stubApplyAutoStart(t)
+	originalConsume := consumeInstallerAutoStartPreference
+	consumeInstallerAutoStartPreference = func() (bool, bool) { return false, true }
+	t.Cleanup(func() { consumeInstallerAutoStartPreference = originalConsume })
+
+	app.ensureAutoStartRegistration()
+	settings := app.storage.GetAppSettings()
+	if settings.AutoStart || !settings.AutoStartPrompted {
+		t.Fatalf("imported settings = {AutoStart:%v Prompted:%v}", settings.AutoStart, settings.AutoStartPrompted)
+	}
+	if len(*calls) != 1 || (*calls)[0] {
+		t.Fatalf("expected installer choice apply(false), got %v", *calls)
 	}
 }
 
