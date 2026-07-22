@@ -9,15 +9,9 @@ param(
     [switch]$All,
     [switch]$Clean,
     [string]$Version,
-    # CI mode: build only dropo.exe + app folder (no bundled bin/). The heavy
-    # dependencies archive is hosted once and referenced via deps-lock.json /
-    # the dependencies.json manifest. Can be combined with -Android so CI can
-    # publish Windows app + Android APK without rebuilding Windows deps.
+    # CI mode: build the complete Windows EXE without an additional portable
+    # repack pass. Native runtime files are still embedded in the EXE.
     [switch]$AppOnly,
-    # Full-build mode: record the freshly built dependencies archive as hosted
-    # on the current app version, even when depsVersion did not change. Use this
-    # when re-baselining dependencies onto a new release tag.
-    [switch]$ForceDepsRelease,
     # Backward-compatible alias: Windows is now built with Flutter + Go core.
     [switch]$Flutter,
     # Opt-in Android artifact build. Alone it builds only the APK; combine with
@@ -29,9 +23,6 @@ param(
     # Local/offline signing aid. Production CI leaves this disabled and uses
     # the configured RFC3161 timestamp server.
     [switch]$SkipWindowsTimestamp,
-    # Local/offline packaging aid. The lock identity is still embedded and
-    # verified at runtime; only the network existence probe is skipped.
-    [switch]$SkipHostedDependenciesCheck,
     # Development-only escape hatch. Production Windows artifacts must be
     # Authenticode-signed and the build fails closed when no certificate exists.
     [switch]$AllowUnsignedWindows,
@@ -384,13 +375,19 @@ if ($PubspecAppVersion -ne [string]$VersionInfo.version) {
 }
 $SingBoxVersion = $VersionInfo.singbox.version
 $WireGuardVersion = $VersionInfo.wireguard.version
-$ByeDPIVersion = $VersionInfo.byedpi.version
-$ZapretVersion = $VersionInfo.zapret.version
-$ZapretArchiveSHA256 = ([string]$VersionInfo.zapret.archiveSha256).ToLowerInvariant()
+$WinDivertVersion = $VersionInfo.windivert.version
+$WinDivertArchiveSHA256 = ([string]$VersionInfo.windivert.archiveSha256).ToLowerInvariant()
+$WinDivertArchiveURL = [string]$VersionInfo.windivert.url
 $XrayVersion = $VersionInfo.xray.version
 $TgWsProxyVersion = $VersionInfo.tgwsproxy.version
 $BuildTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
 $BuildHash = Get-BuildHash
+$SourceRevision = (& git -C $ScriptRoot rev-parse HEAD 2>$null | Select-Object -First 1)
+if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace([string]$SourceRevision)) {
+    $SourceRevision = "unknown"
+}
+$SourceRevision = ([string]$SourceRevision).Trim()
+$SourceDirty = @(& git -C $ScriptRoot status --porcelain 2>$null).Count -gt 0
 
 # Build folder and archive names include the app name, version and hash for unique test environments.
 $ArtifactBaseName = "dropo-$AppVersion-$BuildHash"
@@ -404,8 +401,7 @@ Write-Host "Version:   $AppVersion" -ForegroundColor White
 Write-Host "Build:     $BuildHash" -ForegroundColor Gray
 Write-Host "sing-box:  $SingBoxVersion" -ForegroundColor White
 Write-Host "WireGuard: $WireGuardVersion" -ForegroundColor White
-Write-Host "ByeDPI:    $ByeDPIVersion" -ForegroundColor White
-Write-Host "zapret2:   $ZapretVersion" -ForegroundColor White
+Write-Host "WinDivert: $WinDivertVersion" -ForegroundColor White
 Write-Host "Xray:      $XrayVersion" -ForegroundColor White
 Write-Host ""
 
@@ -418,15 +414,13 @@ $SingBoxDir = Join-Path $DepsDir "sing-box-v$SingBoxVersion"
 $SingBoxExe = Join-Path $SingBoxDir "windows-amd64\sing-box-$SingBoxVersion-windows-amd64\sing-box.exe"
 $XrayDir = Join-Path $DepsDir "xray-v$XrayVersion"
 $XrayExe = Join-Path $XrayDir "xray.exe"
-$ZapretDir = Join-Path $DepsDir "zapret2-v$ZapretVersion"
-$ZapretRoot = Join-Path $ZapretDir "zapret2-v$ZapretVersion"
-$ZapretWinDir = Join-Path $ZapretRoot "binaries\windows-x86_64"
+$WinDivertDir = Join-Path $DepsDir "WinDivert-$WinDivertVersion-A"
+$WinDivertX64Dir = Join-Path $WinDivertDir "x64"
 $ReleasePlatform = "windows"
 $ReleaseArch = "x64"
-$RequiredDepFiles = @("sing-box.exe", "winws2.exe", "WinDivert.dll", "zapret-lib.lua", "zapret-antidpi.lua")
-$ForbiddenDepFiles = @("winws.exe")
+$RequiredDepFiles = @("sing-box.exe", "xray.exe", "wireguard.exe", "wg.exe", "wintun.dll", "WinDivert.dll", "WinDivert64.sys")
+$ForbiddenDepFiles = @("winws.exe", "winws2.exe", "cygwin1.dll", "zapret-lib.lua", "zapret-antidpi.lua")
 $WindowsAppAsset = "dropo-Windows-x64.exe"
-$WindowsDepsAsset = "dropo-Windows-Dependencies-x64.zip"
 $AndroidReleaseArch = "arm64"
 $AndroidFlutterTargetPlatform = "android-arm64"
 $AndroidGoMobileTarget = "android/arm64"
@@ -463,35 +457,39 @@ function Ensure-SingBoxWindowsDependency {
     }
 }
 
-function Ensure-Zapret2WindowsDependency {
-    $expected = Join-Path $ZapretWinDir "winws2.exe"
+function Ensure-WinDivertWindowsDependency {
+    $expected = Join-Path $WinDivertX64Dir "WinDivert.dll"
     if (Test-Path $expected) {
         return
     }
-    if ($ZapretArchiveSHA256 -notmatch '^[0-9a-f]{64}$') {
-        throw "version.json must pin zapret.archiveSha256 for zapret2 v$ZapretVersion."
+    if ($WinDivertArchiveSHA256 -notmatch '^[0-9a-f]{64}$') {
+        throw "version.json must pin windivert.archiveSha256 for WinDivert v$WinDivertVersion."
     }
 
-    Write-Host "[ZAPRET2] Downloading zapret2 v$ZapretVersion for Windows..." -ForegroundColor Yellow
-    $archiveUrl = "https://github.com/bol-van/zapret2/releases/download/v$ZapretVersion/zapret2-v$ZapretVersion.zip"
-    $tmpDir = Join-Path $env:TEMP ("dropo-zapret2-" + [Guid]::NewGuid().ToString("N"))
-    $zipPath = Join-Path $tmpDir "zapret2.zip"
+    Write-Host "[WINDIVERT] Downloading official WinDivert v$WinDivertVersion..." -ForegroundColor Yellow
+    $tmpDir = Join-Path $env:TEMP ("dropo-windivert-" + [Guid]::NewGuid().ToString("N"))
+    $zipPath = Join-Path $tmpDir "windivert.zip"
     New-Item -ItemType Directory -Path $tmpDir | Out-Null
     try {
-        Download-File -Url $archiveUrl -Destination $zipPath
+        Download-File -Url $WinDivertArchiveURL -Destination $zipPath
         $actualHash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
-        if ($actualHash -ne $ZapretArchiveSHA256) {
-            throw "zapret2 archive hash mismatch: expected $ZapretArchiveSHA256, got $actualHash"
+        if ($actualHash -ne $WinDivertArchiveSHA256) {
+            throw "WinDivert archive hash mismatch: expected $WinDivertArchiveSHA256, got $actualHash"
         }
-        if (Test-Path $ZapretDir) {
-            Remove-Item -LiteralPath $ZapretDir -Recurse -Force
+        $extractRoot = Join-Path $tmpDir "extract"
+        Expand-Archive -Path $zipPath -DestinationPath $extractRoot -Force
+        $extracted = Join-Path $extractRoot "WinDivert-$WinDivertVersion-A"
+        if (-not (Test-Path (Join-Path $extracted "x64\WinDivert64.sys") -PathType Leaf)) {
+            throw "Official archive did not contain the expected x64 WinDivert files."
         }
-        New-Item -ItemType Directory -Path $ZapretDir | Out-Null
-        Expand-Archive -Path $zipPath -DestinationPath $ZapretDir -Force
+        if (Test-Path $WinDivertDir) {
+            Remove-Item -LiteralPath $WinDivertDir -Recurse -Force
+        }
+        Copy-Item -LiteralPath $extracted -Destination $WinDivertDir -Recurse -Force
         if (-not (Test-Path $expected)) {
             throw "Downloaded archive did not contain expected file: $expected"
         }
-        Write-Host "[OK] Downloaded and verified zapret2 v$ZapretVersion" -ForegroundColor Green
+        Write-Host "[OK] Downloaded and SHA-256 verified official WinDivert v$WinDivertVersion" -ForegroundColor Green
     } finally {
         Remove-Item -LiteralPath $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
     }
@@ -519,12 +517,6 @@ function New-AppOnlyArchive {
     New-Item -ItemType Directory -Path $stageDir | Out-Null
     try {
         Copy-Item -Path (Join-Path $SourceAppFolder "*") -Destination $stageDir -Recurse -Force
-        foreach ($relativeBin in @("resources\bin", "resources\app\bin")) {
-            $nestedBin = Join-Path $stageDir $relativeBin
-            if (Test-Path $nestedBin) {
-                Remove-Item -LiteralPath $nestedBin -Recurse -Force
-            }
-        }
         if (Test-Path $DestinationZip) { Remove-Item $DestinationZip -Force }
         Compress-Archive -Path (Get-ChildItem -Path $stageDir).FullName -DestinationPath $DestinationZip -CompressionLevel Optimal
     } finally {
@@ -546,13 +538,6 @@ function New-WindowsSingleExecutable {
     New-Item -ItemType Directory -Path $bootstrapDir | Out-Null
     try {
         Copy-Item -Path (Join-Path $SourceAppFolder "*") -Destination $stageDir -Recurse -Force
-        foreach ($relativeBin in @("resources\bin", "resources\app\bin")) {
-            $nestedBin = Join-Path $stageDir $relativeBin
-            if (Test-Path $nestedBin) {
-                Remove-Item -LiteralPath $nestedBin -Recurse -Force
-            }
-        }
-
         $manifestFiles = @()
         foreach ($file in @(Get-ChildItem -LiteralPath $stageDir -Recurse -File | Sort-Object FullName)) {
             $relative = $file.FullName.Substring($stageDir.Length).TrimStart([char[]]"\/").Replace('\', '/')
@@ -738,12 +723,10 @@ function Build-Application {
         exit 1
     }
 
-    # Update bundled routing filters at build time only. Runtime builds never
-    # download route databases on client machines. (Skipped in -AppOnly: filters
-    # are part of bin/, shipped in the dependencies archive.)
+    # Every Windows artifact is self-contained, including CI/AppOnly requests.
+    Ensure-SingBoxWindowsDependency
+    Ensure-WinDivertWindowsDependency
     if (-not $AppOnly) {
-        Ensure-SingBoxWindowsDependency
-        Ensure-Zapret2WindowsDependency
         Update-BundledFilters
     }
 
@@ -789,35 +772,9 @@ function Build-Application {
         New-Item -ItemType Directory -Path $resourcesDir | Out-Null
     }
 
-    # Build Go core with ldflags (include build hash for dev identification).
-    # Split releases also bind the signed core to the exact dependency archive;
-    # the adjacent JSON manifest can no longer redirect elevated execution.
+    # Build an initial core. It is rebuilt after native files are staged, with
+    # the exact runtime-manifest hash embedded into the signed executable.
     $ldflags = "-X 'main.Version=$AppVersion' -X 'main.BuildTime=$BuildTime' -X 'main.BuildHash=$BuildHash' -X 'main.SingBoxVersion=$SingBoxVersion' -X 'main.WireGuardVersion=$WireGuardVersion' -s -w -H=windowsgui"
-    # Every Windows core, including a full local bundle, uses the hosted lock as
-    # its authority and executes only from the protected ProgramData runtime.
-    # A bundled user-writable bin/ may exist for diagnostics, but is never the
-    # elevated execution source.
-    if ($true) {
-        $trustedLockPath = Join-Path $ScriptRoot "deps-lock.json"
-        if (-not (Test-Path -LiteralPath $trustedLockPath -PathType Leaf)) {
-            throw "deps-lock.json is required for an AppOnly build."
-        }
-        $trustedLock = Get-Content -LiteralPath $trustedLockPath -Raw | ConvertFrom-Json
-        $trustedVersion = [string]$trustedLock.depsVersion
-        $trustedAsset = [string]$trustedLock.asset
-        $trustedSHA256 = ([string]$trustedLock.sha256).ToLowerInvariant()
-        $trustedSize = [long]$trustedLock.size
-        $trustedTag = [string]$trustedLock.tag
-        $trustedRequired = @($trustedLock.requiredFiles) -join ','
-        if ($trustedVersion -notmatch '^[0-9a-f]{12}$' -or
-            $trustedAsset -notmatch '^dropo-Windows-Dependencies-x64\.zip$' -or
-            $trustedSHA256 -notmatch '^[0-9a-f]{64}$' -or $trustedSize -le 0 -or
-            $trustedTag -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+$' -or
-            [string]::IsNullOrWhiteSpace($trustedRequired)) {
-            throw "deps-lock.json contains invalid or incomplete trusted dependency identity."
-        }
-        $ldflags = "-X 'main.trustedDepsVersion=$trustedVersion' -X 'main.trustedDepsAsset=$trustedAsset' -X 'main.trustedDepsSHA256=$trustedSHA256' -X 'main.trustedDepsSize=$trustedSize' -X 'main.trustedDepsRequired=$trustedRequired' $ldflags"
-    }
 
     Push-Location $AppDir
     try {
@@ -889,54 +846,6 @@ function Build-Application {
         Copy-PetCertificateBundle -Destination $AppFolder
     }
 
-    # ---- AppOnly (CI): package app without bundled bin/, deps from deps-lock ----
-    if ($AppOnly) {
-        Write-Host "[AppOnly] CI build - skipping bundled bin/; deps referenced via deps-lock.json" -ForegroundColor Yellow
-        $templateSrc = Join-Path $AppDir "config\template.json"
-        if (Test-Path $templateSrc) { Copy-Item $templateSrc $resourcesDir -Force }
-        $repair = Join-Path $ScriptRoot "tools\repair-browser-proxy.ps1"
-        if (Test-Path $repair) { Copy-Item $repair (Join-Path $RuntimeFolder "repair-browser-proxy.ps1") -Force }
-
-        $lockPath = Join-Path $ScriptRoot "deps-lock.json"
-        if (-not (Test-Path $lockPath)) {
-            Write-Host "[ERROR] deps-lock.json not found. Run a full local build once to generate it (it records the dependencies archive depsVersion/sha256/size)." -ForegroundColor Red
-            exit 1
-        }
-        $lock = Get-Content $lockPath -Raw | ConvertFrom-Json
-        $lockTag = [string]$lock.tag
-        if (-not $lockTag) { $lockTag = "v$AppVersion" }
-        $depsUrl = "https://github.com/Droponevedimka/dropo/releases/download/$lockTag/$([string]$lock.asset)"
-        if (-not $SkipHostedDependenciesCheck -and -not (Test-ReleaseAssetAvailable -Url $depsUrl -ExpectedSize ([long]$lock.size))) {
-            Write-Host "[ERROR] deps-lock.json points to a missing dependencies asset:" -ForegroundColor Red
-            Write-Host "        $depsUrl" -ForegroundColor Red
-            Write-Host "        Run a full build with -ForceDepsRelease and publish that dependencies asset." -ForegroundColor Red
-            exit 1
-        }
-        if ($SkipHostedDependenciesCheck) {
-            Write-Host "[WARNING] Skipped hosted dependencies network check for offline packaging." -ForegroundColor Yellow
-        }
-        $manifest = [ordered]@{
-            depsVersion = [string]$lock.depsVersion
-            platform    = if ($lock.platform) { [string]$lock.platform } else { $ReleasePlatform }
-            arch        = if ($lock.arch) { [string]$lock.arch } else { $ReleaseArch }
-            asset       = [string]$lock.asset
-            sha256      = [string]$lock.sha256
-            size        = [long]$lock.size
-            appVersion  = $AppVersion
-            repo        = "Droponevedimka/dropo"
-            requiredFiles = if ($lock.requiredFiles) { @($lock.requiredFiles) } else { $RequiredDepFiles }
-        }
-        [System.IO.File]::WriteAllText((Join-Path $RuntimeFolder "dependencies.json"), ($manifest | ConvertTo-Json), (New-Object System.Text.UTF8Encoding($false)))
-
-        $AppAsset = $WindowsAppAsset
-        $appExeAsset = Join-Path $VersionDir $AppAsset
-        New-WindowsSingleExecutable -SourceAppFolder $AppFolder -DestinationExe $appExeAsset -PackageVersion $AppVersion
-        $appMB = [math]::Round((Get-Item $appExeAsset).Length / 1MB, 2)
-        Write-Host "[OK] Created $AppAsset ($appMB MB, self-extracting AppOnly; deps=$($lock.asset))" -ForegroundColor Green
-        Write-Host "[SUCCESS] App-only build: release/$BuildFolderName/" -ForegroundColor Green
-        return
-    }
-
     # Create bin directory for sing-box
     $binDir = Join-Path $RuntimeFolder "bin"
     if (-not (Test-Path $binDir)) {
@@ -968,60 +877,15 @@ function Build-Application {
         }
     }
 
-    # Copy ByeDPI (free access bypass without VPN key) to bin/ folder
-    $ByeDPIDir = Join-Path $DepsDir "byedpi-v$ByeDPIVersion"
-    $ByeDPIExe = Join-Path $ByeDPIDir "ciadpi.exe"
-    $byeDpiDst = Join-Path $binDir "ciadpi.exe"
-    if (Test-Path $ByeDPIExe) {
-        Copy-Item $ByeDPIExe $byeDpiDst -Force
-        Write-Host "[OK] Copied bin/ciadpi.exe (ByeDPI v$ByeDPIVersion)" -ForegroundColor Green
-    } else {
-        Write-Host "[WARNING] ciadpi.exe not found at: $ByeDPIExe" -ForegroundColor Yellow
-    }
-
-    # Copy the zapret2/winws2 transparent DPI-bypass runtime to bin/.
-    $ZapretFiles = @("winws2.exe", "cygwin1.dll", "WinDivert.dll", "WinDivert64.sys")
-    foreach ($file in $ZapretFiles) {
-        $src = Join-Path $ZapretWinDir $file
+    # Copy the official WinDivert runtime used by Dropo's in-process engine.
+    foreach ($file in @("WinDivert.dll", "WinDivert64.sys")) {
+        $src = Join-Path $WinDivertX64Dir $file
         $dst = Join-Path $binDir $file
-        if (Test-Path $src) {
-            Copy-Item $src $dst -Force
-            Write-Host "[OK] Copied bin/$file (zapret2 v$ZapretVersion)" -ForegroundColor Green
-        } else {
-            Write-Host "[WARNING] zapret file not found at: $src" -ForegroundColor Yellow
-        }
-    }
-    $ZapretFakeDir = Join-Path $ZapretRoot "files\fake"
-    foreach ($fakeFile in @("tls_clienthello_www_google_com.bin", "quic_initial_www_google_com.bin", "quic_initial_facebook_com.bin")) {
-        $src = Join-Path $ZapretFakeDir $fakeFile
         if (-not (Test-Path $src -PathType Leaf)) {
-            throw "Required zapret2 fake payload not found: $src"
+            throw "Required official WinDivert file not found: $src"
         }
-        Copy-Item $src (Join-Path $binDir $fakeFile) -Force
-        Write-Host "[OK] Copied bin/$fakeFile (zapret2 blob)" -ForegroundColor Green
-    }
-    foreach ($luaFile in @("zapret-lib.lua", "zapret-antidpi.lua")) {
-        $src = Join-Path (Join-Path $ZapretRoot "lua") $luaFile
-        if (-not (Test-Path $src -PathType Leaf)) {
-            throw "Required zapret2 Lua module not found: $src"
-        }
-        Copy-Item $src (Join-Path $binDir $luaFile) -Force
-        Write-Host "[OK] Copied bin/$luaFile" -ForegroundColor Green
-    }
-    $ZapretWinDivertFilterDir = Join-Path $ZapretRoot "init.d\windivert.filter.examples"
-    $ZapretWinDivertFilterFiles = @(
-        "windivert_part.quic_initial_ietf.txt",
-        "windivert_part.discord_media.txt",
-        "windivert_part.stun.txt"
-    )
-    foreach ($filterFile in $ZapretWinDivertFilterFiles) {
-        $src = Join-Path $ZapretWinDivertFilterDir $filterFile
-        if (Test-Path $src) {
-            Copy-Item $src (Join-Path $binDir $filterFile) -Force
-            Write-Host "[OK] Copied bin/$filterFile (zapret WinDivert filter)" -ForegroundColor Green
-        } else {
-            Write-Host "[WARNING] zapret WinDivert filter not found at: $src" -ForegroundColor Yellow
-        }
+        Copy-Item $src $dst -Force
+        Write-Host "[OK] Copied bin/$file (official WinDivert v$WinDivertVersion)" -ForegroundColor Green
     }
 
     # Copy Xray-core for VLESS xhttp bridge outbounds
@@ -1055,6 +919,19 @@ function Build-Application {
     } else {
         Write-Host "[WARNING] tg-ws-proxy.exe not bundled; Telegram MTProto proxy will be unavailable" -ForegroundColor Yellow
     }
+
+    # Defender evaluates extracted child PE files independently from the outer
+    # signed installer. Preserve valid upstream signatures and sign only the
+    # otherwise unsigned EXE/DLL payloads with the same publisher identity as
+    # Dropo before their hashes enter the trusted runtime manifest.
+    $unsignedNestedPE = @(Get-ChildItem -LiteralPath $binDir -File | Where-Object {
+        $_.Extension -in @(".exe", ".dll") -and
+        (Get-AuthenticodeSignature -FilePath $_.FullName).Status -eq [System.Management.Automation.SignatureStatus]::NotSigned
+    } | Select-Object -ExpandProperty FullName)
+    if ($unsignedNestedPE.Count -gt 0) {
+        Invoke-WindowsCodeSigning -Paths $unsignedNestedPE
+        Write-Host "[OK] Signed $($unsignedNestedPE.Count) previously unsigned nested PE runtime file(s)" -ForegroundColor Green
+    }
     # tg-ws-proxy is MIT licensed; ship the locally cached license notice.
     $TgWsProxyLicense = Join-Path $TgWsProxyDir "LICENSE"
     if (Test-Path $TgWsProxyLicense -PathType Leaf) {
@@ -1068,8 +945,8 @@ function Build-Application {
     Copy-LicenseFile (Join-Path $SingBoxDir "windows-amd64\sing-box-$SingBoxVersion-windows-amd64\LICENSE") $licensesDir "sing-box-LICENSE.txt"
     Copy-LicenseFile (Join-Path $XrayDir "LICENSE") $licensesDir "xray-LICENSE.txt"
     Copy-LicenseFile (Join-Path $WireGuardDir "LICENSE") $licensesDir "wireguard-windows-LICENSE.txt"
-    Copy-LicenseFile (Join-Path $ByeDPIDir "LICENSE") $licensesDir "byedpi-LICENSE.txt"
-    Copy-LicenseFile (Join-Path $ZapretRoot "docs\LICENSE.txt") $licensesDir "zapret2-LICENSE.txt"
+    Copy-LicenseFile (Join-Path $WinDivertDir "LICENSE") $licensesDir "WinDivert-LICENSE.txt"
+    Copy-LicenseFile (Join-Path $ScriptRoot "THIRD_PARTY_NOTICES.md") $licensesDir "THIRD_PARTY_NOTICES.md"
     # Copy template.json
     $templateSrc = Join-Path $AppDir "config\template.json"
     if (Test-Path $templateSrc) {
@@ -1128,116 +1005,129 @@ function Build-Application {
         }
     }
 
-    # ---- Split packaging: app archive (no bin) + dependencies archive ----
-    # depsVersion is a deterministic short hash of the bundled tool versions, so
-    # it changes only when an actual bundled binary changes.
-    $depsKey = @(
-        [string]$VersionInfo.singbox.version,
-        [string]$VersionInfo.wireguard.version,
-        [string]$VersionInfo.wireguard.wintunVersion,
-        [string]$VersionInfo.byedpi.version,
-        [string]$VersionInfo.zapret.version,
-        [string]$VersionInfo.tgwsproxy.version,
-        [string]$VersionInfo.xray.version
-    ) -join '|'
-    $depsSha256 = [System.Security.Cryptography.SHA256]::Create().ComputeHash([System.Text.Encoding]::UTF8.GetBytes($depsKey))
-    $DepsVersion = ([System.BitConverter]::ToString($depsSha256).Replace('-', '').ToLower()).Substring(0, 12)
-
-    # Marker so the app (and the extracted deps) know which depsVersion is installed.
-    Set-Content -Path (Join-Path $binDir ".deps-version") -Value $DepsVersion -NoNewline -Encoding ascii
-
-    # Platform-tagged dependencies archive = the whole bin/ (heavy, rarely
-    # changes). The filename carries NO hash — the archive is referenced by the
-    # release TAG that hosts it (deps update => new tag => new url). depsVersion
-    # stays as the internal change-detection key + extracted marker. The platform
-    # tag keeps room for future dropo-<platform>-* assets (Android/macOS/Linux).
-    $DepsAsset = $WindowsDepsAsset
-    $depsArchiveForUpload = $false
-    # Archives live INSIDE the version container (release/dropo-<v>-<hash>/), not
-    # in release/ root. Names carry no version/hash (the container already does).
-    $depsZip = Join-Path $VersionDir $DepsAsset
-    if (Test-Path $depsZip) { Remove-Item $depsZip -Force }
+    # The native runtime is content-addressed and described file-by-file. The
+    # signed core trusts only the SHA-256 of this local manifest; no executable
+    # dependency URL or archive identity is accepted by a current Windows build.
     foreach ($requiredFile in $RequiredDepFiles) {
         if (-not (Test-Path (Join-Path $binDir $requiredFile) -PathType Leaf)) {
-            throw "Dependency staging is missing required zapret2 runtime file: $requiredFile"
+			throw "Core dependency staging is missing required file: $requiredFile"
         }
     }
     foreach ($forbiddenFile in $ForbiddenDepFiles) {
         if (Test-Path (Join-Path $binDir $forbiddenFile)) {
-            throw "Obsolete zapret1 runtime must not be packaged: $forbiddenFile"
+            throw "Obsolete external packet runtime must not be packaged: $forbiddenFile"
         }
     }
-    Compress-Archive -Path "$binDir\*" -DestinationPath $depsZip -CompressionLevel Optimal
-    $depsZipSize = (Get-Item $depsZip).Length
-    $depsZipSha = (Get-FileHash -Algorithm SHA256 $depsZip).Hash.ToLower()
-    Write-Host "[OK] Created $DepsAsset ($([math]::Round($depsZipSize / 1MB, 2)) MB, depsVersion=$DepsVersion)" -ForegroundColor Green
 
-    # Decide which release tag hosts the deps archive. If the bundled tool
-    # versions did not change since the last build (same depsVersion) AND a tag is
-    # already recorded, reuse that hosted archive (its tag + sha). Only when deps
-    # actually change do we re-host: the archive must be uploaded to the current
-    # version's release and the freshly-built sha recorded.
-    $lockPath = Join-Path $ScriptRoot "deps-lock.json"
-    $prevLock = $null
-    if (Test-Path $lockPath) { $prevLock = Get-Content $lockPath -Raw | ConvertFrom-Json }
-    if ($ForceDepsRelease) {
-        $depsTag  = "v$AppVersion"
-        $depsSha  = $depsZipSha
-        $depsSize = $depsZipSize
-        $depsArchiveForUpload = $true
-        Write-Host "[Deps] FORCE -> host $DepsAsset on release $depsTag (sha $depsSha)" -ForegroundColor Yellow
-    } elseif ($prevLock -and ([string]$prevLock.depsVersion -eq $DepsVersion) -and $prevLock.tag) {
-        $depsTag  = [string]$prevLock.tag
-        $depsSha  = [string]$prevLock.sha256
-        $depsSize = [long]$prevLock.size
-        if (Test-Path $depsZip) { Remove-Item $depsZip -Force }
-        Write-Host "[Deps] Unchanged (depsVersion=$DepsVersion) - reusing archive hosted at $depsTag" -ForegroundColor Cyan
-        Write-Host "[Deps] Removed freshly-built local deps zip; upload/use the hosted archive recorded in deps-lock.json" -ForegroundColor Gray
-    } else {
-        $depsTag  = "v$AppVersion"
-        $depsSha  = $depsZipSha
-        $depsSize = $depsZipSize
-        $depsArchiveForUpload = $true
-        Write-Host "[Deps] CHANGED -> host $DepsAsset on release $depsTag (sha $depsSha)" -ForegroundColor Yellow
+    $runtimeFiles = @(Get-ChildItem -LiteralPath $binDir -Recurse -File |
+        Where-Object { $_.Name -ne ".deps-version" } |
+        Sort-Object FullName)
+    if ($runtimeFiles.Count -eq 0) {
+        throw "Bundled runtime is empty."
     }
-
-    # Record the dependencies-archive identity so CI (-AppOnly) writes the app
-    # manifest without rebuilding bin/. Commit deps-lock.json when deps change,
-    # and host the archive on the recorded tag's release once.
-    $lock = [ordered]@{ platform = $ReleasePlatform; arch = $ReleaseArch; depsVersion = $DepsVersion; tag = $depsTag; asset = $DepsAsset; sha256 = $depsSha; size = $depsSize; requiredFiles = $RequiredDepFiles }
-    [System.IO.File]::WriteAllText($lockPath, ($lock | ConvertTo-Json), (New-Object System.Text.UTF8Encoding($false)))
-
-    # dependencies.json manifest ships inside resources/ next to dropo-ui.exe
-    # and dropo-core.exe.
-    # Runtime resolves the freshest compatible asset across all GitHub releases;
-    # no fixed release-download URL is embedded in the client.
-    $manifest = [ordered]@{
-        depsVersion = $DepsVersion
-        platform    = $ReleasePlatform
-        arch        = $ReleaseArch
-        asset       = $DepsAsset
-        sha256      = $depsSha
-        size        = $depsSize
-        appVersion  = $AppVersion
-        repo        = "Droponevedimka/dropo"
-        requiredFiles = $RequiredDepFiles
+    $runtimeIdentity = New-Object System.Text.StringBuilder
+    foreach ($file in $runtimeFiles) {
+        $relative = "bin/" + $file.FullName.Substring($binDir.Length).TrimStart([char[]]"\/").Replace('\', '/')
+        $sha = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+        [void]$runtimeIdentity.Append($relative).Append('|').Append([long]$file.Length).Append('|').Append($sha).Append("`n")
     }
-    # Write UTF-8 WITHOUT BOM (Set-Content -Encoding utf8 adds a BOM that Go's
-    # json.Unmarshal rejects).
-    [System.IO.File]::WriteAllText((Join-Path $RuntimeFolder "dependencies.json"), ($manifest | ConvertTo-Json), (New-Object System.Text.UTF8Encoding($false)))
-    Write-Host "[OK] Wrote dependencies.json (depsVersion=$DepsVersion, tag=$depsTag)" -ForegroundColor Green
+    $runtimeIdentityHash = [System.Security.Cryptography.SHA256]::Create().ComputeHash([System.Text.Encoding]::UTF8.GetBytes($runtimeIdentity.ToString()))
+    $RuntimeVersion = ([System.BitConverter]::ToString($runtimeIdentityHash).Replace('-', '').ToLowerInvariant()).Substring(0, 12)
+    Set-Content -Path (Join-Path $binDir ".deps-version") -Value $RuntimeVersion -NoNewline -Encoding ascii
 
-    # The dependency archive identity is known only after bin/ has been staged
-    # and compressed. Rebuild the core and launcher once with that final lock so
-    # a one-pass full build cannot ship executables pinned to the previous
-    # dependency archive.
-    $finalRequired = $RequiredDepFiles -join ','
-    $finalLdflags = "-X 'main.trustedDepsVersion=$DepsVersion' -X 'main.trustedDepsAsset=$DepsAsset' -X 'main.trustedDepsSHA256=$depsSha' -X 'main.trustedDepsSize=$depsSize' -X 'main.trustedDepsRequired=$finalRequired' -X 'main.Version=$AppVersion' -X 'main.BuildTime=$BuildTime' -X 'main.BuildHash=$BuildHash' -X 'main.SingBoxVersion=$SingBoxVersion' -X 'main.WireGuardVersion=$WireGuardVersion' -s -w -H=windowsgui"
+    $runtimeManifestFiles = @()
+    foreach ($file in @(Get-ChildItem -LiteralPath $binDir -Recurse -File | Sort-Object FullName)) {
+        $relative = "bin/" + $file.FullName.Substring($binDir.Length).TrimStart([char[]]"\/").Replace('\', '/')
+        $runtimeManifestFiles += [ordered]@{
+            path   = $relative
+            size   = [long]$file.Length
+            sha256 = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+        }
+    }
+    $runtimeManifest = [ordered]@{ version = $RuntimeVersion; files = $runtimeManifestFiles }
+    $runtimeManifestPath = Join-Path $RuntimeFolder "runtime-manifest.json"
+    [System.IO.File]::WriteAllText($runtimeManifestPath, ($runtimeManifest | ConvertTo-Json -Depth 10), (New-Object System.Text.UTF8Encoding($false)))
+    $runtimeManifestSHA256 = (Get-FileHash -LiteralPath $runtimeManifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    Write-Host "[OK] Wrote trusted runtime manifest (version=$RuntimeVersion, files=$($runtimeManifestFiles.Count))" -ForegroundColor Green
+
+    # A compact SPDX 2.3 software bill of materials travels inside the signed
+    # single-file package. It describes every native runtime file by SHA-256 and
+    # the independently versioned components that produced the bundle.
+    $spdxSHA1Values = @(Get-ChildItem -LiteralPath $binDir -Recurse -File | Sort-Object FullName | ForEach-Object {
+        (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA1).Hash.ToLowerInvariant()
+    })
+    $spdxVerificationBytes = [System.Text.Encoding]::ASCII.GetBytes(($spdxSHA1Values -join ""))
+    $spdxVerificationHash = [System.Security.Cryptography.SHA1]::Create().ComputeHash($spdxVerificationBytes)
+    $spdxVerificationCode = [System.BitConverter]::ToString($spdxVerificationHash).Replace('-', '').ToLowerInvariant()
+    $spdxPackages = @(
+        [ordered]@{ name = "dropo"; SPDXID = "SPDXRef-Package-dropo"; versionInfo = $AppVersion; downloadLocation = "NOASSERTION"; filesAnalyzed = $true; packageVerificationCode = [ordered]@{ packageVerificationCodeValue = $spdxVerificationCode }; licenseConcluded = "MIT"; licenseDeclared = "MIT" },
+        [ordered]@{ name = "sing-box"; SPDXID = "SPDXRef-Package-sing-box"; versionInfo = $SingBoxVersion; downloadLocation = "NOASSERTION"; filesAnalyzed = $false; licenseConcluded = "NOASSERTION"; licenseDeclared = "NOASSERTION" },
+        [ordered]@{ name = "Xray-core"; SPDXID = "SPDXRef-Package-xray"; versionInfo = $XrayVersion; downloadLocation = "NOASSERTION"; filesAnalyzed = $false; licenseConcluded = "MPL-2.0"; licenseDeclared = "MPL-2.0" },
+        [ordered]@{ name = "WireGuard for Windows"; SPDXID = "SPDXRef-Package-wireguard"; versionInfo = $WireGuardVersion; downloadLocation = "NOASSERTION"; filesAnalyzed = $false; licenseConcluded = "NOASSERTION"; licenseDeclared = "NOASSERTION" },
+        [ordered]@{ name = "WinDivert"; SPDXID = "SPDXRef-Package-windivert"; versionInfo = $WinDivertVersion; downloadLocation = "NOASSERTION"; filesAnalyzed = $false; licenseConcluded = "LGPL-3.0-only OR GPL-2.0-only"; licenseDeclared = "LGPL-3.0-only OR GPL-2.0-only" },
+        [ordered]@{ name = "tg-ws-proxy"; SPDXID = "SPDXRef-Package-tg-ws-proxy"; versionInfo = $TgWsProxyVersion; downloadLocation = "NOASSERTION"; filesAnalyzed = $false; licenseConcluded = "MIT"; licenseDeclared = "MIT" }
+    )
+    $spdxFiles = @()
+    $spdxRelationships = @([ordered]@{ spdxElementId = "SPDXRef-DOCUMENT"; relationshipType = "DESCRIBES"; relatedSpdxElement = "SPDXRef-Package-dropo" })
+    for ($index = 0; $index -lt $runtimeManifestFiles.Count; $index++) {
+        $item = $runtimeManifestFiles[$index]
+        $fileID = "SPDXRef-File-$($index + 1)"
+        $spdxFiles += [ordered]@{
+            fileName = "./$($item.path)"
+            SPDXID = $fileID
+            checksums = @([ordered]@{ algorithm = "SHA256"; checksumValue = $item.sha256 })
+            licenseConcluded = "NOASSERTION"
+            copyrightText = "NOASSERTION"
+        }
+        $spdxRelationships += [ordered]@{ spdxElementId = "SPDXRef-Package-dropo"; relationshipType = "CONTAINS"; relatedSpdxElement = $fileID }
+    }
+    $spdxDocument = [ordered]@{
+        spdxVersion = "SPDX-2.3"
+        dataLicense = "CC0-1.0"
+        SPDXID = "SPDXRef-DOCUMENT"
+        name = "dropo-$AppVersion-windows-x64"
+        documentNamespace = "https://k-ampus.dev/spdx/dropo/$AppVersion/$BuildHash"
+        creationInfo = [ordered]@{ created = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ"); creators = @("Organization: Droponevedimka") }
+        packages = $spdxPackages
+        files = $spdxFiles
+        relationships = $spdxRelationships
+    }
+    $spdxPath = Join-Path $RuntimeFolder "dropo-sbom.spdx.json"
+    [System.IO.File]::WriteAllText($spdxPath, ($spdxDocument | ConvertTo-Json -Depth 12), (New-Object System.Text.UTF8Encoding($false)))
+
+    # This provenance statement is intentionally local and self-contained. Its
+    # trust comes from being embedded in the Authenticode-signed package; it
+    # records the exact source revision and runtime-manifest subject.
+    $provenance = [ordered]@{
+        _type = "https://in-toto.io/Statement/v1"
+        subject = @([ordered]@{ name = "runtime-manifest.json"; digest = [ordered]@{ sha256 = $runtimeManifestSHA256 } })
+        predicateType = "https://slsa.dev/provenance/v1"
+        predicate = [ordered]@{
+            buildDefinition = [ordered]@{
+                buildType = "https://k-ampus.dev/build/windows-single-exe/v1"
+                externalParameters = [ordered]@{ version = $AppVersion; platform = $ReleasePlatform; architecture = $ReleaseArch }
+                internalParameters = [ordered]@{ buildHash = $BuildHash; sourceRevision = $SourceRevision; sourceDirty = $SourceDirty }
+                resolvedDependencies = @(
+                    [ordered]@{ uri = "pkg:generic/sing-box@$SingBoxVersion" },
+                    [ordered]@{ uri = "pkg:generic/xray-core@$XrayVersion" },
+                    [ordered]@{ uri = "pkg:generic/wireguard-windows@$WireGuardVersion" },
+                    [ordered]@{ uri = "pkg:generic/windivert@$WinDivertVersion" },
+                    [ordered]@{ uri = "pkg:generic/tg-ws-proxy@$TgWsProxyVersion" }
+                )
+            }
+            runDetails = [ordered]@{ builder = [ordered]@{ id = "dropo-local-windows-builder" }; metadata = [ordered]@{ invocationId = $BuildHash; startedOn = (Get-Date).ToUniversalTime().ToString("o") } }
+        }
+    }
+    $provenancePath = Join-Path $RuntimeFolder "dropo-build-provenance.json"
+    [System.IO.File]::WriteAllText($provenancePath, ($provenance | ConvertTo-Json -Depth 12), (New-Object System.Text.UTF8Encoding($false)))
+    Write-Host "[OK] Wrote SPDX SBOM and signed-package provenance metadata" -ForegroundColor Green
+
+    $finalLdflags = "-X 'main.trustedRuntimeVersion=$RuntimeVersion' -X 'main.trustedRuntimeManifestSHA256=$runtimeManifestSHA256' -X 'main.Version=$AppVersion' -X 'main.BuildTime=$BuildTime' -X 'main.BuildHash=$BuildHash' -X 'main.SingBoxVersion=$SingBoxVersion' -X 'main.WireGuardVersion=$WireGuardVersion' -s -w -H=windowsgui"
     Push-Location $AppDir
     try {
         & go build -ldflags $finalLdflags -o $coreExe .
         if ($LASTEXITCODE -ne 0) {
-            throw "Go core rebuild with final dependency lock failed."
+            throw "Go core rebuild with final bundled-runtime identity failed."
         }
     } finally {
         Pop-Location
@@ -1250,29 +1140,26 @@ function Build-Application {
         $launcherLdflags = "-X 'main.expectedCoreSHA256=$coreSHA256' -X 'main.expectedUISHA256=$uiSHA256' -s -w -H=windowsgui"
         & go build -ldflags $launcherLdflags -o (Join-Path $AppFolder "dropo.exe") .
         if ($LASTEXITCODE -ne 0) {
-            throw "Launcher rebuild after dependency lock binding failed."
+            throw "Launcher rebuild after bundled-runtime binding failed."
         }
     } finally {
         Pop-Location
     }
     Invoke-WindowsCodeSigning -Paths @((Join-Path $AppFolder "dropo.exe"))
-    Write-Host "[OK] Rebuilt core and launcher with final dependency lock" -ForegroundColor Green
+    Write-Host "[OK] Rebuilt core and launcher with the final bundled-runtime identity" -ForegroundColor Green
 
-    # Single self-extracting app = the dropo/ app folder WITHOUT bin/.
+    # Single self-extracting app contains UI, core and every required runtime.
     $AppAsset = $WindowsAppAsset
     $appExeAsset = Join-Path $VersionDir $AppAsset
     New-WindowsSingleExecutable -SourceAppFolder $AppFolder -DestinationExe $appExeAsset -PackageVersion $AppVersion
     $appSize = (Get-Item $appExeAsset).Length / 1MB
-    Write-Host "[OK] Created $AppAsset ($([math]::Round($appSize, 2)) MB, self-extracting - bin/ ships as $DepsAsset)" -ForegroundColor Green
+    Write-Host "[OK] Created $AppAsset ($([math]::Round($appSize, 2)) MB, self-extracting complete runtime)" -ForegroundColor Green
 
     Write-Host ""
     Write-Host "[SUCCESS] Build completed: release/$BuildFolderName/" -ForegroundColor Green
     Write-Host "  app folder:  dropo/  (run dropo/dropo.exe)" -ForegroundColor Gray
-    if ($depsArchiveForUpload) {
-        Write-Host "  release files: $AppAsset + $DepsAsset" -ForegroundColor Gray
-    } else {
-        Write-Host "  release files: $AppAsset (deps reused from $depsTag)" -ForegroundColor Gray
-    }
+	$releaseFiles = @($AppAsset)
+	Write-Host "  release files: $($releaseFiles -join ' + ')" -ForegroundColor Gray
 
     # Show files
     Write-Host ""
@@ -1593,7 +1480,7 @@ function Create-Portable {
     New-WindowsSingleExecutable -SourceAppFolder $appFolder -DestinationExe $appAssetPath -PackageVersion $AppVersion
 
     $fileSize = (Get-Item $appAssetPath).Length / 1MB
-    Write-Host "[OK] Created: $WindowsAppAsset ($([math]::Round($fileSize, 2)) MB, self-extracting - bin/ ships separately)" -ForegroundColor Green
+    Write-Host "[OK] Created: $WindowsAppAsset ($([math]::Round($fileSize, 2)) MB, self-extracting complete runtime)" -ForegroundColor Green
 }
 
 # Main execution

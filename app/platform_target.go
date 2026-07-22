@@ -32,8 +32,8 @@ func PlatformTargetFor(goos, goarch string) PlatformTarget {
 			ReleaseArch:       normalizeReleaseArch(goarch),
 			AppAsset:          "dropo-Windows-" + normalizeReleaseArch(goarch) + ".exe",
 			DependenciesAsset: "dropo-Windows-Dependencies-" + normalizeReleaseArch(goarch) + ".zip",
-			RequiredDeps:      []string{"sing-box.exe", "winws2.exe", "WinDivert.dll", "zapret-lib.lua", "zapret-antidpi.lua"},
-			SplitDeps:         true,
+			RequiredDeps:      []string{"sing-box.exe", "xray.exe", "wireguard.exe", "wg.exe", "wintun.dll", "WinDivert.dll", "WinDivert64.sys"},
+			SplitDeps:         false,
 			SelfUpdate:        true,
 		}
 	case "linux":

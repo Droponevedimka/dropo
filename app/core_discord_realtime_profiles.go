@@ -11,11 +11,10 @@ const (
 	discordRealtimeGroupTag = "discord-realtime"
 	discordVPNGroupTag      = "discord-vpn"
 	discordRealtimeBusyID   = "discord-realtime-connect"
-	// Encrypted Discord RTP is not an L7 protocol that zapret2 can identify.
-	// Keep one upstream-compatible direct profile instead of restarting winws2
-	// through speculative fake-packet permutations. Automatic mode uses a
-	// UDP-capable subscription for realtime traffic first and this profile as a
-	// stable fallback when no subscription is available.
+	// Encrypted Discord RTP cannot be identified by payload after the discovery
+	// exchange. Keep one stable native discovery/STUN profile and never mutate
+	// opaque RTP. Automatic mode starts direct and uses an ordered VPN-source
+	// fallback only after bidirectional realtime health fails.
 	discordRealtimeMaxTrials = 1
 )
 

@@ -237,52 +237,75 @@ function Invoke-ArtifactValidation {
     Assert-FileExists (Join-Path $runtimeFolder "dropo-core.exe")
     Assert-FileExists (Join-Path $runtimeFolder "flutter_windows.dll")
     Assert-FileExists (Join-Path $runtimeFolder "data\flutter_assets\AssetManifest.bin")
-    $depsManifestPath = Join-Path $runtimeFolder "dependencies.json"
-    Assert-FileExists $depsManifestPath
-	$depsManifest = Get-Content $depsManifestPath -Raw | ConvertFrom-Json
-	$depsLock = Get-Content (Join-Path $RepoRoot "deps-lock.json") -Raw | ConvertFrom-Json
-    foreach ($field in @("depsVersion", "asset", "sha256", "size")) {
-        if ([string]$depsManifest.$field -ne [string]$depsLock.$field) {
-			throw "dependencies.json field $field does not match deps-lock.json"
+    $runtimeManifestPath = Join-Path $runtimeFolder "runtime-manifest.json"
+    Assert-FileExists $runtimeManifestPath
+    $runtimeManifest = Get-Content $runtimeManifestPath -Raw | ConvertFrom-Json
+    if ([string]::IsNullOrWhiteSpace([string]$runtimeManifest.version) -or @($runtimeManifest.files).Count -eq 0) {
+        throw "runtime-manifest.json is empty or incomplete"
+    }
+    $manifestPaths = @{}
+    foreach ($item in @($runtimeManifest.files)) {
+        $relative = ([string]$item.path).Replace('/', '\')
+        if ($relative -notmatch '^bin\\' -or $relative -match '(^|\\)\.\.(\\|$)') {
+            throw "Unsafe runtime manifest path: $relative"
+        }
+        $runtimeFile = Join-Path $runtimeFolder $relative
+        Assert-FileExists $runtimeFile
+        if ((Get-Item -LiteralPath $runtimeFile).Length -ne [long]$item.size) {
+            throw "Runtime file size mismatch: $relative"
+        }
+        $actualRuntimeSHA = (Get-FileHash -LiteralPath $runtimeFile -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($actualRuntimeSHA -ne ([string]$item.sha256).ToLowerInvariant()) {
+            throw "Runtime file SHA-256 mismatch: $relative"
+        }
+        $manifestPaths[$relative.ToLowerInvariant()] = $true
+    }
+    foreach ($requiredFile in @("sing-box.exe", "xray.exe", "wireguard.exe", "wg.exe", "wintun.dll", "WinDivert.dll", "WinDivert64.sys")) {
+        if (-not $manifestPaths.ContainsKey(("bin\" + $requiredFile).ToLowerInvariant())) {
+            throw "Bundled runtime manifest is missing required file: $requiredFile"
+        }
+    }
+    foreach ($forbiddenFile in @("winws.exe", "winws2.exe", "cygwin1.dll", "zapret-lib.lua", "zapret-antidpi.lua")) {
+        if (Test-Path -LiteralPath (Join-Path $runtimeFolder "bin\$forbiddenFile")) {
+            throw "Release contains a forbidden external packet runtime file: $forbiddenFile"
+        }
+    }
+	$sbomPath = Join-Path $runtimeFolder "dropo-sbom.spdx.json"
+	$provenancePath = Join-Path $runtimeFolder "dropo-build-provenance.json"
+	Assert-FileExists $sbomPath
+	Assert-FileExists $provenancePath
+	Assert-FileExists (Join-Path $runtimeFolder "licenses\THIRD_PARTY_NOTICES.md")
+	$sbom = Get-Content -LiteralPath $sbomPath -Raw | ConvertFrom-Json
+	if ($sbom.spdxVersion -ne "SPDX-2.3" -or @($sbom.files).Count -ne @($runtimeManifest.files).Count) {
+		throw "SPDX SBOM does not describe the complete native runtime manifest."
+	}
+	$sbomNames = @($sbom.packages | ForEach-Object { [string]$_.name })
+	foreach ($component in @("dropo", "sing-box", "Xray-core", "WireGuard for Windows", "WinDivert", "tg-ws-proxy")) {
+		if ($component -notin $sbomNames) {
+			throw "SPDX SBOM is missing component: $component"
 		}
 	}
-	$currentTag = "v$version"
-	if ([string]$depsLock.tag -eq $currentTag) {
-		$depsArchivePath = Join-Path $folder ([string]$depsLock.asset)
-		Assert-FileExists $depsArchivePath
-		$actualDepsSize = (Get-Item -LiteralPath $depsArchivePath).Length
-		$actualDepsSha = (Get-FileHash -LiteralPath $depsArchivePath -Algorithm SHA256).Hash.ToLowerInvariant()
-		if ($actualDepsSize -ne [long]$depsLock.size) {
-			throw "Dependencies archive size mismatch: lock=$($depsLock.size), file=$actualDepsSize"
-		}
-		if ($actualDepsSha -ne ([string]$depsLock.sha256).ToLowerInvariant()) {
-			throw "Dependencies archive SHA-256 mismatch: lock=$($depsLock.sha256), file=$actualDepsSha"
-		}
-		Add-Type -AssemblyName System.IO.Compression.FileSystem
-		$archive = [IO.Compression.ZipFile]::OpenRead($depsArchivePath)
-		try {
-			$entries = @($archive.Entries | ForEach-Object { $_.FullName.Replace('\', '/').TrimStart('/') })
-			foreach ($requiredFile in @($depsLock.requiredFiles)) {
-				if ($entries -notcontains [string]$requiredFile) {
-					throw "Dependencies archive is missing required file: $requiredFile"
-				}
-			}
-		} finally {
-			$archive.Dispose()
-		}
-		Write-Host "Dependencies: $depsArchivePath" -ForegroundColor Gray
+	$provenance = Get-Content -LiteralPath $provenancePath -Raw | ConvertFrom-Json
+	$expectedManifestSHA = (Get-FileHash -LiteralPath $runtimeManifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
+	if (([string]$provenance.subject[0].digest.sha256).ToLowerInvariant() -ne $expectedManifestSHA) {
+		throw "Build provenance does not bind the trusted runtime manifest."
 	}
 	Assert-FileExists (Join-Path $runtimeFolder "resources\template.json")
     Assert-FileExists $windowsExePath
-    Assert-FileExists $androidApkPath
-    Assert-FileExists $androidShaPath
     Assert-NoRuntimeFiles $appFolder
 
-    $androidShaLine = (Get-Content $androidShaPath -Raw).Trim()
-    $androidSha = (Get-FileHash -Algorithm SHA256 $androidApkPath).Hash.ToLower()
-    $androidShaPattern = "^$([regex]::Escape($androidSha))\s+$([regex]::Escape($androidAssetName))$"
-    if ($androidShaLine -notmatch $androidShaPattern) {
-        throw "Android APK sha256 mismatch. File has $androidSha but sha256 file contains: $androidShaLine"
+    $androidApkExists = Test-Path $androidApkPath -PathType Leaf
+    $androidShaExists = Test-Path $androidShaPath -PathType Leaf
+    if ($androidApkExists -ne $androidShaExists) {
+        throw "Android release must contain both $androidAssetName and its sha256 file, or neither in a Windows-only build."
+    }
+    if ($androidApkExists) {
+        $androidShaLine = (Get-Content $androidShaPath -Raw).Trim()
+        $androidSha = (Get-FileHash -Algorithm SHA256 $androidApkPath).Hash.ToLower()
+        $androidShaPattern = "^$([regex]::Escape($androidSha))\s+$([regex]::Escape($androidAssetName))$"
+        if ($androidShaLine -notmatch $androidShaPattern) {
+            throw "Android APK sha256 mismatch. File has $androidSha but sha256 file contains: $androidShaLine"
+        }
     }
 
     Assert-NotRequireAdministrator $dropoExe
@@ -292,6 +315,9 @@ function Invoke-ArtifactValidation {
     Assert-AuthenticodeSigned $windowsExePath
     Assert-AuthenticodeSigned (Join-Path $runtimeFolder "dropo-ui.exe")
     Assert-AuthenticodeSigned (Join-Path $runtimeFolder "dropo-core.exe")
+	foreach ($nestedPE in @(Get-ChildItem -LiteralPath (Join-Path $runtimeFolder "bin") -File | Where-Object { $_.Extension -in @(".exe", ".dll") })) {
+		Assert-AuthenticodeSigned $nestedPE.FullName
+	}
 
     $certificateFolder = Join-Path $runtimeFolder "cert"
     foreach ($name in @(
@@ -331,7 +357,9 @@ function Invoke-ArtifactValidation {
         Assert-FileExists (Join-Path $installedRoot "install-manifest.json")
         Assert-FileExists (Join-Path $installedRoot "resources\dropo-core.exe")
         Assert-FileExists (Join-Path $installedRoot "resources\dropo-ui.exe")
-        Assert-FileExists (Join-Path $installedRoot "resources\dependencies.json")
+        Assert-FileExists (Join-Path $installedRoot "resources\runtime-manifest.json")
+        Assert-FileExists (Join-Path $installedRoot "resources\bin\WinDivert.dll")
+        Assert-FileExists (Join-Path $installedRoot "resources\bin\WinDivert64.sys")
         Assert-NoRuntimeFiles $installedRoot
     } finally {
         $env:LOCALAPPDATA = $previousLocalAppData
@@ -345,11 +373,14 @@ function Invoke-RuntimeSmoke {
     param([string]$Folder)
 
     $runtimeFolder = New-RuntimeReleaseCopy -Folder $Folder
-    $env:DROPO_TEST_FREE_ACCESS_BASE = $runtimeFolder
+	$runtimeBase = Join-Path $runtimeFolder "resources"
+    $env:DROPO_TEST_FREE_ACCESS_BASE = $runtimeBase
+	$env:DROPO_TEST_DEEP_WINDOWS_LIVE = "1"
     try {
-        Invoke-External "go" @("test", "./...", "-run", "TestManualFreeAccessRuntimeFromEnv", "-count=1", "-v") $AppDir
+		Invoke-External "go" @("test", "./...", "-run", "TestManualWindowsUnifiedAppRuntimeFromEnv", "-count=1", "-v") $AppDir
     } finally {
         Remove-Item Env:\DROPO_TEST_FREE_ACCESS_BASE -ErrorAction SilentlyContinue
+		Remove-Item Env:\DROPO_TEST_DEEP_WINDOWS_LIVE -ErrorAction SilentlyContinue
         Remove-Item -Path $runtimeFolder -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
@@ -362,7 +393,8 @@ function Invoke-SubscriptionSmoke {
     }
 
     $runtimeFolder = New-RuntimeReleaseCopy -Folder $Folder
-    $env:DROPO_TEST_FREE_ACCESS_BASE = $runtimeFolder
+	$runtimeBase = Join-Path $runtimeFolder "resources"
+    $env:DROPO_TEST_FREE_ACCESS_BASE = $runtimeBase
     $env:DROPO_TEST_SUBSCRIPTION_URL = $SubscriptionUrl
     try {
         Invoke-External "go" @("test", "./...", "-run", "TestManualSubscriptionRuntimeFromEnv", "-count=1", "-v") $AppDir

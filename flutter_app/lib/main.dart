@@ -168,6 +168,13 @@ abstract class CoreBridge {
   Future<Map<String, dynamic>> setConnected(bool value);
   Future<VpnConflictInfo> externalVpnConflicts();
   Future<Map<String, dynamic>> downloadDependencies();
+  Future<List<VpnSourceInfo>> vpnSources();
+  Future<Map<String, dynamic>> addVpnSource(String name, String uri);
+  Future<Map<String, dynamic>> removeVpnSource(String id);
+  Future<Map<String, dynamic>> setVpnSourceNode(String id, int nodeIndex);
+  Future<Map<String, dynamic>> setVpnSourceEnabled(String id, bool enabled);
+  Future<Map<String, dynamic>> moveVpnSource(String id, int newIndex);
+  Future<Map<String, dynamic>> refreshVpnSources();
   Future<Map<String, dynamic>> saveSubscription(String value);
   Future<TelegramExitInfo> prepareQuit();
   Future<void> finalizeQuit();
@@ -605,6 +612,49 @@ class HttpCoreBridge implements CoreBridge {
       '/api/dependencies/download',
       timeout: const Duration(minutes: 11),
     );
+  }
+
+  @override
+  Future<List<VpnSourceInfo>> vpnSources() async {
+    final result = await callMap('GetVPNSources');
+    final raw = result['sources'];
+    return raw is List
+        ? raw.map(_asMap).map(VpnSourceInfo.fromJson).toList(growable: false)
+        : const <VpnSourceInfo>[];
+  }
+
+  @override
+  Future<Map<String, dynamic>> addVpnSource(String name, String uri) {
+    return callMap(
+      'AddVPNSource',
+      args: [name.trim(), uri.trim()],
+      timeout: const Duration(minutes: 3),
+    );
+  }
+
+  @override
+  Future<Map<String, dynamic>> removeVpnSource(String id) {
+    return callMap('RemoveVPNSource', args: [id]);
+  }
+
+  @override
+  Future<Map<String, dynamic>> setVpnSourceNode(String id, int nodeIndex) {
+    return callMap('SetVPNSourceNode', args: [id, nodeIndex]);
+  }
+
+  @override
+  Future<Map<String, dynamic>> setVpnSourceEnabled(String id, bool enabled) {
+    return callMap('SetVPNSourceEnabled', args: [id, enabled]);
+  }
+
+  @override
+  Future<Map<String, dynamic>> moveVpnSource(String id, int newIndex) {
+    return callMap('MoveVPNSource', args: [id, newIndex]);
+  }
+
+  @override
+  Future<Map<String, dynamic>> refreshVpnSources() {
+    return callMap('RefreshVPNSources', timeout: const Duration(minutes: 3));
   }
 
   @override
@@ -1185,6 +1235,60 @@ class ChannelCoreBridge implements CoreBridge {
   Future<Map<String, dynamic>> downloadDependencies() async {
     return {'success': true, 'dependencies': _androidDepsJson};
   }
+
+  @override
+  Future<List<VpnSourceInfo>> vpnSources() async {
+    final current = await subscription();
+    if (!current.hasSubscription) return const [];
+    return [
+      VpnSourceInfo(
+        id: 'source-1',
+        name: 'Primary',
+        kind: 'subscription',
+        disabled: false,
+        selectedNode: 0,
+        nodeCount: current.proxyCount,
+        nodeNames: const [],
+        lastUpdated: '',
+        lastError: '',
+      ),
+    ];
+  }
+
+  @override
+  Future<Map<String, dynamic>> addVpnSource(String name, String uri) =>
+      saveSubscription(uri);
+
+  @override
+  Future<Map<String, dynamic>> removeVpnSource(String id) =>
+      saveSubscription('');
+
+  @override
+  Future<Map<String, dynamic>> setVpnSourceNode(
+    String id,
+    int nodeIndex,
+  ) async => {
+    'success': nodeIndex == 0,
+    'error': 'Выбор узла доступен на Windows',
+  };
+
+  @override
+  Future<Map<String, dynamic>> setVpnSourceEnabled(
+    String id,
+    bool enabled,
+  ) async => {
+    'success': false,
+    'error': 'Управление источниками доступно на Windows',
+  };
+
+  @override
+  Future<Map<String, dynamic>> moveVpnSource(String id, int newIndex) async => {
+    'success': false,
+    'error': 'Порядок источников доступен на Windows',
+  };
+
+  @override
+  Future<Map<String, dynamic>> refreshVpnSources() async => {'success': true};
 
   @override
   Future<Map<String, dynamic>> saveSubscription(String value) {
@@ -1769,6 +1873,52 @@ class MockCoreBridge implements CoreBridge {
   }
 
   @override
+  Future<List<VpnSourceInfo>> vpnSources() async {
+    if (_subscriptionUrl.isEmpty) return const [];
+    return const [
+      VpnSourceInfo(
+        id: 'source-1',
+        name: 'Demo source',
+        kind: 'subscription',
+        disabled: false,
+        selectedNode: 0,
+        nodeCount: 3,
+        nodeNames: ['Provider node 1', 'Provider node 2', 'Provider node 3'],
+        lastUpdated: '',
+        lastError: '',
+      ),
+    ];
+  }
+
+  @override
+  Future<Map<String, dynamic>> addVpnSource(String name, String uri) =>
+      saveSubscription(uri);
+
+  @override
+  Future<Map<String, dynamic>> removeVpnSource(String id) =>
+      saveSubscription('');
+
+  @override
+  Future<Map<String, dynamic>> setVpnSourceNode(
+    String id,
+    int nodeIndex,
+  ) async => {'success': true};
+
+  @override
+  Future<Map<String, dynamic>> setVpnSourceEnabled(
+    String id,
+    bool enabled,
+  ) async => {'success': true};
+
+  @override
+  Future<Map<String, dynamic>> moveVpnSource(String id, int newIndex) async => {
+    'success': true,
+  };
+
+  @override
+  Future<Map<String, dynamic>> refreshVpnSources() async => {'success': true};
+
+  @override
   Future<Map<String, dynamic>> saveSubscription(String value) async {
     _subscriptionUrl = value.trim();
     return {
@@ -2114,6 +2264,44 @@ class SubscriptionInfo {
       hasSubscription: json['hasSubscription'] == true,
       url: json['url']?.toString() ?? '',
       proxyCount: _asInt(json['proxyCount']),
+    );
+  }
+}
+
+class VpnSourceInfo {
+  const VpnSourceInfo({
+    required this.id,
+    required this.name,
+    required this.kind,
+    required this.disabled,
+    required this.selectedNode,
+    required this.nodeCount,
+    required this.nodeNames,
+    required this.lastUpdated,
+    required this.lastError,
+  });
+
+  final String id;
+  final String name;
+  final String kind;
+  final bool disabled;
+  final int selectedNode;
+  final int nodeCount;
+  final List<String> nodeNames;
+  final String lastUpdated;
+  final String lastError;
+
+  factory VpnSourceInfo.fromJson(Map<String, dynamic> json) {
+    return VpnSourceInfo(
+      id: json['id']?.toString() ?? '',
+      name: json['name']?.toString() ?? 'VPN-источник',
+      kind: json['kind']?.toString() ?? 'subscription',
+      disabled: json['disabled'] == true,
+      selectedNode: _asInt(json['selected_node']),
+      nodeCount: _asInt(json['node_count']),
+      nodeNames: _asStringList(json['node_names']),
+      lastUpdated: json['last_updated']?.toString() ?? '',
+      lastError: json['last_error']?.toString() ?? '',
     );
   }
 }
@@ -3045,7 +3233,6 @@ class _DropoHomePageState extends State<DropoHomePage>
 
       await _refresh(all: true);
       _scheduleStartupUpdateCheck();
-      await _ensureDependenciesReady();
       if (!mounted) {
         return;
       }
@@ -3274,16 +3461,6 @@ class _DropoHomePageState extends State<DropoHomePage>
         unawaited(_refresh());
       }
     }
-  }
-
-  Future<void> _ensureDependenciesReady() async {
-    if (!mounted) {
-      return;
-    }
-    if (!status.dependencies.managed || status.dependencies.ready) {
-      return;
-    }
-    await _downloadDependencies();
   }
 
   void _scheduleStartupUpdateCheck() {
@@ -3814,7 +3991,7 @@ class _DropoHomePageState extends State<DropoHomePage>
       externalVpnConflictBlocked = false;
       statusMessage = 'Подключаем VPN';
       connectionHint =
-          'Перед запуском проверяем активные VPN, zapret и туннельные адаптеры.';
+          'Перед запуском проверяем активные VPN, packet-filter и туннельные адаптеры.';
       connectionHintDanger = false;
     });
 
@@ -3831,7 +4008,7 @@ class _DropoHomePageState extends State<DropoHomePage>
         externalVpnConflictBlocked = true;
         statusMessage = 'Обнаружен сетевой конфликт';
         connectionHint =
-            'Закройте найденные VPN или zapret-процессы и запустите dropo снова.';
+            'Закройте найденные VPN или сторонние packet-filter процессы и запустите dropo снова.';
         routeProbeActive = false;
       });
       final continueAnyway = await _showExternalVpnConflictDialog(info);
@@ -3848,7 +4025,7 @@ class _DropoHomePageState extends State<DropoHomePage>
           externalVpnConflictBlocked = true;
           statusMessage = 'Обнаружен сетевой конфликт';
           connectionHint =
-              'Закройте найденные VPN или zapret-процессы и запустите dropo снова.';
+              'Закройте найденные VPN или сторонние packet-filter процессы и запустите dropo снова.';
           routeProbeActive = false;
         });
       }
@@ -3874,13 +4051,13 @@ class _DropoHomePageState extends State<DropoHomePage>
         return _AppDialog(
           width: 560,
           centered: true,
-          title: 'Работает другой VPN или zapret',
+          title: 'Работает другой VPN или packet-filter',
           icon: Icons.warning_amber_rounded,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               const Text(
-                'Найдены активные VPN-подключения, туннельные адаптеры или сторонние zapret/WinDivert-процессы. При одновременном запуске могут конфликтовать маршруты, DNS, TUN и фильтры пакетов.',
+                'Найдены активные VPN-подключения, туннельные адаптеры или сторонние packet-filter/WinDivert-процессы. При одновременном запуске могут конфликтовать маршруты, DNS, TUN и фильтры пакетов.',
                 style: TextStyle(color: Color(0xFFD8E4E0), height: 1.35),
               ),
               const SizedBox(height: 12),
@@ -3895,7 +4072,7 @@ class _DropoHomePageState extends State<DropoHomePage>
                 icon: Icons.power_settings_new,
                 title: 'Рекомендуем',
                 body:
-                    'Нажмите «Отмена», закройте сторонний VPN или zapret и затем включите dropo заново. Продолжайте только если понимаете риск конфликта.',
+                    'Нажмите «Отмена», закройте сторонний VPN или packet-filter и затем включите dropo заново. Продолжайте только если понимаете риск конфликта.',
               ),
               const SizedBox(height: 14),
               Row(
@@ -3930,8 +4107,9 @@ class _DropoHomePageState extends State<DropoHomePage>
   Future<void> _downloadDependencies() async {
     await _runBusy(() async {
       setState(() {
-        statusMessage = 'Загружаем компоненты';
-        connectionHint = 'Скачиваем и проверяем архив зависимостей...';
+        statusMessage = 'Проверяем компоненты';
+        connectionHint =
+            'Проверяем и при необходимости восстанавливаем встроенный runtime...';
         connectionHintDanger = false;
       });
       Map<String, dynamic> result;
@@ -3953,17 +4131,13 @@ class _DropoHomePageState extends State<DropoHomePage>
         _asMap(result['dependencies']),
       );
       setState(() {
-        if (dependencyResult.degraded) {
-          statusMessage = 'zapret2 заблокирован Defender';
-          connectionHint = dependencyResult.warning.isEmpty
-              ? 'VPN/VLESS работает, локальный обход временно отключён.'
-              : dependencyResult.warning;
-          connectionHintDanger = true;
-        } else {
-          statusMessage = 'Компоненты готовы';
-          connectionHint = 'Зависимости скачаны, проверены и распакованы.';
-          connectionHintDanger = false;
-        }
+        statusMessage = dependencyResult.ready
+            ? 'VPN-ядро готово'
+            : 'VPN-ядро не установлено';
+        connectionHint = dependencyResult.ready
+            ? 'Все встроенные компоненты проверены и готовы.'
+            : 'Не удалось восстановить встроенные компоненты; переустановите приложение из официального EXE.';
+        connectionHintDanger = !dependencyResult.ready;
         depsProgress = '';
       });
       await _refresh(all: true);
@@ -6318,7 +6492,7 @@ class _DependencyStrip extends StatelessWidget {
             icon: Icons.security,
             color: const Color(0xFFF59E0B),
             text: warning.isEmpty
-                ? 'Defender заблокировал zapret2. VPN работает; обновите базы Defender и нажмите для повторной проверки.'
+                ? 'Часть встроенного runtime недоступна. Нажмите для проверки и локального восстановления.'
                 : '$warning Нажмите для повторной проверки.',
           ),
         ),
@@ -10145,17 +10319,16 @@ class _SettingsDialogState extends State<_SettingsDialog> {
             ),
             if (!isMobile)
               _ButtonSetting(
-                title: 'Компоненты',
-                description: widget.currentStatus.dependencies.degraded
-                    ? 'Defender блокирует zapret2; VPN/VLESS остаётся активным'
-                    : widget.currentStatus.dependencies.ready
-                    ? 'Зависимости загружены'
-                    : 'Скачать архив зависимостей',
-                label: widget.currentStatus.dependencies.degraded
-                    ? 'Повторить'
-                    : 'Скачать',
-                icon: Icons.download,
-                onPressed: canChangeRuntime
+                title: 'Встроенный runtime',
+                description: widget.currentStatus.dependencies.ready
+                    ? 'Компоненты из единого EXE проверены и готовы'
+                    : 'Нарушена целостность локальных компонентов',
+                label: widget.currentStatus.dependencies.ready
+                    ? 'Готово'
+                    : 'Восстановить',
+                icon: Icons.verified_user_outlined,
+                onPressed:
+                    canChangeRuntime && !widget.currentStatus.dependencies.ready
                     ? widget.onDownloadDependencies
                     : null,
               ),
@@ -10262,7 +10435,7 @@ class _SettingsDialogState extends State<_SettingsDialog> {
                 icon: Icons.hub,
                 title: 'Windows Unified',
                 body:
-                    'Единый режим: sing-box TUN маршрутизирует трафик, а один winws2 подбирает отдельную стратегию для каждого сервиса.',
+                    'Единый режим: sing-box TUN маршрутизирует трафик, а встроенный движок с одним WinDivert применяет отдельную стратегию для каждого сервиса.',
               ),
           ],
         ),
@@ -11003,19 +11176,23 @@ class _SubscriptionDialog extends StatefulWidget {
 }
 
 class _SubscriptionDialogState extends State<_SubscriptionDialog> {
-  late final controller = TextEditingController(text: widget.subscription.url);
+  final controller = TextEditingController();
+  final nameController = TextEditingController();
   String statusText = '';
   String statusKind = '';
   bool busy = false;
-  List<Map<String, dynamic>> proxyCandidates = const [];
-  int selectedProxy = 0;
-  int closeRemaining = 0;
-  Timer? closeTimer;
+  List<VpnSourceInfo> sources = const [];
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_loadSources());
+  }
 
   @override
   void dispose() {
-    closeTimer?.cancel();
     controller.dispose();
+    nameController.dispose();
     super.dispose();
   }
 
@@ -11030,52 +11207,21 @@ class _SubscriptionDialogState extends State<_SubscriptionDialog> {
         lower.startsWith('tuic://');
   }
 
-  List<Map<String, dynamic>> _proxyListFrom(dynamic raw) {
-    if (raw is! List) {
-      return const [];
-    }
-    return raw
-        .whereType<Map>()
-        .map(
-          (item) => item.map((key, value) => MapEntry(key.toString(), value)),
-        )
-        .toList(growable: false);
-  }
-
-  String _proxyRawAt(int index) {
-    if (index < 0 || index >= proxyCandidates.length) {
-      return controller.text.trim();
-    }
-    final raw = proxyCandidates[index]['raw']?.toString().trim() ?? '';
-    return raw.isEmpty ? controller.text.trim() : raw;
-  }
-
-  void _cancelAutoClose() {
-    closeTimer?.cancel();
-    closeTimer = null;
-    if (closeRemaining > 0 && mounted) {
-      setState(() => closeRemaining = 0);
-    }
-  }
-
-  void _startAutoClose() {
-    closeTimer?.cancel();
-    setState(() => closeRemaining = 8);
-    closeTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (!mounted) {
-        return;
+  Future<void> _loadSources() async {
+    try {
+      final loaded = await widget.bridge.vpnSources();
+      if (mounted) setState(() => sources = loaded);
+    } catch (error) {
+      if (mounted) {
+        setState(() {
+          statusKind = 'error';
+          statusText = _cleanError(error);
+        });
       }
-      if (closeRemaining <= 1) {
-        closeTimer?.cancel();
-        Navigator.of(context).pop(true);
-        return;
-      }
-      setState(() => closeRemaining -= 1);
-    });
+    }
   }
 
   Future<void> _paste() async {
-    _cancelAutoClose();
     final data = await Clipboard.getData(Clipboard.kTextPlain);
     if (data?.text != null) {
       controller.text = data!.text!;
@@ -11083,7 +11229,6 @@ class _SubscriptionDialogState extends State<_SubscriptionDialog> {
   }
 
   Future<void> _test() async {
-    _cancelAutoClose();
     final value = controller.text.trim();
     if (value.isEmpty) {
       setState(() {
@@ -11095,19 +11240,13 @@ class _SubscriptionDialogState extends State<_SubscriptionDialog> {
     setState(() {
       busy = true;
       statusKind = 'loading';
-      statusText = 'Проверяем подключение...';
-      proxyCandidates = const [];
+      statusText = 'Проверяем источник и первый рекомендуемый узел...';
     });
     final result = await widget.bridge.testSubscription(value);
     if (!mounted) {
       return;
     }
     final ok = result['success'] == true;
-    final direct =
-        result['isDirectLink'] == true ||
-        result['is_direct_link'] == true ||
-        _looksDirectLink(value);
-    final candidates = _proxyListFrom(result['proxies']);
     if (!ok) {
       setState(() {
         busy = false;
@@ -11118,15 +11257,16 @@ class _SubscriptionDialogState extends State<_SubscriptionDialog> {
       return;
     }
 
-    final saveValue = direct
-        ? value
-        : (candidates.isNotEmpty
-              ? (candidates.first['raw']?.toString().trim().isNotEmpty == true
-                    ? candidates.first['raw'].toString()
-                    : value)
-              : value);
-    setState(() => statusText = 'Проверка успешна. Сохраняем подключение...');
-    final saved = await widget.bridge.saveSubscription(saveValue);
+    setState(() => statusText = 'Проверка успешна. Добавляем VPN-источник...');
+    final defaultName = _looksDirectLink(value)
+        ? 'VPN key ${sources.length + 1}'
+        : 'Subscription ${sources.length + 1}';
+    final saved = await widget.bridge.addVpnSource(
+      nameController.text.trim().isEmpty
+          ? defaultName
+          : nameController.text.trim(),
+      value,
+    );
     if (!mounted) {
       return;
     }
@@ -11139,31 +11279,27 @@ class _SubscriptionDialogState extends State<_SubscriptionDialog> {
       return;
     }
 
-    if (direct) {
-      Navigator.of(context).pop(true);
-      return;
-    }
-
     setState(() {
       busy = false;
-      proxyCandidates = candidates;
-      selectedProxy = 0;
       statusKind = 'success';
       statusText =
-          'Найдено ${_asInt(result['count'])} proxy. Первое подключение сохранено.';
+          'Источник добавлен. По умолчанию выбран первый узел поставщика.';
+      controller.clear();
+      nameController.clear();
     });
-    _startAutoClose();
+    await _loadSources();
   }
 
-  Future<void> _selectProxy(int index) async {
-    _cancelAutoClose();
+  Future<void> _changeSource(
+    Future<Map<String, dynamic>> Function() operation,
+    String progress,
+  ) async {
     setState(() {
-      selectedProxy = index;
       busy = true;
       statusKind = 'loading';
-      statusText = 'Сохраняем выбранное подключение...';
+      statusText = progress;
     });
-    final result = await widget.bridge.saveSubscription(_proxyRawAt(index));
+    final result = await operation();
     if (!mounted) {
       return;
     }
@@ -11178,246 +11314,216 @@ class _SubscriptionDialogState extends State<_SubscriptionDialog> {
     setState(() {
       busy = false;
       statusKind = 'success';
-      statusText = 'Выбранное подключение сохранено.';
+      statusText = 'Цепочка VPN-источников обновлена.';
     });
-  }
-
-  Future<void> _remove() async {
-    _cancelAutoClose();
-    controller.clear();
-    setState(() {
-      busy = true;
-      statusKind = 'loading';
-      statusText = 'Удаляем VPN-подписку...';
-    });
-    final result = await widget.bridge.saveSubscription('');
-    if (!mounted) {
-      return;
-    }
-    if (result['success'] == false) {
-      setState(() {
-        busy = false;
-        statusKind = 'error';
-        statusText = result['error']?.toString() ?? 'Не удалось удалить';
-      });
-      return;
-    }
-    Navigator.of(context).pop(true);
+    await _loadSources();
   }
 
   @override
   Widget build(BuildContext context) {
-    return Listener(
-      onPointerDown: (_) {
-        if (closeRemaining > 0) {
-          _cancelAutoClose();
-        }
-      },
-      child: _AppDialog(
-        title: 'Добавить VPN',
-        icon: Icons.link,
-        width: 560,
-        centered: true,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            const Text(
-              'Вставьте ссылку на подписку или прямой VLESS/Trojan/SS proxy.',
-              style: TextStyle(color: Color(0xFF8892B0), fontSize: 12),
-            ),
-            if (widget.subscription.hasSubscription) ...[
-              const SizedBox(height: 12),
-              Container(
-                padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(
-                  color: Colors.black.withValues(alpha: 0.22),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      'Текущая подписка:',
-                      style: TextStyle(color: Color(0xFF6B7280), fontSize: 11),
-                    ),
-                    const SizedBox(height: 4),
-                    SelectableText(
-                      widget.subscription.url,
-                      style: const TextStyle(
-                        color: Color(0xFFB7CAC5),
-                        fontSize: 11,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
+    return _AppDialog(
+      title: 'VPN-источники',
+      icon: Icons.link,
+      width: 640,
+      centered: true,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const Text(
+            'Fallback идёт сверху вниз между источниками. Внутри подписки автоматически используется только выбранный узел.',
+            style: TextStyle(color: Color(0xFF8892B0), fontSize: 12),
+          ),
+          if (sources.isNotEmpty) ...[
             const SizedBox(height: 12),
-            TextField(
-              controller: controller,
-              minLines: 1,
-              maxLines: 4,
-              decoration: _fieldDecoration(
-                hint: 'https://... или vless://...',
-                suffixIcon: IconButton(
-                  onPressed: busy ? null : _paste,
-                  icon: const Icon(Icons.content_paste),
-                  tooltip: 'Вставить из буфера',
-                  mouseCursor: busy
-                      ? SystemMouseCursors.basic
-                      : SystemMouseCursors.click,
+            const _StatsSectionTitle('Fallback chain'),
+            for (var i = 0; i < sources.length; i++)
+              _VpnSourceTile(
+                source: sources[i],
+                index: i,
+                total: sources.length,
+                busy: busy,
+                onEnabled: (enabled) => _changeSource(
+                  () =>
+                      widget.bridge.setVpnSourceEnabled(sources[i].id, enabled),
+                  'Обновляем состояние источника...',
+                ),
+                onNode: (node) => _changeSource(
+                  () => widget.bridge.setVpnSourceNode(sources[i].id, node),
+                  'Переключаем выбранный узел...',
+                ),
+                onMove: (newIndex) => _changeSource(
+                  () => widget.bridge.moveVpnSource(sources[i].id, newIndex),
+                  'Меняем порядок fallback...',
+                ),
+                onRemove: () => _changeSource(
+                  () => widget.bridge.removeVpnSource(sources[i].id),
+                  'Удаляем VPN-источник...',
                 ),
               ),
-            ),
-            if (proxyCandidates.isNotEmpty) ...[
-              const SizedBox(height: 12),
-              const _StatsSectionTitle('Найденные подключения'),
-              for (var i = 0; i < proxyCandidates.length && i < 8; i++)
-                _ProxyCandidateTile(
-                  proxy: proxyCandidates[i],
-                  selected: selectedProxy == i,
-                  onTap: busy ? null : () => _selectProxy(i),
-                ),
-            ],
-            if (statusText.isNotEmpty) ...[
-              const SizedBox(height: 12),
-              _StatusBox(kind: statusKind, text: statusText),
-            ],
-            if (closeRemaining > 0) ...[
-              const SizedBox(height: 12),
-              ClipRRect(
-                borderRadius: BorderRadius.circular(999),
-                child: LinearProgressIndicator(
-                  value: closeRemaining / 8,
-                  minHeight: 6,
-                  backgroundColor: Colors.white.withValues(alpha: 0.08),
-                  color: const Color(0xFF36D399),
-                ),
-              ),
-              const SizedBox(height: 6),
-              Text(
-                'Окно закроется через $closeRemaining сек. Любой клик остановит таймер.',
-                textAlign: TextAlign.center,
-                style: const TextStyle(color: Color(0xFF8A9B97), fontSize: 11),
-              ),
-            ],
-            const SizedBox(height: 16),
-            Row(
-              children: [
-                Expanded(
-                  child: _DialogAction(
-                    label: 'Отмена',
-                    icon: Icons.close,
-                    onPressed: busy
-                        ? null
-                        : () => Navigator.of(context).pop(false),
-                  ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: _DialogAction(
-                    label: 'Проверить',
-                    icon: Icons.fact_check,
-                    primary: true,
-                    onPressed: busy ? null : _test,
-                  ),
-                ),
-                if (widget.subscription.hasSubscription) ...[
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: _DialogAction(
-                      label: 'Удалить',
-                      icon: Icons.delete,
-                      danger: true,
-                      onPressed: busy ? null : _remove,
-                    ),
-                  ),
-                ],
-              ],
-            ),
           ],
-        ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: nameController,
+            decoration: _fieldDecoration(
+              hint: 'Название источника (необязательно)',
+            ),
+          ),
+          const SizedBox(height: 8),
+          TextField(
+            controller: controller,
+            minLines: 1,
+            maxLines: 4,
+            decoration: _fieldDecoration(
+              hint: 'https://... или vless://...',
+              suffixIcon: IconButton(
+                onPressed: busy ? null : _paste,
+                icon: const Icon(Icons.content_paste),
+                tooltip: 'Вставить из буфера',
+                mouseCursor: busy
+                    ? SystemMouseCursors.basic
+                    : SystemMouseCursors.click,
+              ),
+            ),
+          ),
+          if (statusText.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            _StatusBox(kind: statusKind, text: statusText),
+          ],
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              Expanded(
+                child: _DialogAction(
+                  label: 'Отмена',
+                  icon: Icons.close,
+                  onPressed: busy
+                      ? null
+                      : () => Navigator.of(context).pop(false),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: _DialogAction(
+                  label: 'Проверить и добавить',
+                  icon: Icons.fact_check,
+                  primary: true,
+                  onPressed: busy ? null : _test,
+                ),
+              ),
+            ],
+          ),
+        ],
       ),
     );
   }
 }
 
-class _ProxyCandidateTile extends StatelessWidget {
-  const _ProxyCandidateTile({
-    required this.proxy,
-    required this.selected,
-    required this.onTap,
+class _VpnSourceTile extends StatelessWidget {
+  const _VpnSourceTile({
+    required this.source,
+    required this.index,
+    required this.total,
+    required this.busy,
+    required this.onEnabled,
+    required this.onNode,
+    required this.onMove,
+    required this.onRemove,
   });
 
-  final Map<String, dynamic> proxy;
-  final bool selected;
-  final VoidCallback? onTap;
+  final VpnSourceInfo source;
+  final int index;
+  final int total;
+  final bool busy;
+  final ValueChanged<bool> onEnabled;
+  final ValueChanged<int> onNode;
+  final ValueChanged<int> onMove;
+  final VoidCallback onRemove;
 
   @override
   Widget build(BuildContext context) {
-    final type = proxy['type']?.toString().toUpperCase() ?? 'VPN';
-    final name = proxy['name']?.toString();
-    final server = proxy['server']?.toString() ?? '';
-    final port = _asInt(proxy['port']);
-    return MouseRegion(
-      cursor: onTap == null
-          ? SystemMouseCursors.basic
-          : SystemMouseCursors.click,
-      child: GestureDetector(
-        onTap: onTap,
-        child: Container(
-          margin: const EdgeInsets.only(bottom: 8),
-          padding: const EdgeInsets.all(11),
-          decoration: BoxDecoration(
-            color: selected
-                ? const Color(0xFF1F8C78).withValues(alpha: 0.28)
-                : Colors.white.withValues(alpha: 0.055),
-            borderRadius: BorderRadius.circular(8),
-            border: Border.all(
-              color: selected
-                  ? const Color(0xFF36D399).withValues(alpha: 0.46)
-                  : Colors.white.withValues(alpha: 0.08),
-            ),
-          ),
-          child: Row(
+    final count = source.nodeCount > 0 ? source.nodeCount : 1;
+    final selected = source.selectedNode.clamp(0, count - 1);
+    String nodeName(int node) => node < source.nodeNames.length
+        ? source.nodeNames[node]
+        : 'Узел ${node + 1}';
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.05),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
             children: [
-              Icon(
-                selected ? Icons.check_circle : Icons.radio_button_unchecked,
-                size: 18,
-                color: selected
-                    ? const Color(0xFF86EFAC)
-                    : const Color(0xFF7F918C),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      (name == null || name.isEmpty) ? '$type proxy' : name,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      port > 0 ? '$type • $server:$port' : '$type • $server',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: Color(0xFF8EA2A0),
-                        fontSize: 10,
-                      ),
-                    ),
-                  ],
+              Text(
+                '${index + 1}',
+                style: const TextStyle(
+                  color: Color(0xFF86EFAC),
+                  fontWeight: FontWeight.w800,
                 ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  source.name,
+                  style: const TextStyle(fontWeight: FontWeight.w700),
+                ),
+              ),
+              Switch.adaptive(
+                value: !source.disabled,
+                onChanged: busy ? null : onEnabled,
+              ),
+              IconButton(
+                icon: const Icon(Icons.arrow_upward, size: 18),
+                onPressed: busy || index == 0 ? null : () => onMove(index - 1),
+              ),
+              IconButton(
+                icon: const Icon(Icons.arrow_downward, size: 18),
+                onPressed: busy || index + 1 >= total
+                    ? null
+                    : () => onMove(index + 1),
+              ),
+              IconButton(
+                icon: const Icon(Icons.delete_outline, size: 18),
+                onPressed: busy ? null : onRemove,
               ),
             ],
           ),
-        ),
+          if (count > 1)
+            DropdownButtonFormField<int>(
+              initialValue: selected,
+              decoration: _fieldDecoration(hint: 'Выбранный узел'),
+              items: [
+                for (var i = 0; i < count; i++)
+                  DropdownMenuItem(
+                    value: i,
+                    child: Text(nodeName(i), overflow: TextOverflow.ellipsis),
+                  ),
+              ],
+              onChanged: busy
+                  ? null
+                  : (value) {
+                      if (value != null) onNode(value);
+                    },
+            )
+          else
+            Text(
+              source.kind == 'direct' ? 'Отдельный ключ' : nodeName(0),
+              style: const TextStyle(color: Color(0xFF8A9B97), fontSize: 11),
+            ),
+          if (source.lastError.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Text(
+                source.lastError,
+                style: const TextStyle(color: Color(0xFFFCA5A5), fontSize: 10),
+              ),
+            ),
+        ],
       ),
     );
   }
@@ -11888,7 +11994,7 @@ class _WireGuardEditDialogState extends State<_WireGuardEditDialog> {
                   ? null
                   : (value) => setState(() => camouflageEnabled = value),
               title: const Text(
-                'Маскировать handshake через zapret2',
+                'Маскировать WireGuard handshake',
                 style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
               ),
               subtitle: const Text(
@@ -12204,7 +12310,7 @@ class _WireGuardTile extends StatelessWidget {
                     ),
                     if (item.camouflageEnabled)
                       const Text(
-                        'zapret2 handshake',
+                        'Защита handshake',
                         style: TextStyle(
                           color: Color(0xFF86EFAC),
                           fontSize: 9,

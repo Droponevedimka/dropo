@@ -4,7 +4,7 @@
 Unlike the naive xt_string censor, this one REASSEMBLES the TCP stream before
 reading the SNI, so plain TCP split/multisplit does NOT pass for free — exactly
 like a real reassembling middlebox. It exposes the knobs the desync tricks
-exploit, so each winws2 strategy is exercised honestly:
+exploit, so each native Dropo strategy is exercised honestly:
 
   REASSEMBLE_POLICY = first|last   how overlapping bytes resolve  -> models seqovl
   VALIDATE_CHECKSUM = 0|1          ignore bad-checksum segments   -> models fooling=badsum

@@ -377,61 +377,50 @@ func (a *App) orderedSelections(selections map[string]serviceWinwsSelection) []s
 }
 
 func (a *App) composeAndStartServiceEngine(selections map[string]serviceWinwsSelection) error {
-	if a.zapret == nil {
-		return fmt.Errorf("zapret2 manager is not initialized")
+	if a.trafficEngine == nil {
+		return fmt.Errorf("native traffic engine is not initialized")
 	}
 	if !a.routeStrategyWorkAllowed() {
 		return fmt.Errorf("VPN is stopping")
 	}
 	a.serviceEngineComposeMu.Lock()
 	defer a.serviceEngineComposeMu.Unlock()
-	ordered := a.orderedSelections(selections)
-	for _, selection := range ordered {
-		if strings.TrimSpace(selection.HostlistPath) == "" {
-			a.writeLog(fmt.Sprintf("[FreeAccess] %s omitted from composed winws2: hostlist path is empty", selection.ServiceTag))
-		}
-	}
 	wireGuardTargets := a.wireGuardCamouflageTargetsForSession()
-	args := composeServiceAndWireGuardWinwsArgs(ordered, wireGuardTargets, a.zapretBinDir())
-	if len(args) == 0 {
-		a.zapret.Stop()
-		a.writeLog("[FreeAccess] composed winws2 stopped: no services currently use a transparent strategy")
+	if len(selections) == 0 && len(wireGuardTargets) == 0 {
+		a.trafficEngine.Stop()
+		a.writeLog("[FreeAccess] native traffic engine stopped: no service currently uses a local strategy")
 		return nil
 	}
 	if len(wireGuardTargets) > 0 {
-		a.writeLog(fmt.Sprintf("[WireGuard] zapret2 handshake camouflage active for %d endpoint(s), scoped by resolved IP and UDP port", len(wireGuardTargets)))
+		a.writeLog(fmt.Sprintf("[WireGuard] native handshake camouflage active for %d endpoint(s), scoped by resolved IP and UDP port", len(wireGuardTargets)))
 	}
-	// Detailed per-connection winws2 diagnostics (hostlist matches, desync
-	// decisions) are very noisy, so prefer a standalone file when possible.
-	if a.winwsDebugEnabled() {
-		if debugPath, err := a.prepareServiceWinwsDebugLog(); err == nil && debugPath != "" {
-			args = append([]string{"--debug=@" + debugPath}, args...)
-			a.writeLog(fmt.Sprintf("[FreeAccess] winws2 packet debug ENABLED: %s", debugPath))
-		} else {
-			args = append([]string{"--debug=1"}, args...)
-			a.writeLog(fmt.Sprintf("[FreeAccess] winws2 packet debug ENABLED in app log; debug file unavailable: %v", err))
-		}
+	plan, err := a.buildNativeTrafficPlan(selections)
+	if err != nil {
+		return fmt.Errorf("build native traffic plan: %w", err)
 	}
-	return a.zapret.StartComposedStrategy("Per-service bypass", args)
+	return a.trafficEngine.StartPlan(plan)
 }
 
-// winwsDebugEnabled turns on verbose winws2 packet logging. It
-// can be enabled by the developer (DROPO_ZAPRET_PACKET_DEBUG=1) or, for a
-// non-technical client, by dropping a file named "winws-debug.txt" next to the
-// app executable.
+// winwsDebugEnabled retains the old Go method name for settings migration. It
+// enables native packet diagnostics without launching an external process.
 func (a *App) winwsDebugEnabled() bool {
-	if zapretPacketDebugEnabled() {
+	if trafficPacketDebugEnabled() {
 		return true
 	}
 	marker := a.winwsDebugMarkerPath()
 	return marker != "" && fileExists(marker)
 }
 
+func trafficPacketDebugEnabled() bool {
+	value := strings.TrimSpace(strings.ToLower(os.Getenv("DROPO_TRAFFIC_PACKET_DEBUG")))
+	return value == "1" || value == "true" || value == "yes" || value == "on"
+}
+
 func (a *App) winwsDebugMarkerPath() string {
 	if a.basePath == "" {
 		return ""
 	}
-	return filepath.Join(a.basePath, "winws-debug.txt")
+	return filepath.Join(a.basePath, "traffic-debug.txt")
 }
 
 func (a *App) prepareServiceWinwsDebugLog() (string, error) {
@@ -439,22 +428,22 @@ func (a *App) prepareServiceWinwsDebugLog() (string, error) {
 		return "", fmt.Errorf("app is not initialized")
 	}
 	if marker := a.winwsDebugMarkerPath(); marker != "" && fileExists(marker) {
-		path := filepath.Join(a.basePath, "winws-debug.log")
+		path := filepath.Join(a.basePath, "traffic-debug.log")
 		_ = os.Remove(path)
 		return path, nil
 	}
-	if a.zapret == nil {
-		return "", fmt.Errorf("zapret2 manager is not initialized")
+	if a.trafficEngine == nil {
+		return "", fmt.Errorf("native traffic engine is not initialized")
 	}
-	return a.zapret.prepareDebugLog("per-service")
+	return a.trafficEngine.prepareDebugLog("per-service")
 }
 
-// startWindowsUnifiedServiceEngine composes and starts the shared winws2 engine
+// startWindowsUnifiedServiceEngine composes and starts the native traffic engine
 // from the per-service selections (cache or top-ranked), then validates every
 // selected service before Start returns. A working cached method wins on the
 // first round and stays unchanged; only a confirmed failure advances its ladder.
 func (a *App) startWindowsUnifiedServiceEngine(busyID string) error {
-	if a == nil || a.zapret == nil || a.storage == nil {
+	if a == nil || a.trafficEngine == nil || a.storage == nil {
 		return nil
 	}
 	settings := a.storage.GetAppSettings()
@@ -473,7 +462,7 @@ func (a *App) startWindowsUnifiedServiceEngine(busyID string) error {
 	cache := a.loadServiceStrategyCache()
 	selections, needSearch := a.resolveServiceSelections(dir, cache)
 	if len(selections) == 0 {
-		a.zapret.Stop()
+		a.trafficEngine.Stop()
 		a.logServiceStrategySummary("all services use a temporary fallback")
 		return nil
 	}
@@ -485,9 +474,9 @@ func (a *App) startWindowsUnifiedServiceEngine(busyID string) error {
 		len(selections), len(needSearch)))
 	if !a.winwsDebugEnabled() {
 		if marker := a.winwsDebugMarkerPath(); marker != "" {
-			a.writeLog(fmt.Sprintf("[FreeAccess] for detailed winws2 diagnostics: create empty file %q next to dropo.exe, reconnect, then send %q", marker, filepath.Join(a.basePath, "winws-debug.log")))
+			a.writeLog(fmt.Sprintf("[FreeAccess] for detailed packet diagnostics: create empty file %q next to dropo.exe, reconnect, then send %q", marker, filepath.Join(a.basePath, "traffic-debug.log")))
 		} else {
-			a.writeLog("[FreeAccess] for detailed winws2 diagnostics: set DROPO_ZAPRET_PACKET_DEBUG=1 and reconnect")
+			a.writeLog("[FreeAccess] for detailed packet diagnostics: set DROPO_TRAFFIC_PACKET_DEBUG=1 and reconnect")
 		}
 	}
 
@@ -531,9 +520,8 @@ func serviceSearchStatusList(tags []string) string {
 	return strings.Join(names, ", ")
 }
 
-// startComposedTransparentEngine starts the single Windows Unified winws2
-// process. Service selectors force probes through direct, so every service can
-// run the same first-success validation while sing-box TUN is active.
+// startComposedTransparentEngine starts the single in-process Windows traffic
+// engine. The legacy method name is retained only to keep API migration small.
 func (a *App) startComposedTransparentEngine(busyID string) error {
 	if a == nil || a.storage == nil {
 		return fmt.Errorf("Windows Unified storage is not initialized")
@@ -543,16 +531,12 @@ func (a *App) startComposedTransparentEngine(busyID string) error {
 	if !freeMethodsAllowed && !wireGuardRequested {
 		return nil
 	}
-	if a.depsComponentBlocked(ZapretProcessName) {
-		a.writeLog("[Security][Defender] zapret2/winws2 is unavailable by endpoint-protection policy; skipping the transparent engine and keeping trusted VPN/VLESS routing active")
-		return nil
-	}
-	if a.zapret == nil || !a.zapret.IsInstalled() {
+	if a.trafficEngine == nil || !a.trafficEngine.IsInstalled() {
 		if wireGuardRequested && !freeMethodsAllowed {
-			a.writeLog("[WireGuard] camouflage unavailable because zapret2/winws2 runtime is not installed; continuing with native WireGuard")
+			a.writeLog("[WireGuard] handshake transformation unavailable because the WinDivert runtime is not installed; continuing with native WireGuard")
 			return nil
 		}
-		return fmt.Errorf("Windows Unified zapret2/winws2 runtime is not installed")
+		return fmt.Errorf("Windows Unified WinDivert runtime is not installed")
 	}
 	return a.startWindowsUnifiedServiceEngine(busyID)
 }
@@ -765,7 +749,7 @@ func (a *App) searchServiceStrategy(serviceTag string, selections map[string]ser
 // running engine (no restart) and returns the set that FAILED.
 func (a *App) probeServicesThroughEngine(serviceTags []string) map[string]bool {
 	failing := map[string]bool{}
-	if a.zapret == nil || a.zapret.ActiveTag() != composedStrategyTag {
+	if a.trafficEngine == nil || a.trafficEngine.ActiveTag() != composedStrategyTag {
 		for _, tag := range serviceTags {
 			failing[tag] = true
 		}
@@ -890,7 +874,7 @@ func (a *App) applyServiceFallbackSelectionToConfig(configPath string, result ro
 // VPN/direct. Runs under the discovery lock so the quick-check feedback guard
 // suppresses spurious re-triggers.
 func (a *App) retunePerServiceStrategy(serviceTag, reason string) error {
-	if a.zapret == nil || a.zapret.ActiveTag() != composedStrategyTag {
+	if a.trafficEngine == nil || a.trafficEngine.ActiveTag() != composedStrategyTag {
 		return fmt.Errorf("per-service engine is not active")
 	}
 	if !a.tryBeginRouteProbeDiscovery() {

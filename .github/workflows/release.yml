@@ -57,19 +57,11 @@ jobs:
         run: |
           $tag = "${{ steps.version.outputs.tag }}"
           $repo = "${{ github.repository }}"
-          $lock = Get-Content deps-lock.json -Raw | ConvertFrom-Json
-          $depsTag = [string]$lock.tag
-          $depsAsset = [string]$lock.asset
-          if (-not $depsTag -or -not $depsAsset) {
-            throw "deps-lock.json is incomplete"
-          }
           $strictUtf8 = [System.Text.UTF8Encoding]::new($false, $true)
           $templatePath = (Resolve-Path ".github/release-notes-template.md").Path
           $notes = [IO.File]::ReadAllText($templatePath, $strictUtf8)
           $notes = $notes.Replace("{{TAG}}", $tag)
           $notes = $notes.Replace("{{REPOSITORY}}", $repo)
-          $notes = $notes.Replace("{{DEPENDENCIES_TAG}}", $depsTag)
-          $notes = $notes.Replace("{{DEPENDENCIES_ASSET}}", $depsAsset)
           if ($notes -match '\?{3,}' -or $notes -notmatch '[А-Яа-яЁё]') {
             throw "Release notes failed the UTF-8/Cyrillic integrity check."
           }

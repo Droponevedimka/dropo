@@ -12,7 +12,7 @@ package main
 //   tls:  ok | rst | drop | error
 //   verdict: ok | dns-poison | ip-block | tls-rst | tls-drop | unknown
 //
-// IMPORTANT: must run with the bypass OFF (VPN disconnected) so winws2/WinDivert
+// IMPORTANT: must run with the bypass OFF (VPN disconnected) so WinDivert
 // does not mask the provider's real behaviour.
 
 import (

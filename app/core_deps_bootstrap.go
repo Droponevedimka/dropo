@@ -1,11 +1,9 @@
 package main
 
-// Dependency bootstrap. The single-file app payload ships WITHOUT the heavy bin/ (sing-box,
-// winws2+WinDivert+Lua, wireguard, xray, tg-ws-proxy, filters). Those live in a
-// separate release asset `dependencies-<depsVersion>.zip` and are downloaded
-// once on first run (or when depsVersion changes), verified by sha256, and
-// extracted into bin/. A `dependencies.json` manifest next to dropo.exe declares
-// the required depsVersion.
+// Dependency bootstrap. Current Windows releases carry the complete native
+// runtime in the signed self-extracting executable. Legacy split-manifest
+// support remains below for older installations and non-Windows development
+// builds, but a current Windows build never downloads executable dependencies.
 
 import (
 	"archive/zip"
@@ -31,20 +29,38 @@ import (
 const depsDownloadIdleTimeout = 45 * time.Second
 
 const depsAntivirusMarkerName = ".deps-antivirus-blocked.json"
+const bypassAntivirusMarkerName = ".bypass-antivirus-blocked.json"
 
 var antivirusOptionalDependencies = map[string]struct{}{
-	"winws2.exe": {},
+	"ciadpi.exe":                           {},
+	"cygwin1.dll":                          {},
+	"quic_initial_facebook_com.bin":        {},
+	"quic_initial_www_google_com.bin":      {},
+	"tg-ws-proxy.exe":                      {},
+	"tls_clienthello_www_google_com.bin":   {},
+	"windivert.dll":                        {},
+	"windivert64.sys":                      {},
+	"windivert_part.discord_media.txt":     {},
+	"windivert_part.quic_initial_ietf.txt": {},
+	"windivert_part.stun.txt":              {},
+	"winws2.exe":                           {},
+	"zapret-antidpi.lua":                   {},
+	"zapret-lib.lua":                       {},
 }
 
-// App-only release builds inject these values from deps-lock.json into the
-// signed core. In that mode dependencies.json is informational only: changing
-// it cannot redirect an elevated core or weaken the required archive hash.
+// These values are retained only to migrate pre-bundled installations. Current
+// releases inject trustedRuntime* and never resolve a dependency archive.
 var (
-	trustedDepsVersion  string
-	trustedDepsAsset    string
-	trustedDepsSHA256   string
-	trustedDepsSize     string
-	trustedDepsRequired string
+	trustedDepsVersion    string
+	trustedDepsAsset      string
+	trustedDepsSHA256     string
+	trustedDepsSize       string
+	trustedDepsRequired   string
+	trustedBypassVersion  string
+	trustedBypassAsset    string
+	trustedBypassSHA256   string
+	trustedBypassSize     string
+	trustedBypassRequired string
 )
 
 // DepsManifest mirrors dependencies.json written by build.ps1.
@@ -71,6 +87,9 @@ type DepsStatus struct {
 	SizeMB            int64    `json:"sizeMB"`            // download size, for the UI
 	BlockedComponents []string `json:"blockedComponents"` // exact optional files unavailable to the runtime
 	Warning           string   `json:"warning,omitempty"`
+	BypassManaged     bool     `json:"bypassManaged"`
+	BypassReady       bool     `json:"bypassReady"`
+	BypassSizeMB      int64    `json:"bypassSizeMB"`
 }
 
 func (a *App) depsManifestPath() string { return filepath.Join(a.basePath, "dependencies.json") }
@@ -84,6 +103,11 @@ func (a *App) depsMarkerPath() string  { return filepath.Join(a.binDir(), ".deps
 func (a *App) depsArchivePath() string { return filepath.Join(a.runtimeBasePath(), "dependencies.zip") }
 func (a *App) depsAntivirusMarkerPath() string {
 	return filepath.Join(a.runtimeBasePath(), depsAntivirusMarkerName)
+}
+func (a *App) bypassMarkerPath() string  { return filepath.Join(a.binDir(), ".bypass-version") }
+func (a *App) bypassArchivePath() string { return filepath.Join(a.runtimeBasePath(), "bypass.zip") }
+func (a *App) bypassAntivirusMarkerPath() string {
+	return filepath.Join(a.runtimeBasePath(), bypassAntivirusMarkerName)
 }
 
 type depsAntivirusMarker struct {
@@ -131,8 +155,56 @@ func (a *App) loadDepsManifest() (*DepsManifest, bool) {
 	return &m, true
 }
 
+func (a *App) loadBypassManifest() (*DepsManifest, bool) {
+	if strings.TrimSpace(trustedBypassSHA256) != "" {
+		size, err := strconv.ParseInt(trustedBypassSize, 10, 64)
+		sha := strings.ToLower(strings.TrimSpace(trustedBypassSHA256))
+		if err != nil || size <= 0 || len(sha) != sha256.Size*2 ||
+			trustedBypassVersion == "" || trustedBypassAsset == "" {
+			return nil, false
+		}
+		if _, err := hex.DecodeString(sha); err != nil {
+			return nil, false
+		}
+		required := make([]string, 0)
+		for _, name := range strings.Split(trustedBypassRequired, ",") {
+			if name = strings.TrimSpace(name); name != "" {
+				required = append(required, name)
+			}
+		}
+		return &DepsManifest{
+			DepsVersion: trustedBypassVersion,
+			Platform:    "windows",
+			Arch:        "x64",
+			Asset:       trustedBypassAsset,
+			SHA256:      sha,
+			Size:        size,
+			Repo:        GitHubRepo,
+			Required:    required,
+		}, true
+	}
+	data, err := os.ReadFile(filepath.Join(a.basePath, "bypass-dependencies.json"))
+	if err != nil {
+		return nil, false
+	}
+	data = bytes.TrimPrefix(data, []byte("\xef\xbb\xbf"))
+	var m DepsManifest
+	if json.Unmarshal(data, &m) != nil || m.DepsVersion == "" {
+		return nil, false
+	}
+	return &m, true
+}
+
 func (a *App) installedDepsVersion() string {
 	data, err := os.ReadFile(a.depsMarkerPath())
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+func (a *App) installedBypassVersion() string {
+	data, err := os.ReadFile(a.bypassMarkerPath())
 	if err != nil {
 		return ""
 	}
@@ -160,6 +232,10 @@ func (a *App) depsPresent(required string) bool {
 func (a *App) depsPresentWithBlocked(required string) (bool, []string) {
 	if a.installedDepsVersion() != required {
 		return false, nil
+	}
+	if bundledRuntimeEnabled() {
+		err := verifyBundledRuntime(a.basePath, a.runtimeBasePath(), trustedRuntimeVersion, trustedRuntimeManifestSHA256)
+		return err == nil, nil
 	}
 	if strings.TrimSpace(trustedDepsSHA256) == "" {
 		return a.binLooksComplete(), nil
@@ -189,10 +265,45 @@ func (a *App) depsPresentWithBlocked(required string) (bool, []string) {
 	return true, append([]string(nil), blocked...)
 }
 
+func (a *App) bypassPresentWithBlocked(required string) (bool, []string) {
+	if a.installedBypassVersion() != required || strings.TrimSpace(trustedBypassSHA256) == "" {
+		return false, nil
+	}
+	a.depsIntegrityMu.Lock()
+	defer a.depsIntegrityMu.Unlock()
+	if a.bypassIntegrityOK && a.bypassIntegrityFor == required {
+		return true, append([]string(nil), a.bypassIntegrityBlocked...)
+	}
+	m, ok := a.loadBypassManifest()
+	if !ok || verifyFileSHA256AndSize(a.bypassArchivePath(), m.SHA256, m.Size) != nil {
+		a.setBypassIntegrityStateLocked(required, false, nil)
+		return false, nil
+	}
+	allowed := a.loadBypassAntivirusMarker(required)
+	blocked, err := extractedFilesMatchArchiveAllowBlocked(a.bypassArchivePath(), a.binDir(), allowed)
+	if err != nil {
+		a.setBypassIntegrityStateLocked(required, false, nil)
+		return false, nil
+	}
+	a.setBypassIntegrityStateLocked(required, true, blocked)
+	if len(blocked) == 0 {
+		_ = os.Remove(a.bypassAntivirusMarkerPath())
+	} else {
+		_ = a.saveBypassAntivirusMarker(required, blocked)
+	}
+	return true, append([]string(nil), blocked...)
+}
+
 func (a *App) setDepsIntegrityStateLocked(required string, ok bool, blocked []string) {
 	a.depsIntegrityFor = required
 	a.depsIntegrityOK = ok
 	a.depsIntegrityBlocked = append(a.depsIntegrityBlocked[:0], blocked...)
+}
+
+func (a *App) setBypassIntegrityStateLocked(required string, ok bool, blocked []string) {
+	a.bypassIntegrityFor = required
+	a.bypassIntegrityOK = ok
+	a.bypassIntegrityBlocked = append(a.bypassIntegrityBlocked[:0], blocked...)
 }
 
 func (a *App) depsComponentBlocked(name string) bool {
@@ -200,11 +311,16 @@ func (a *App) depsComponentBlocked(name string) bool {
 		return false
 	}
 	a.depsIntegrityMu.Lock()
-	defer a.depsIntegrityMu.Unlock()
-	for _, component := range a.depsIntegrityBlocked {
+	for _, component := range a.bypassIntegrityBlocked {
 		if strings.EqualFold(component, name) {
+			a.depsIntegrityMu.Unlock()
 			return true
 		}
+	}
+	a.depsIntegrityMu.Unlock()
+	if m, ok := a.loadBypassManifest(); ok {
+		ready, blocked := a.bypassPresentWithBlocked(m.DepsVersion)
+		return !ready || len(blocked) > 0
 	}
 	return false
 }
@@ -214,23 +330,46 @@ func (a *App) markDepsComponentBlocked(name string) {
 	if _, ok := antivirusOptionalDependencies[name]; !ok || a == nil {
 		return
 	}
-	m, ok := a.loadDepsManifest()
+	m, ok := a.loadBypassManifest()
 	if !ok {
 		return
 	}
 	a.depsIntegrityMu.Lock()
 	defer a.depsIntegrityMu.Unlock()
-	blocked := uniqueSortedStrings(append(a.depsIntegrityBlocked, name))
-	if a.depsIntegrityFor == "" {
-		a.depsIntegrityFor = m.DepsVersion
+	blocked := uniqueSortedStrings(append(a.bypassIntegrityBlocked, name))
+	if a.bypassIntegrityFor == "" {
+		a.bypassIntegrityFor = m.DepsVersion
 	}
-	a.depsIntegrityBlocked = blocked
-	_ = a.saveDepsAntivirusMarker(m.DepsVersion, blocked)
+	a.bypassIntegrityBlocked = blocked
+	_ = a.saveBypassAntivirusMarker(m.DepsVersion, blocked)
 }
 
 // DependenciesStatus reports whether the bundled binaries are ready. A build that
 // still ships bin/ (no manifest) is "unmanaged" and ready if the binaries exist.
 func (a *App) DependenciesStatus() DepsStatus {
+	if bundledRuntimeEnabled() {
+		ready := a.runtimePathErr == nil
+		if ready {
+			ready = verifyBundledRuntime(a.basePath, a.runtimeBasePath(), trustedRuntimeVersion, trustedRuntimeManifestSHA256) == nil
+		}
+		var size int64
+		if manifest, _, err := loadTrustedRuntimeManifest(a.basePath, trustedRuntimeVersion, trustedRuntimeManifestSHA256); err == nil {
+			for _, item := range manifest.Files {
+				size += item.Size
+			}
+		}
+		status := DepsStatus{
+			Managed:   true,
+			Ready:     ready,
+			Required:  trustedRuntimeVersion,
+			Installed: a.installedDepsVersion(),
+			SizeMB:    size / (1024 * 1024),
+		}
+		if !ready {
+			status.Warning = "Встроенный runtime не прошёл проверку целостности; переустановите приложение из официального EXE"
+		}
+		return status
+	}
 	m, ok := a.loadDepsManifest()
 	if !ok {
 		return DepsStatus{Managed: false, Ready: a.binLooksComplete()}
@@ -238,18 +377,33 @@ func (a *App) DependenciesStatus() DepsStatus {
 	if a.runtimePathErr != nil {
 		return DepsStatus{Managed: true, Ready: false, Required: m.DepsVersion, SizeMB: m.Size / (1024 * 1024)}
 	}
-	ready, blocked := a.depsPresentWithBlocked(m.DepsVersion)
+	ready, _ := a.depsPresentWithBlocked(m.DepsVersion)
+	bypassManifest, bypassManaged := a.loadBypassManifest()
+	bypassReady := false
+	blocked := []string(nil)
+	bypassSizeMB := int64(0)
+	if bypassManaged {
+		bypassSizeMB = bypassManifest.Size / (1024 * 1024)
+		bypassInstalled, bypassBlocked := a.bypassPresentWithBlocked(bypassManifest.DepsVersion)
+		blocked = bypassBlocked
+		bypassReady = bypassInstalled && len(blocked) == 0
+	}
 	status := DepsStatus{
 		Managed:           true,
 		Ready:             ready,
-		Degraded:          len(blocked) > 0,
+		Degraded:          ready && bypassManaged && !bypassReady,
 		Required:          m.DepsVersion,
 		Installed:         a.installedDepsVersion(),
 		SizeMB:            m.Size / (1024 * 1024),
 		BlockedComponents: blocked,
+		BypassManaged:     bypassManaged,
+		BypassReady:       bypassReady,
+		BypassSizeMB:      bypassSizeMB,
 	}
-	if status.Degraded {
-		status.Warning = "Microsoft Defender заблокировал дополнительный движок zapret2; VPN-подписка продолжит работать, локальный обход будет временно отключён"
+	if len(blocked) > 0 {
+		status.Warning = "Microsoft Defender заблокировал устаревший дополнительный компонент; VPN-подписка продолжит работать, локальный обход будет временно отключён"
+	} else if status.Degraded {
+		status.Warning = "Устаревший локальный DPI-компонент не установлен. Установите текущий единый EXE со встроенным runtime."
 	}
 	return status
 }
@@ -284,6 +438,17 @@ func (a *App) failDepsDownload(m *DepsManifest, err error) error {
 func (a *App) DownloadDependencies() error {
 	a.depsDownloadMu.Lock()
 	defer a.depsDownloadMu.Unlock()
+	if bundledRuntimeEnabled() {
+		if a.runtimePathErr != nil || a.runtimeBasePath() == "" {
+			return fmt.Errorf("встроенный runtime недоступен: %v", a.runtimePathErr)
+		}
+		if err := installBundledRuntime(a.basePath, a.runtimeBasePath(), trustedRuntimeVersion, trustedRuntimeManifestSHA256); err != nil {
+			return fmt.Errorf("не удалось восстановить встроенный runtime: %w", err)
+		}
+		a.refreshSingBoxPath()
+		a.emitDepsProgress(1, 1, "Готово")
+		return nil
+	}
 
 	m, ok := a.loadDepsManifest()
 	if !ok {
@@ -366,12 +531,129 @@ func (a *App) DownloadDependencies() error {
 	if len(blocked) > 0 {
 		a.writeLog(fmt.Sprintf("[Security][Defender] trusted dependency archive sha256=%s verified, but optional component(s) %v were blocked by endpoint protection; continuing in subscription-only degraded mode without exclusions", m.SHA256, blocked))
 		a.emitEvent("deps-warning", map[string]interface{}{
-			"warning":           "Microsoft Defender заблокировал zapret2. VPN/VLESS продолжит работать; локальный обход временно отключён. Обновите базы Defender и повторите проверку позже.",
+			"warning":           "Microsoft Defender заблокировал устаревший дополнительный компонент. Установите текущий единый EXE; VPN/VLESS продолжит работать.",
 			"blockedComponents": blocked,
 		})
 	}
 	a.writeLog("[Deps] dependencies ready (depsVersion=" + m.DepsVersion + ")")
 	a.emitDepsProgress(m.Size, m.Size, "Готово")
+	return nil
+}
+
+// DownloadBypassDependencies installs the optional local DPI-bypass bundle.
+// It is intentionally exposed through a separate API and is never called by
+// startup or by the normal subscription connection path.
+func (a *App) DownloadBypassDependencies() error {
+	a.depsDownloadMu.Lock()
+	defer a.depsDownloadMu.Unlock()
+
+	m, ok := a.loadBypassManifest()
+	if !ok {
+		return fmt.Errorf("локальный пакет обхода недоступен в этой сборке")
+	}
+	if a.runtimePathErr != nil || a.runtimeBasePath() == "" {
+		return a.failDepsDownload(m, fmt.Errorf("protected dependency runtime is unavailable: %v", a.runtimePathErr))
+	}
+	if ready, blocked := a.bypassPresentWithBlocked(m.DepsVersion); ready {
+		if len(blocked) == 0 {
+			return nil
+		}
+		return a.retryAntivirusBlockedBypass(m, blocked)
+	}
+
+	url, err := a.resolveDepsURL(m)
+	if err != nil {
+		return a.failDepsDownload(m, fmt.Errorf("не найден пакет локального обхода %s: %w", m.Asset, err))
+	}
+	a.writeLog(fmt.Sprintf("[Bypass] explicit user request: downloading %s (%d MB) from trusted Russian release mirror", m.Asset, m.Size/(1024*1024)))
+	a.emitDepsProgress(0, m.Size, "Загрузка локального обхода…")
+
+	tmp, err := os.CreateTemp(a.runtimeBasePath(), "dropo-bypass-*.zip")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if err := a.downloadVerified(url, tmp, m); err != nil {
+		tmp.Close()
+		return a.failDepsDownload(m, err)
+	}
+	if err := tmp.Close(); err != nil {
+		return a.failDepsDownload(m, err)
+	}
+
+	a.depsIntegrityMu.Lock()
+	defer a.depsIntegrityMu.Unlock()
+	a.setBypassIntegrityStateLocked(m.DepsVersion, false, nil)
+	a.emitDepsProgress(m.Size, m.Size, "Распаковка локального обхода…")
+	blocked, err := extractZipAllowAntimalware(tmpPath, a.binDir(), true)
+	if err != nil {
+		return a.failDepsDownload(m, fmt.Errorf("не удалось распаковать локальный обход: %w", err))
+	}
+	if err := os.Remove(a.bypassArchivePath()); err != nil && !os.IsNotExist(err) {
+		return a.failDepsDownload(m, fmt.Errorf("replace bypass cache: %w", err))
+	}
+	if err := os.Rename(tmpPath, a.bypassArchivePath()); err != nil {
+		return a.failDepsDownload(m, fmt.Errorf("cache verified bypass archive: %w", err))
+	}
+	if err := os.WriteFile(a.bypassMarkerPath(), []byte(m.DepsVersion), 0644); err != nil {
+		return a.failDepsDownload(m, fmt.Errorf("write bypass marker: %w", err))
+	}
+	allowed := make(map[string]struct{}, len(blocked))
+	for _, component := range blocked {
+		allowed[component] = struct{}{}
+	}
+	verifiedBlocked, err := extractedFilesMatchArchiveAllowBlocked(a.bypassArchivePath(), a.binDir(), allowed)
+	if err != nil {
+		return a.failDepsDownload(m, fmt.Errorf("verify extracted local bypass: %w", err))
+	}
+	blocked = uniqueSortedStrings(append(blocked, verifiedBlocked...))
+	if err := a.saveBypassAntivirusMarker(m.DepsVersion, blocked); err != nil {
+		return a.failDepsDownload(m, fmt.Errorf("record local bypass Defender state: %w", err))
+	}
+	a.setBypassIntegrityStateLocked(m.DepsVersion, true, blocked)
+	if len(blocked) > 0 {
+		a.writeLog(fmt.Sprintf("[Security][Defender] optional local-bypass component(s) %v were blocked; the trusted VPN/VLESS core remains available", blocked))
+		a.emitEvent("deps-warning", map[string]interface{}{
+			"warning":           "Microsoft Defender заблокировал локальный DPI-обход. VPN/VLESS и WireGuard продолжают работать без него.",
+			"blockedComponents": blocked,
+		})
+	} else {
+		a.writeLog("[Bypass] optional local DPI-bypass package installed after explicit user request")
+	}
+	a.emitDepsProgress(m.Size, m.Size, "Локальный обход готов")
+	return nil
+}
+
+func (a *App) retryAntivirusBlockedBypass(m *DepsManifest, blocked []string) error {
+	a.depsIntegrityMu.Lock()
+	defer a.depsIntegrityMu.Unlock()
+	if err := verifyFileSHA256AndSize(a.bypassArchivePath(), m.SHA256, m.Size); err != nil {
+		a.setBypassIntegrityStateLocked(m.DepsVersion, false, nil)
+		return a.failDepsDownload(m, fmt.Errorf("verify cached bypass before Defender retry: %w", err))
+	}
+	retryBlocked, err := extractSelectedDependencies(a.bypassArchivePath(), a.binDir(), blocked)
+	if err != nil {
+		return a.failDepsDownload(m, fmt.Errorf("retry Defender-blocked local bypass: %w", err))
+	}
+	allowed := make(map[string]struct{}, len(blocked)+len(retryBlocked))
+	for _, component := range append(append([]string(nil), blocked...), retryBlocked...) {
+		allowed[strings.ToLower(filepath.Base(component))] = struct{}{}
+	}
+	remaining, err := extractedFilesMatchArchiveAllowBlocked(a.bypassArchivePath(), a.binDir(), allowed)
+	if err != nil {
+		return a.failDepsDownload(m, fmt.Errorf("verify local bypass after Defender retry: %w", err))
+	}
+	remaining = uniqueSortedStrings(remaining)
+	if err := a.saveBypassAntivirusMarker(m.DepsVersion, remaining); err != nil {
+		return a.failDepsDownload(m, fmt.Errorf("update local bypass Defender state: %w", err))
+	}
+	a.setBypassIntegrityStateLocked(m.DepsVersion, true, remaining)
+	if len(remaining) > 0 {
+		a.writeLog(fmt.Sprintf("[Security][Defender] local bypass component(s) %v remain blocked", remaining))
+		return nil
+	}
+	a.writeLog("[Security][Defender] optional local bypass was restored from its verified archive")
 	return nil
 }
 
@@ -402,12 +684,12 @@ func (a *App) retryAntivirusBlockedDependencies(m *DepsManifest, blocked []strin
 	if len(remaining) > 0 {
 		a.writeLog(fmt.Sprintf("[Security][Defender] optional component(s) %v are still blocked; subscription-only degraded mode remains active", remaining))
 		a.emitEvent("deps-warning", map[string]interface{}{
-			"warning":           "Компонент zapret2 всё ещё блокируется Defender. Обновите базы Microsoft Defender и повторите проверку.",
+			"warning":           "Устаревший дополнительный компонент всё ещё блокируется Defender. Установите текущий единый EXE.",
 			"blockedComponents": remaining,
 		})
 		return nil
 	}
-	a.writeLog("[Security][Defender] previously blocked zapret2 component was restored from the already verified dependency archive; full Windows Unified mode is available again")
+	a.writeLog("[Security][Defender] previously blocked legacy component was restored from its verified archive; migrate to the current bundled runtime")
 	a.emitEvent("deps-progress", map[string]interface{}{"done": m.Size, "total": m.Size, "percent": 100, "phase": "Компонент восстановлен"})
 	return nil
 }
@@ -680,8 +962,16 @@ func isAntimalwareBlockError(err error) bool {
 }
 
 func (a *App) loadDepsAntivirusMarker(required string) map[string]struct{} {
+	return loadAntivirusMarker(a.depsAntivirusMarkerPath(), required)
+}
+
+func (a *App) loadBypassAntivirusMarker(required string) map[string]struct{} {
+	return loadAntivirusMarker(a.bypassAntivirusMarkerPath(), required)
+}
+
+func loadAntivirusMarker(path, required string) map[string]struct{} {
 	allowed := make(map[string]struct{})
-	data, err := os.ReadFile(a.depsAntivirusMarkerPath())
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return allowed
 	}
@@ -699,15 +989,27 @@ func (a *App) loadDepsAntivirusMarker(required string) map[string]struct{} {
 }
 
 func (a *App) saveDepsAntivirusMarker(required string, blocked []string) error {
+	return saveAntivirusMarker(a.depsAntivirusMarkerPath(), required, blocked)
+}
+
+func (a *App) saveBypassAntivirusMarker(required string, blocked []string) error {
+	return saveAntivirusMarker(a.bypassAntivirusMarkerPath(), required, blocked)
+}
+
+func saveAntivirusMarker(path, required string, blocked []string) error {
 	if len(blocked) == 0 {
-		return os.Remove(a.depsAntivirusMarkerPath())
+		err := os.Remove(path)
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
 	}
 	marker := depsAntivirusMarker{DepsVersion: required, Components: append([]string(nil), blocked...)}
 	data, err := json.Marshal(marker)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(a.depsAntivirusMarkerPath(), data, 0600)
+	return os.WriteFile(path, data, 0600)
 }
 
 func uniqueSortedStrings(values []string) []string {

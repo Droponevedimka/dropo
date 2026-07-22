@@ -269,7 +269,7 @@ func TestFilterActiveFreeAccessOutboundsRemovesInactiveStrategies(t *testing.T) 
 	}
 }
 
-func TestGenerateOutboundsUsesURLTestAutoSelectForMultipleSubscriptions(t *testing.T) {
+func TestGenerateOutboundsKeepsOrderedVPNSourceFallback(t *testing.T) {
 	builder := &ConfigBuilderForStorage{}
 	outbounds := builder.generateOutbounds(map[string]interface{}{}, []ProxyConfig{
 		{Type: "vless", Tag: "vless-fast", Server: "example.com", ServerPort: 443, UUID: "11111111-1111-1111-1111-111111111111"},
@@ -280,19 +280,19 @@ func TestGenerateOutboundsUsesURLTestAutoSelectForMultipleSubscriptions(t *testi
 	if auto == nil {
 		t.Fatal("auto-select outbound was not generated")
 	}
-	if auto["type"] != "urltest" {
-		t.Fatalf("auto-select type = %v, want urltest", auto["type"])
+	if auto["type"] != "selector" {
+		t.Fatalf("auto-select type = %v, want ordered selector", auto["type"])
 	}
 	if !sameStringSet(interfaceStringSlice(auto["outbounds"]), []string{"vless-fast", "vless-backup"}) {
 		t.Fatalf("auto-select outbounds = %v, want both subscription candidates", auto["outbounds"])
 	}
-	for _, key := range []string{"url", "interval", "tolerance", "interrupt_exist_connections"} {
-		if _, ok := auto[key]; !ok {
-			t.Fatalf("auto-select urltest missing field %s: %#v", key, auto)
-		}
+	if auto["default"] != "vless-fast" {
+		t.Fatalf("auto-select default = %v, want first provider source", auto["default"])
 	}
-	if _, ok := auto["default"]; ok {
-		t.Fatalf("auto-select urltest must not pin the first subscription as default: %#v", auto)
+	for _, key := range []string{"url", "interval", "tolerance"} {
+		if _, ok := auto[key]; ok {
+			t.Fatalf("ordered source selector must not auto-test sibling nodes (%s): %#v", key, auto)
+		}
 	}
 }
 
@@ -876,9 +876,9 @@ func TestStoredFreeAccessDefaultsToZapretWithoutByeDPIFallback(t *testing.T) {
 	}
 
 	app := &App{
-		basePath: basePath,
-		storage:  storage,
-		zapret:   NewTransparentBypassManager(basePath, DefaultZapretTransparentStrategies, nil),
+		basePath:      basePath,
+		storage:       storage,
+		trafficEngine: NewNativeTrafficManager(basePath, nil),
 	}
 	changed, err := app.applyStoredFreeAccessStrategiesToConfig(configPath, []string{ByeDPIOutboundTag, "byedpi-sni"})
 	if err != nil {
@@ -1056,9 +1056,9 @@ func TestStoredVPNStrategyDoesNotOverrideAvailableFreeMethod(t *testing.T) {
 	}
 
 	app := &App{
-		basePath: basePath,
-		storage:  storage,
-		zapret:   NewTransparentBypassManager(basePath, DefaultZapretTransparentStrategies, nil),
+		basePath:      basePath,
+		storage:       storage,
+		trafficEngine: NewNativeTrafficManager(basePath, nil),
 	}
 	changed, err := app.applyStoredFreeAccessStrategiesToConfig(configPath, []string{ByeDPIOutboundTag})
 	if err != nil {
@@ -1944,7 +1944,7 @@ func TestBuildConfigWithVLESSXHTTPUsesXrayBridge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get profile config failed: %v", err)
 	}
-	if !containsOutboundType(config, "xhttp-test", "socks") {
+	if !containsOutboundType(config, "vpn-source-source-1", "socks") {
 		t.Fatalf("sing-box config does not expose xhttp bridge as socks outbound")
 	}
 	if !containsOutbound(config, ServiceBypassGroupTag("openai")) {

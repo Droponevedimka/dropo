@@ -124,11 +124,7 @@ if (-not $ReleaseFolder -or -not (Test-Path -LiteralPath $ReleaseFolder -PathTyp
 $windowsExe = Join-Path $ReleaseFolder "dropo-Windows-x64.exe"
 $androidApk = Join-Path $ReleaseFolder "dropo-Android-arm64.apk"
 $tag = "v$version"
-$depsLock = Get-Content (Join-Path $RepoRoot "deps-lock.json") -Raw | ConvertFrom-Json
 $releaseAssets = @($windowsExe, $androidApk)
-if ([string]$depsLock.tag -eq $tag) {
-	$releaseAssets += Join-Path $ReleaseFolder ([string]$depsLock.asset)
-}
 foreach ($path in $releaseAssets) {
 	if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
 		throw "Required release asset was not found: $path"

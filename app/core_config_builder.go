@@ -11,7 +11,8 @@ import (
 
 // UserSettings хранит настройки пользователя
 type UserSettings struct {
-	SubscriptionURL  string                `json:"subscription_url"`  // URL подписки или прямая ссылка vless/trojan/etc
+	SubscriptionURL  string                `json:"subscription_url"` // URL подписки или прямая ссылка vless/trojan/etc
+	VPNSources       []VPNSource           `json:"vpn_sources,omitempty"`
 	LastUpdated      string                `json:"last_updated"`      // Время последнего обновления
 	ProxyCount       int                   `json:"proxy_count"`       // Количество прокси из подписки
 	WireGuardConfigs []UserWireGuardConfig `json:"wireguard_configs"` // WireGuard конфиги (до 20)

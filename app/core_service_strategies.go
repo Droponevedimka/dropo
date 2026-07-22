@@ -12,25 +12,17 @@ import (
 	"sync"
 )
 
-// ServiceBypassMethod is one ranked DPI-bypass technique for a single service.
-// It is composed into the shared winws2 instance as TCP and UDP profiles scoped
-// to that service's own hostlist, so different services can run different
-// methods simultaneously inside one WinDivert filter. Discord additionally gets
-// narrowly scoped raw filters for identifiable discovery/STUN packets; encrypted
-// RTP is deliberately left untouched. This is the key to "no single method fits all
-// services": each service keeps its own best method.
-//
-// Discord/YouTube methods mirror the Flowseal zapret-discord-youtube bundle
-// (https://github.com/Flowseal/zapret-discord-youtube). Other services seed
-// from the same broadly-effective zapret2 techniques, ranked most→least likely
-// to work; the ranking is refined per service over time and at build via the
-// service-strategy update check.
+// ServiceBypassMethod is one ranked native DPI-bypass technique for a single
+// service. Windows maps NativeStrategyID to a typed, bounded packet strategy;
+// no command line or external strategy runtime is executed. Research origins
+// and licenses are documented only in THIRD_PARTY_NOTICES.md.
 type ServiceBypassMethod struct {
-	Tag      string
-	Label    string
-	TCPArgs  []string // desync args for the service's tcp 80,443 profile (${BIN} allowed)
-	UDPArgs  []string // desync args for the service's udp 443 (QUIC) profile (${BIN} allowed)
-	Required []string // bundled .bin payloads this method needs
+	Tag              string
+	Label            string
+	NativeStrategyID string
+	TCPArgs          []string // legacy migration input; never executed by the native engine
+	UDPArgs          []string // legacy migration input; never executed by the native engine
+	Required         []string // legacy migration metadata; not required by the native engine
 }
 
 const (
@@ -86,8 +78,9 @@ func zapret2BlobName(payload string) string {
 
 func methodMultisplit(tag, label string, seqovl, pos int, quicFile string) ServiceBypassMethod {
 	return ServiceBypassMethod{
-		Tag:   tag,
-		Label: label,
+		Tag:              tag,
+		Label:            label,
+		NativeStrategyID: "native-overlap-split",
 		TCPArgs: []string{
 			"--payload=tls_client_hello",
 			fmt.Sprintf("--lua-desync=multisplit:pos=%d:seqovl=%d:seqovl_pattern=google_tls", pos, seqovl),
@@ -115,18 +108,20 @@ func methodFakeMultisplit(tag, label string, seqovl, pos, repeats int, fakeTLSMo
 		fmt.Sprintf("--lua-desync=multisplit:pos=%d:seqovl=%d:seqovl_pattern=google_tls", pos, seqovl),
 	}
 	return ServiceBypassMethod{
-		Tag:      tag,
-		Label:    label,
-		TCPArgs:  tcp,
-		UDPArgs:  fakeQUICArgs(quicFile),
-		Required: []string{googleTLSPayload, quicFile},
+		Tag:              tag,
+		Label:            label,
+		NativeStrategyID: "native-decoy-split",
+		TCPArgs:          tcp,
+		UDPArgs:          fakeQUICArgs(quicFile),
+		Required:         []string{googleTLSPayload, quicFile},
 	}
 }
 
 func methodFakedsplitTS(tag, label, quicFile string) ServiceBypassMethod {
 	return ServiceBypassMethod{
-		Tag:   tag,
-		Label: label,
+		Tag:              tag,
+		Label:            label,
+		NativeStrategyID: "native-decoy-split",
 		TCPArgs: []string{
 			"--payload=tls_client_hello",
 			"--lua-desync=fake:blob=google_tls:tcp_ts=-600000:repeats=6",
@@ -139,8 +134,9 @@ func methodFakedsplitTS(tag, label, quicFile string) ServiceBypassMethod {
 
 func methodMultidisorder(tag, label, quicFile string) ServiceBypassMethod {
 	return ServiceBypassMethod{
-		Tag:   tag,
-		Label: label,
+		Tag:              tag,
+		Label:            label,
+		NativeStrategyID: "native-disorder-2",
 		TCPArgs: []string{
 			"--payload=tls_client_hello",
 			"--lua-desync=fake:blob=google_tls:tcp_seq=-10000:repeats=6",
@@ -153,8 +149,9 @@ func methodMultidisorder(tag, label, quicFile string) ServiceBypassMethod {
 
 func methodSplitAutottl(tag, label, quicFile string) ServiceBypassMethod {
 	return ServiceBypassMethod{
-		Tag:   tag,
-		Label: label,
+		Tag:              tag,
+		Label:            label,
+		NativeStrategyID: "native-low-ttl-decoy",
 		TCPArgs: []string{
 			"--payload=tls_client_hello",
 			"--lua-desync=fake:blob=google_tls:ip_autottl=-2,3-20:ip6_autottl=-2,3-20:tcp_seq=-10000:repeats=6",
@@ -176,8 +173,9 @@ func methodFakeTTL(tag, label string, ttl, repeats int, quicFile string) Service
 		repeats = 6
 	}
 	return ServiceBypassMethod{
-		Tag:   tag,
-		Label: label,
+		Tag:              tag,
+		Label:            label,
+		NativeStrategyID: "native-low-ttl-decoy",
 		TCPArgs: []string{
 			"--payload=tls_client_hello",
 			fmt.Sprintf("--lua-desync=fake:blob=google_tls:ip_ttl=%d:ip6_ttl=%d:tcp_md5:repeats=%d", ttl, ttl, repeats),
@@ -189,8 +187,9 @@ func methodFakeTTL(tag, label string, ttl, repeats int, quicFile string) Service
 
 func methodFakeSplitMd5(tag, label, quicFile string) ServiceBypassMethod {
 	return ServiceBypassMethod{
-		Tag:   tag,
-		Label: label,
+		Tag:              tag,
+		Label:            label,
+		NativeStrategyID: "native-decoy-split",
 		TCPArgs: []string{
 			"--payload=tls_client_hello",
 			"--lua-desync=fake:blob=google_tls:ip_autottl=-2,3-20:ip6_autottl=-2,3-20:tcp_md5:repeats=6",
@@ -575,10 +574,10 @@ func defaultZapret2TransparentStrategies() []TransparentFreeAccessStrategy {
 		label  string
 		method ServiceBypassMethod
 	}{
-		{"flowseal-general-alt2", "zapret2 general ALT2", methodMultisplit("", "", 652, 2, googleQUICPayload)},
-		{"flowseal-general", "zapret2 general", methodMultisplit("", "", 568, 1, googleQUICPayload)},
-		{"flowseal-general-alt", "zapret2 general ALT", methodFakedsplitTS("", "", googleQUICPayload)},
-		{"flowseal-multidisorder", "zapret2 multidisorder", methodMultidisorder("", "", googleQUICPayload)},
+		{"flowseal-general-alt2", "Dropo native split ALT2", methodMultisplit("", "", 652, 2, googleQUICPayload)},
+		{"flowseal-general", "Dropo native split", methodMultisplit("", "", 568, 1, googleQUICPayload)},
+		{"flowseal-general-alt", "Dropo native fake/split", methodFakedsplitTS("", "", googleQUICPayload)},
+		{"flowseal-multidisorder", "Dropo native disorder", methodMultidisorder("", "", googleQUICPayload)},
 	}
 	strategies := make([]TransparentFreeAccessStrategy, 0, len(definitions))
 	for _, def := range definitions {

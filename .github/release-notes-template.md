@@ -1,28 +1,29 @@
 ## dropo {{TAG}}
 
-Этот тег и описание созданы GitHub Actions. Проверенные файлы Windows и Android
-загружаются локальным publisher после завершения release gate.
+Этот тег и описание созданы GitHub Actions. Проверенные Windows- и Android-файлы
+загружаются локальным publisher после прохождения release gate.
 
 ### Скачать
 
 | Платформа | Файл | Ссылка | Примечание |
 | --- | --- | --- | --- |
-| Windows x64 | `dropo-Windows-x64.exe` | [Скачать](https://downloads.droponevedimka.ru/releases/download/{{TAG}}/dropo-Windows-x64.exe) | Запустите один EXE: приложение проверит и развернёт подписанный пакет в `%LOCALAPPDATA%\dropo\app\<версия>`. Ручная распаковка не нужна. |
-| Windows Dependencies x64 | `{{DEPENDENCIES_ASSET}}` | [Скачать](https://downloads.droponevedimka.ru/releases/download/{{DEPENDENCIES_TAG}}/{{DEPENDENCIES_ASSET}}) | Движки VPN и обхода; приложение проверяет SHA-256 перед использованием. |
-| Android arm64 | `dropo-Android-arm64.apk` | [Скачать](https://downloads.droponevedimka.ru/releases/download/{{TAG}}/dropo-Android-arm64.apk) | Для Android 11+ на arm64. |
+| Windows 10/11 x64 | `dropo-Windows-x64.exe` | [Скачать](https://downloads.droponevedimka.ru/releases/download/{{TAG}}/dropo-Windows-x64.exe) | Один самораспаковывающийся EXE уже содержит UI, core, sing-box, Xray, WireGuard и официальный WinDivert. Сетевой runtime при запуске не скачивается. |
+| Android 11+ arm64 | `dropo-Android-arm64.apk` | [Скачать](https://downloads.droponevedimka.ru/releases/download/{{TAG}}/dropo-Android-arm64.apk) | Для Android 11+ на arm64. |
 
 Windows SHA-256: `__WINDOWS_SHA256_PENDING_LOCAL_UPLOAD__`
 
 Android SHA-256: `__ANDROID_SHA256_PENDING_LOCAL_UPLOAD__`
 
-### Изменения
+### Основные изменения
 
-- Исправлено ошибочное переключение Discord с рабочего VPN/VLESS-маршрута на `direct`: простой TCP voice gateway больше не считается отказом активного UDP-медиаканала.
-- Параллельные Discord voice/video/Go Live UDP-потоки теперь оцениваются совместно; единичный зависший flow не разрывает маршрут, пока другой поток продолжает получать медиаданные.
-- После исчерпания VPN-кандидатов сохраняется автоматическое восстановление, а старые счётчики соединений больше не влияют на проверку нового маршрута.
-- Расширена диагностика Discord: журнал содержит состояние маршрута, время последнего входящего медиапакета и точную причину каждого переключения.
-- При эвристической блокировке `winws2.exe` Microsoft Defender приложение больше не зацикливает загрузку зависимостей и не завершает весь VPN: проверенные VPN/VLESS-маршруты продолжают работать в безопасном ограниченном режиме без антивирусных исключений.
-- Добавлено восстановление заблокированного компонента из уже проверенного архива и устранена гонка доступа к кэшу зависимостей.
-- Фоновые проверки маршрутов ограничены, чтобы не перегружать единственный узел подписки во время запуска и диагностики.
+- Windows переведён на собственный in-process Traffic Orchestrator с одним владельцем WinDivert и атомарными стратегиями по сервисам.
+- Стратегия принимается только после одновременного успеха обязательных TCP, UDP и web-проверок; частичный результат не применяется.
+- TLS, HTTP Host и QUIC v1/v2 Initial SNI классифицируются внутри ограниченного и отказоустойчивого packet pipeline; неуверенный трафик проходит без изменения.
+- Discord web, signalling, STUN и voice/video/Go Live media классифицируются и диагностируются раздельно; зашифрованный media payload не изменяется.
+- Несколько VPN-подписок и отдельных ключей образуют упорядоченный fallback между источниками. Внутри подписки используется первый рекомендуемый узел либо ручной выбор пользователя.
+- Рабочие WireGuard-сети имеют приоритет над direct, локальными стратегиями и VPN fallback.
+- Windows EXE содержит полный runtime. На первом запуске payload проверяется и разворачивается в AppData, а повышенный core переносит проверенные native-компоненты в защищённый ProgramData runtime без сетевой загрузки.
+- Из поставки удалены внешний anti-DPI-процесс, Lua runtime и Cygwin; официальный WinDivert 2.2.2 закреплён по SHA-256.
+- Вложенные PE-файлы проверяются по Authenticode; пакет содержит file manifest, SPDX SBOM и provenance, связанный с ревизией исходников и составом runtime.
 
-> Для перехода с 3.0.0 и более ранних Windows-версий новый EXE нужно скачать вручную один раз: старый updater распознаёт только ZIP-артефакты.
+> При конфликте с другим VPN или WinDivert-приложением dropo показывает найденные процессы, адаптеры и packet-filter services до подключения.

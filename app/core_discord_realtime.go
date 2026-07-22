@@ -352,7 +352,7 @@ func (a *App) runDiscordRealtimeMonitor(ctx context.Context, controller *discord
 					if controller.usingVPN() {
 						a.updateBusy(discordRealtimeBusyID, "Проверяем Discord voice/video/Go Live через VPN...")
 					} else {
-						a.updateBusy(discordRealtimeBusyID, "Проверяем Discord voice/video/Go Live через прямой zapret2...")
+						a.updateBusy(discordRealtimeBusyID, "Проверяем Discord voice/video/Go Live через локальную стратегию...")
 					}
 				}
 				if action.learnedPort > 0 {
@@ -924,7 +924,7 @@ func (a *App) handleDiscordLearnedMedia(tcpPorts, udpPorts map[int]struct{}, udp
 		}
 		classes = append(classes, fmt.Sprintf("%d:%s", port, class))
 	}
-	a.writeLog(fmt.Sprintf("[DiscordRealtime][Endpoint] learned tcp=%v udp=%v udp_class=%v ips=%v; observation only, winws2 is intentionally not restarted and encrypted RTP is never modified", tcpValues, udpValues, classes, ipValues))
+	a.writeLog(fmt.Sprintf("[DiscordRealtime][Endpoint] learned tcp=%v udp=%v udp_class=%v ips=%v; the immutable native plan is updated without restarting WinDivert and encrypted RTP is never modified", tcpValues, udpValues, classes, ipValues))
 }
 
 func sortedIntSet(values map[int]struct{}) []int {
@@ -962,7 +962,7 @@ func (a *App) handleDiscordRealtimeFailure(reason string) {
 		if initialBusy {
 			a.updateBusy(discordRealtimeBusyID, "Проверяем Discord voice через VPN...")
 		}
-		a.rotateDiscordVPNNode(reason)
+		a.rotateDiscordVPNSource(reason)
 		return
 	}
 	if !controller.automatic {
@@ -1072,12 +1072,12 @@ func (a *App) closeDiscordRealtimeConnections() {
 	a.writeLog(fmt.Sprintf("[DiscordRealtime][Reconnect] completed: eligible=%d closed=%d failed=%d", attempted, closed, attempted-closed))
 }
 
-func (a *App) rotateDiscordVPNNode(reason string) {
+func (a *App) rotateDiscordVPNSource(reason string) {
 	candidates, current := a.selectorCandidates(discordVPNGroupTag)
 	if len(candidates) == 0 {
 		a.switchOutboundSelector(discordRealtimeGroupTag, "direct")
 		a.finishDiscordRealtimeInitialGate()
-		a.writeLog("[DiscordRealtime] VPN UDP failed and no alternative subscription node exists; switched to direct")
+		a.writeLog("[DiscordRealtime] VPN UDP failed and no alternative VPN source exists; switched to direct")
 		a.closeDiscordRealtimeConnections()
 		return
 	}
@@ -1104,17 +1104,17 @@ func (a *App) rotateDiscordVPNNode(reason string) {
 		controller.vpnTried = make(map[string]bool)
 		controller.resetRouteObservationLocked()
 		controller.mu.Unlock()
-		a.writeLog(fmt.Sprintf("[DiscordRealtime] every available VPN node failed the current realtime health window (%s); switched to direct but kept automatic recovery enabled", reason))
+		a.writeLog(fmt.Sprintf("[DiscordRealtime] every independent VPN source failed the current realtime health window (%s); switched to direct but kept automatic recovery enabled", reason))
 		a.closeDiscordRealtimeConnections()
 		return
 	}
-	a.writeLog(fmt.Sprintf("[DiscordRealtime] VPN realtime failure (%s); rotated subscription node %s -> %s", reason, current, next))
+	a.writeLog(fmt.Sprintf("[DiscordRealtime] VPN realtime failure (%s); switched fallback source %s -> %s", reason, current, next))
 	controller.mu.Lock()
 	initialBusy := controller.initialBusy
 	controller.resetRouteObservationLocked()
 	controller.mu.Unlock()
 	if initialBusy {
-		a.updateBusy(discordRealtimeBusyID, fmt.Sprintf("Проверяем следующий VPN-узел для Discord voice: %s", next))
+		a.updateBusy(discordRealtimeBusyID, fmt.Sprintf("Проверяем следующий VPN-источник для Discord voice: %s", next))
 	}
 	a.closeDiscordRealtimeConnections()
 }

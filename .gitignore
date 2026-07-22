@@ -19,9 +19,9 @@ release/
 # Local development documentation
 /docs/
 
-# Bundled dependencies are NOT stored in git: scripts/build/build.ps1 downloads them into this
-# local cache at build time, and they ship to users as a separate release asset
-# (dependencies-<depsVersion>.zip) downloaded on first run. See docs/UPDATE.md.
+# Bundled dependencies are NOT stored in git: scripts/build/build.ps1 fetches and
+# verifies them in this local build cache, then embeds the complete runtime into
+# the single Windows EXE. Current clients never download executable dependencies.
 dependencies/
 
 # Go
@@ -31,6 +31,10 @@ dependencies/
 *.out
 go.work
 go.work.sum
+
+# Python
+__pycache__/
+*.py[cod]
 
 # Node.js
 app/frontend/node_modules/

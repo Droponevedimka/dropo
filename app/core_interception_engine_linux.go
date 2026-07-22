@@ -2,17 +2,17 @@
 
 package main
 
-// Linux interception engine: nfqws/NFQUEUE (the zapret family's Linux desync
-// engine, the direct analogue of Windows winws2). Not yet wired into the runtime.
+import traffic "dropo/trafficorchestrator"
+
+// Linux interception engine: a future native NFQUEUE adapter. It is not wired
+// into the runtime and does not share Windows command-line/process semantics.
 //
 // Roadmap to implement:
-//   - Ship nfqws (+ optional tpws) in the Linux dependency archive.
-//   - Acquire CAP_NET_ADMIN/CAP_NET_RAW (or a privileged helper) and install the
-//     NFQUEUE iptables/nftables rules the composed profiles need.
-//   - Translate the per-service composed winws2 args into nfqws2 args. The
-//     Flowseal-compatible multisplit+seqovl strategies map almost 1:1.
-//   - Implement StartComposedStrategy to launch one nfqws instance from the
-//     composed per-service profiles, mirroring the Windows hot path.
+//   - Implement an audited in-process or privileged-helper NFQUEUE backend.
+//   - Acquire CAP_NET_ADMIN/CAP_NET_RAW and install narrowly scoped nftables
+//     rules without accepting generated shell commands.
+//   - Compile the same validated TrafficPlan model used by Windows into bounded
+//     Linux packet actions and preserve atomic plan replacement.
 var (
 	interceptionEngineSupportedFlag = false
 	interceptionEngineKindLabel     = "nfqws/NFQUEUE"
@@ -28,7 +28,7 @@ var _ InterceptionEngine = (*nfqwsEngine)(nil)
 func (*nfqwsEngine) IsInstalled() bool                                    { return false }
 func (*nfqwsEngine) ActiveTag() string                                    { return "" }
 func (*nfqwsEngine) AvailableStrategies() []TransparentFreeAccessStrategy { return nil }
-func (*nfqwsEngine) StartComposedStrategy(string, []string) error         { return errEngineNotImplemented }
+func (*nfqwsEngine) StartPlan(traffic.TrafficPlan) error                  { return errEngineNotImplemented }
 func (*nfqwsEngine) Stop()                                                {}
 func (*nfqwsEngine) strategyPath(TransparentFreeAccessStrategy) string    { return "" }
 func (*nfqwsEngine) prepareDebugLog(string) (string, error)               { return "", errEngineNotImplemented }

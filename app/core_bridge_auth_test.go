@@ -152,4 +152,15 @@ func TestBridgeCallAllowlistRejectsExportedMaintenanceMethods(t *testing.T) {
 	if _, ok := bridgeCallableMethods["DownloadAndInstallUpdate"]; !ok {
 		t.Fatal("DownloadAndInstallUpdate must be available to the trusted Flutter UI")
 	}
+	if _, ok := bridgeCallableMethods["SelectTrafficStrategy"]; !ok {
+		t.Fatal("SelectTrafficStrategy must be available to diagnostics through the trusted Flutter UI")
+	}
+	for _, method := range []string{
+		"GetVPNSources", "AddVPNSource", "RemoveVPNSource", "RefreshVPNSources",
+		"SetVPNSourceEnabled", "SetVPNSourceNode", "MoveVPNSource",
+	} {
+		if _, ok := bridgeCallableMethods[method]; !ok {
+			t.Fatalf("%s must be available to the trusted Flutter UI", method)
+		}
+	}
 }

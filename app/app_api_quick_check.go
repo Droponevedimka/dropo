@@ -22,8 +22,8 @@ const (
 	clientQuickCheckTimeout        = 45 * time.Second
 	clientQuickCheckRequestTimeout = 5 * time.Second
 	clientQuickCheckConcurrency    = 16
-	// One cheap retry filters out single transient resets (winws2 desync can drop
-	// the very first packet of a connection) so a service isn't mislabeled as
+	// One cheap retry filters out a single transient reset while a trial plan is
+	// being applied, so a service isn't mislabeled as
 	// blocked — and so it doesn't spuriously trigger strategy maintenance.
 	clientQuickCheckRetryDelay   = 300 * time.Millisecond
 	clientQuickCheckRetryTimeout = 2 * time.Second
@@ -243,7 +243,7 @@ enqueue:
 }
 
 func (a *App) ensureTransparentBypassForClientQuickCheck() {
-	if a == nil || a.zapret == nil || a.storage == nil {
+	if a == nil || a.trafficEngine == nil || a.storage == nil {
 		return
 	}
 	a.mu.Lock()
@@ -253,7 +253,7 @@ func (a *App) ensureTransparentBypassForClientQuickCheck() {
 		return
 	}
 	settings := a.storage.GetAppSettings()
-	if !FreeMethodsAllowed(settings) || a.zapret.ActiveTag() != "" {
+	if !FreeMethodsAllowed(settings) || a.trafficEngine.ActiveTag() != "" {
 		return
 	}
 	if err := a.startComposedTransparentEngine(""); err != nil {

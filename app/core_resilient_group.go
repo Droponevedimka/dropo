@@ -71,3 +71,20 @@ func buildAutoSelectOutbound(proxyTags []string) map[string]interface{} {
 		"interrupt_exist_connections": false,
 	}
 }
+
+// buildVPNSourceFallbackOutbound preserves user/provider priority. Each tag is
+// already the one explicitly selected node of a different VPN source.
+func buildVPNSourceFallbackOutbound(sourceTags []string) map[string]interface{} {
+	if len(sourceTags) == 0 {
+		return map[string]interface{}{
+			"type": "selector", "tag": "auto-select",
+			"outbounds": []string{"direct"}, "default": "direct",
+		}
+	}
+	return map[string]interface{}{
+		"type":      "selector",
+		"tag":       "auto-select",
+		"outbounds": append([]string(nil), sourceTags...),
+		"default":   sourceTags[0],
+	}
+}

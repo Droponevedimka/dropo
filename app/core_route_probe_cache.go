@@ -59,14 +59,14 @@ func (a *App) startRouteStrategyMaintenanceListener() {
 					// retuned on its own ladder (cache → next working → VPN /
 					// direct) without disturbing the others. The dequeue above
 					// starts the anti-churn cooldown.
-					if a.zapret != nil && a.zapret.ActiveTag() == composedStrategyTag {
+					if a.trafficEngine != nil && a.trafficEngine.ActiveTag() == composedStrategyTag {
 						if err := a.retunePerServiceStrategy(serviceTag, serviceReason); err != nil {
 							a.writeLog(fmt.Sprintf("[FreeAccess] per-service retune failed (%s): %v", serviceReason, err))
 						}
 						a.sleepRouteStrategyMaintenancePause()
 						continue
 					}
-					a.writeLog(fmt.Sprintf("[FreeAccess] per-service retune deferred (%s): composed winws2 is not active; temporary fallback will be retried after TTL or a network change", serviceReason))
+					a.writeLog(fmt.Sprintf("[FreeAccess] per-service retune deferred (%s): native traffic plan is not active; temporary fallback will be retried after TTL or a network change", serviceReason))
 					// Unhurried: pace consecutive searches so the single
 					// transparent engine is never thrashed by a burst of jobs.
 					a.sleepRouteStrategyMaintenancePause()
@@ -470,8 +470,8 @@ func (a *App) usableCachedRouteProbeResults(results []routeProbeServiceResult, a
 		freeTags[tag] = true
 	}
 	transparentTags := map[string]bool{}
-	if a.zapret != nil {
-		for _, strategy := range a.zapret.AvailableStrategies() {
+	if a.trafficEngine != nil {
+		for _, strategy := range a.trafficEngine.AvailableStrategies() {
 			transparentTags[strategy.Tag] = true
 		}
 	}

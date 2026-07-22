@@ -30,7 +30,7 @@ Remove-Item Env:\DROPO_TEST_SUBSCRIPTION_URL
 
 ## publish-release-assets.ps1
 
-Локально проверяет и загружает Windows ZIP и Android APK в уже созданную
+Локально проверяет и загружает единый Windows EXE и Android APK в уже созданную
 GitHub Actions карточку релиза. Actions при этом не получает signing keys и не
 собирает артефакты.
 
@@ -83,11 +83,9 @@ logs. For diagnosing *how* a provider blocks (RST/timeout/IP/DNS), use
 **Настройки → `🩻 Снять отпечаток`** and send the file to the developer. The
 local censor lab used to reproduce these reports lives in `testlab/`.
 
-Manual quick client bundle script, for emergency support only:
-
-Windows diagnostics target only zapret2 `winws2.exe`. Since dropo 2.1.55 the
-old zapret1 `winws.exe` runtime is neither packaged nor started; its presence in
-a portable folder indicates stale files from an older build.
+Manual quick client bundle script, for emergency support only. Current Windows
+diagnostics inspect the in-process traffic orchestrator, the single WinDivert
+owner, VPN-source health and stale app-owned processes from older installations.
 
 ```powershell
 .\client-quick-check.ps1
@@ -101,7 +99,9 @@ For blocked-service failures, run the deeper method matrix:
 .\client-quick-check.ps1 -DeepMethodCheck
 ```
 
-This adds `free-method-results.csv` (and the legacy `byedpi-method-results.csv` copy), testing failed blocked URLs through each live ByeDPI SOCKS5 method (`18091..18094`). Transparent zapret2/winws2 is selected by the app route-probe and appears in app logs plus the main route indicator rather than this SOCKS-only matrix.
+This adds `free-method-results.csv` for compatibility with older support
+automation. Native per-service strategy decisions, target matrices and fallback
+transitions are recorded in the app diagnostics and main route indicator.
 
 Dropo now cleans bundled sidecar processes automatically on startup, before VPN
 start, on failed starts, on stop, and on quit. It also scans sibling portable
@@ -114,9 +114,9 @@ cleanup command as an emergency fallback:
 .\client-quick-check.ps1 -CleanupDropoOrphans
 ```
 
-`-CleanupDropoOrphans` kills only managed `sing-box.exe`, `ciadpi.exe`,
-`winws2.exe` and `xray.exe` whose executable path is inside the
-detected Dropo app root. It does not target other VPN applications.
+`-CleanupDropoOrphans` kills current managed sidecars and historical app-owned
+sidecars only when their executable path is inside the detected Dropo app root.
+It does not target other VPN applications.
 
 ## Практические сценарии
 

@@ -98,8 +98,8 @@ func (a *App) runRouteProbeAndApply(configPath string, activeFreeAccessTags []st
 		freeTags = filteredFreeTags
 	}
 	transparentStrategies := []TransparentFreeAccessStrategy{}
-	if runtime.GOOS != "windows" && FreeMethodsAllowed(settings) && a.zapret != nil {
-		transparentStrategies = a.zapret.AvailableStrategies()
+	if runtime.GOOS != "windows" && FreeMethodsAllowed(settings) && a.trafficEngine != nil {
+		transparentStrategies = a.trafficEngine.AvailableStrategies()
 	}
 
 	if len(services) == 0 {
@@ -553,10 +553,10 @@ func (a *App) newTransparentRouteProbeCandidate(strategy TransparentFreeAccessSt
 }
 
 func (a *App) startTransparentProbe(strategy TransparentFreeAccessStrategy) (func(), error) {
-	if a.zapret == nil {
-		return nil, fmt.Errorf("zapret2 manager is not initialized")
+	if a.trafficEngine == nil {
+		return nil, fmt.Errorf("native traffic manager is not initialized")
 	}
-	return a.zapret.StartForProbe(strategy)
+	return a.trafficEngine.StartForProbe(strategy)
 }
 
 func (a *App) newVPNRouteProbeCandidate(spec routeProbeCandidate) (routeProbeCandidate, error) {
@@ -1122,7 +1122,7 @@ func compactProbeError(err error) string {
 }
 
 func (a *App) applyTransparentRouteProbeSelection(results []routeProbeServiceResult) {
-	if a.zapret == nil {
+	if a.trafficEngine == nil {
 		return
 	}
 	// The Windows Unified per-service composed engine is now the

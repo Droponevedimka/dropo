@@ -24,7 +24,7 @@ func networkModeLabel(mode NetworkMode) string {
 }
 
 func networkModeDescription(mode NetworkMode) string {
-	return "A single Windows runtime: sing-box TUN routes traffic and one composed zapret2/winws2 process keeps an independent first-working strategy for each blocked service."
+	return "Единый Windows runtime: sing-box управляет маршрутами, а один встроенный WinDivert-движок применяет отдельную проверенную стратегию к каждому заблокированному сервису."
 }
 
 func networkModeStatusPayload(status NetworkModeStatus) map[string]interface{} {
@@ -71,16 +71,16 @@ func (a *App) resolveNetworkMode(requested NetworkMode) NetworkModeStatus {
 func (a *App) deepWindowsEngineReady() (bool, string, string) {
 	helperPath := ""
 	if a != nil && a.basePath != "" {
-		helperPath = filepath.Join(a.binDir(), ZapretProcessName)
+		helperPath = filepath.Join(a.binDir(), "WinDivert.dll")
 	}
 	if !interceptionEngineSupported() {
 		return false, helperPath, fmt.Sprintf("transparent interception engine (%s) is unavailable on this platform", interceptionEngineKind())
 	}
 
-	if a != nil && a.zapret != nil {
-		strategies := a.zapret.AvailableStrategies()
+	if a != nil && a.trafficEngine != nil {
+		strategies := a.trafficEngine.AvailableStrategies()
 		if len(strategies) > 0 {
-			return true, a.zapret.strategyPath(strategies[0]), ""
+			return true, a.trafficEngine.strategyPath(strategies[0]), ""
 		}
 	}
 
@@ -96,15 +96,8 @@ func (a *App) missingDeepWindowsFiles() []string {
 		return []string{"app base path"}
 	}
 	required := []string{
-		filepath.Join(a.binDir(), ZapretProcessName),
 		filepath.Join(a.binDir(), "WinDivert.dll"),
 		filepath.Join(a.binDir(), "WinDivert64.sys"),
-		filepath.Join(a.binDir(), "cygwin1.dll"),
-	}
-	if len(DefaultZapretTransparentStrategies) > 0 {
-		for _, file := range DefaultZapretTransparentStrategies[0].RequiredFiles {
-			required = append(required, filepath.Join(a.binDir(), file))
-		}
 	}
 	missing := make([]string, 0)
 	for _, path := range required {
@@ -116,7 +109,7 @@ func (a *App) missingDeepWindowsFiles() []string {
 }
 
 func (a *App) shouldUseDeepWindowsPrimary(configPath string, status NetworkModeStatus) (bool, string) {
-	return false, "Windows Unified always uses sing-box TUN routing with one composed winws2 engine"
+	return false, "Windows Unified always uses sing-box TUN routing with one in-process packet engine"
 }
 
 // GetNetworkMode returns the current network engine state and supported modes.

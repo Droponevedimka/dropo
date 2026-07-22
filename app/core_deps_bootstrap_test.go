@@ -4,7 +4,6 @@ import (
 	"archive/zip"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -276,30 +275,6 @@ func TestFindReleaseAssetURLUsesNewestCompatibleRelease(t *testing.T) {
 	got = findReleaseAssetURLIn(releases, "dropo-Windows-Dependencies-x64.zip", 68575183, sha)
 	if got != "https://downloads.droponevedimka.ru/v2.1.14/deps.zip" {
 		t.Fatalf("selected URL = %q, want older asset after digest mismatch", got)
-	}
-}
-
-func TestLiveFindDependenciesRelease(t *testing.T) {
-	if os.Getenv("DROPO_TEST_LIVE_DEPS_RELEASES") != "1" {
-		t.Skip("set DROPO_TEST_LIVE_DEPS_RELEASES=1 to verify GitHub release discovery")
-	}
-	data, err := os.ReadFile(filepath.Join("..", "deps-lock.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var lock struct {
-		Tag    string `json:"tag"`
-		Asset  string `json:"asset"`
-		SHA256 string `json:"sha256"`
-		Size   int64  `json:"size"`
-	}
-	if err := json.Unmarshal(data, &lock); err != nil {
-		t.Fatal(err)
-	}
-	got := findReleaseAssetURL(GitHubRepo, lock.Asset, lock.Size, lock.SHA256)
-	wantPart := "/releases/download/" + lock.Tag + "/" + lock.Asset
-	if !strings.Contains(got, wantPart) {
-		t.Fatalf("selected dependency URL = %q, want an asset from %s", got, lock.Tag)
 	}
 }
 

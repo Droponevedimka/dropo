@@ -206,17 +206,18 @@ type NetworkMode string
 
 const (
 	// NetworkModeWindowsUnified is the only supported Windows runtime: sing-box
-	// owns TUN routing while one composed winws2 process applies a separately
-	// selected zapret2 profile to every supported blocked service.
+	// owns TUN routing while the in-process traffic orchestrator applies a
+	// separately selected native profile to every supported blocked service.
 	NetworkModeWindowsUnified NetworkMode = "windows_unified"
 
 	// Legacy values are retained only so existing app_config.json files and old
 	// frontends migrate without an error. They are never activated on Windows.
-	// NetworkModeAuto prefers the Windows transparent engine when winws2/WinDivert
-	// are bundled and falls back to the compatible TUN implementation on error.
+	// NetworkModeAuto migrates to the native Windows engine when WinDivert is
+	// bundled and falls back to the compatible TUN implementation on error.
 	NetworkModeAuto NetworkMode = "auto"
 
-	// NetworkModeDeepWindows requests the zapret2/winws2 + WinDivert engine.
+	// NetworkModeDeepWindows is the legacy persisted name for the native
+	// WinDivert engine.
 	NetworkModeDeepWindows NetworkMode = "deep_windows"
 
 	// NetworkModeCompatTun uses the current sing-box TUN based implementation.

@@ -39,7 +39,7 @@ func TestResolveNetworkModeExplicitCompatDoesNotWarn(t *testing.T) {
 		t.Fatalf("status = %+v, want legacy compat migrated to unified", status)
 	}
 	if !status.Fallback {
-		t.Fatalf("missing winws2 payload must be visible in unified mode: %+v", status)
+		t.Fatalf("missing native packet runtime must be visible in unified mode: %+v", status)
 	}
 }
 
@@ -65,7 +65,7 @@ func TestResolveNetworkModeExplicitCompatIsFallbackOnlyWhenDeepWindowsReady(t *t
 	}
 }
 
-func TestResolveNetworkModeUsesDeepWindowsWhenWinwsIsBundled(t *testing.T) {
+func TestResolveNetworkModeUsesDeepWindowsWhenWinDivertIsBundled(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("Deep Windows engine is Windows-only")
 	}
@@ -74,17 +74,17 @@ func TestResolveNetworkModeUsesDeepWindowsWhenWinwsIsBundled(t *testing.T) {
 	status := app.resolveNetworkMode(NetworkModeAuto)
 
 	if status.Active != NetworkModeWindowsUnified {
-		t.Fatalf("active = %q, want %q with bundled winws2/WinDivert", status.Active, NetworkModeWindowsUnified)
+		t.Fatalf("active = %q, want %q with bundled WinDivert", status.Active, NetworkModeWindowsUnified)
 	}
 	if status.Fallback {
-		t.Fatalf("fallback = true, want false with bundled winws2/WinDivert: %+v", status)
+		t.Fatalf("fallback = true, want false with bundled WinDivert: %+v", status)
 	}
 	if !status.DriverReady {
-		t.Fatal("driverReady must be true with bundled winws2/WinDivert")
+		t.Fatal("driverReady must be true with bundled WinDivert")
 	}
 }
 
-func TestResolveNetworkModeRequiresZapretPayloadFiles(t *testing.T) {
+func TestResolveNetworkModeRequiresBothWinDivertFiles(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("Deep Windows engine is Windows-only")
 	}
@@ -94,7 +94,7 @@ func TestResolveNetworkModeRequiresZapretPayloadFiles(t *testing.T) {
 	if err := os.MkdirAll(binPath, 0755); err != nil {
 		t.Fatalf("create bin dir failed: %v", err)
 	}
-	for _, name := range []string{ZapretProcessName, "WinDivert.dll", "WinDivert64.sys", "cygwin1.dll"} {
+	for _, name := range []string{"WinDivert.dll"} {
 		if err := os.WriteFile(filepath.Join(binPath, name), []byte("test"), 0644); err != nil {
 			t.Fatalf("write %s failed: %v", name, err)
 		}
@@ -106,10 +106,10 @@ func TestResolveNetworkModeRequiresZapretPayloadFiles(t *testing.T) {
 		t.Fatalf("active = %q, want unified mode even when payload diagnostics fail", status.Active)
 	}
 	if !status.Fallback || status.DriverReady {
-		t.Fatalf("status = %+v, want fallback and driverReady=false without zapret payload files", status)
+		t.Fatalf("status = %+v, want fallback and driverReady=false without the driver", status)
 	}
-	if !strings.Contains(status.FallbackReason, "quic_initial_www_google_com.bin") {
-		t.Fatalf("fallback reason = %q, want missing payload file", status.FallbackReason)
+	if !strings.Contains(status.FallbackReason, "WinDivert64.sys") {
+		t.Fatalf("fallback reason = %q, want missing driver file", status.FallbackReason)
 	}
 }
 
@@ -392,19 +392,7 @@ func newDeepWindowsTestApp(t *testing.T, config map[string]interface{}) (*App, s
 	if err := os.MkdirAll(binPath, 0755); err != nil {
 		t.Fatalf("create bin dir failed: %v", err)
 	}
-	for _, name := range append([]string{
-		ZapretProcessName,
-		"WinDivert.dll",
-		"WinDivert64.sys",
-		"cygwin1.dll",
-		"quic_initial_www_google_com.bin",
-		"quic_initial_dbankcloud_ru.bin",
-		"tls_clienthello_www_google_com.bin",
-		"discord-ip-discovery-without-port.bin",
-		"stun.bin",
-		"windivert_part.discord_media.txt",
-		"windivert_part.stun.txt",
-	}, zapret2RequiredFiles...) {
+	for _, name := range []string{"WinDivert.dll", "WinDivert64.sys"} {
 		if err := os.WriteFile(filepath.Join(binPath, name), []byte("test"), 0644); err != nil {
 			t.Fatalf("write %s failed: %v", name, err)
 		}
@@ -424,9 +412,9 @@ func newDeepWindowsTestApp(t *testing.T, config map[string]interface{}) (*App, s
 	}
 
 	return &App{
-		basePath: basePath,
-		storage:  storage,
-		zapret:   NewTransparentBypassManager(basePath, DefaultZapretTransparentStrategies, nil),
+		basePath:      basePath,
+		storage:       storage,
+		trafficEngine: NewNativeTrafficManager(basePath, nil),
 	}, configPath
 }
 

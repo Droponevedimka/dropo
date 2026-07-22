@@ -1,10 +1,10 @@
 {
   "version": 7,
   "updated": "2026-06-26",
-  "note": "Per-service DPI-bypass ladders. blockType: 'dpi' (desync works), 'ip'/'protocol' (desync may help, prefer VPN fallback), 'vpn' (NO free bypass — never searched, needs a VPN/VLESS subscription). After the May-2026 ТСПУ update, the working Google/YouTube technique is fake,multisplit + fooling=ts + repeats=8 + fake-tls (Flowseal ALT11 / FAKE TLS AUTO), not plain multisplit. Most general DPI services are solved by fakedsplit-ts (empirically the winner). Techniques: fake-multisplit(seqovl,pos,repeats,fakeTlsMod[,ipIdZero]), multisplit(seqovl,pos[,ipIdZero]), fakedsplit-ts, multidisorder, split-autottl. quic: google|facebook.",
+  "note": "Per-service native DPI-bypass ladders. blockType: 'dpi' uses the local packet engine; 'vpn' uses the ordered VPN-source fallback. Strategy names describe Dropo's typed packet actions; research provenance is kept in THIRD_PARTY_NOTICES.md.",
   "services": {
     "discord": {
-      "source": "Flowseal/zapret-discord-youtube; empirically fakedsplit-ts",
+      "source": "Dropo research baseline; refined by client diagnostics",
       "blockType": "dpi",
       "methods": [
         { "tag": "fakedsplit-ts", "label": "Fakedsplit (ts)", "technique": "fakedsplit-ts", "quic": "google" },
@@ -13,7 +13,7 @@
       ]
     },
     "youtube": {
-      "source": "Flowseal ALT11 / FAKE TLS AUTO ALT3 (post-May-2026 Google profile)",
+      "source": "Dropo research baseline for Google/HTTP3 traffic",
       "blockType": "dpi",
       "methods": [
         { "tag": "google-fakemultisplit-681-mod", "label": "Google fake+multisplit 681 ts mod", "technique": "fake-multisplit", "seqovl": 681, "pos": 1, "repeats": 8, "fakeTlsMod": true, "ipIdZero": true, "quic": "google" },
@@ -25,7 +25,7 @@
       ]
     },
     "telegram": {
-      "source": "Local tg-ws-proxy sidecar — MTProto/IP block; handled by the local MTProto-over-WebSocket proxy, not winws2 desync",
+      "source": "Local MTProto-over-WebSocket sidecar for MTProto/IP blocking; excluded from native packet transformations",
       "blockType": "proxy",
       "methods": []
     },
@@ -80,7 +80,7 @@
       ]
     },
     "viber": {
-      "source": "ankddev/zapret-discord-youtube; client winner = multisplit 652/2",
+      "source": "Dropo client diagnostics; overlap split is preferred",
       "blockType": "dpi",
       "methods": [
         { "tag": "multisplit-652-2", "label": "Multisplit 652/2", "technique": "multisplit", "seqovl": 652, "pos": 2, "quic": "google" },

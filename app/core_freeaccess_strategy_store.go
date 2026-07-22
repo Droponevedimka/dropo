@@ -286,8 +286,8 @@ func makeFreeAccessStrategySelection(svc FreeAccessService, method string, sourc
 
 func (a *App) availableTransparentStrategyTags() map[string]bool {
 	tags := map[string]bool{}
-	if a != nil && a.zapret != nil {
-		for _, strategy := range a.zapret.AvailableStrategies() {
+	if a != nil && a.trafficEngine != nil {
+		for _, strategy := range a.trafficEngine.AvailableStrategies() {
 			tags[strategy.Tag] = true
 		}
 		return tags

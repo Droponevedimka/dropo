@@ -24,6 +24,7 @@ type ProfileData struct {
 
 	// Subscription settings (was user_settings.json)
 	SubscriptionURL  string                `json:"subscription_url,omitempty"`
+	VPNSources       []VPNSource           `json:"vpn_sources,omitempty"`
 	LastUpdated      string                `json:"last_updated,omitempty"`
 	ProxyCount       int                   `json:"proxy_count,omitempty"`
 	WireGuardConfigs []UserWireGuardConfig `json:"wireguard_configs,omitempty"`
@@ -107,7 +108,7 @@ type Storage struct {
 }
 
 const (
-	SettingsVersion  = 3
+	SettingsVersion  = 4
 	ResourcesFolder  = "resources"
 	SettingsFileName = "settings.json"
 )
@@ -225,6 +226,9 @@ func (s *Storage) Load() error {
 	}
 
 	s.normalizeAppSettings()
+	for index := range s.data.Profiles {
+		normalizeProfileVPNSources(&s.data.Profiles[index])
+	}
 
 	return s.saveInternal()
 }
@@ -550,11 +554,34 @@ func (s *Storage) UpdateProfileSubscription(id int, subscriptionURL string, prox
 	for i := range s.data.Profiles {
 		if s.data.Profiles[i].ID == id {
 			s.data.Profiles[i].SubscriptionURL = subscriptionURL
+			if len(s.data.Profiles[i].VPNSources) == 0 && strings.TrimSpace(subscriptionURL) != "" {
+				if source, err := newVPNSource("source-1", "Primary", subscriptionURL); err == nil {
+					source.NodeCount = proxyCount
+					s.data.Profiles[i].VPNSources = []VPNSource{source}
+				}
+			}
 			s.data.Profiles[i].ProxyCount = proxyCount
 			s.data.Profiles[i].WireGuardConfigs = wireGuardConfigs
 			s.data.Profiles[i].LastUpdated = time.Now().Format("2006-01-02 15:04:05")
 			return s.saveInternal()
 		}
+	}
+	return fmt.Errorf("profile with ID %d not found", id)
+}
+
+// UpdateProfileVPNSources atomically replaces the ordered source chain and
+// keeps legacy summary fields in sync for older UI bindings.
+func (s *Storage) UpdateProfileVPNSources(id int, sources []VPNSource, wireGuardConfigs []UserWireGuardConfig) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for index := range s.data.Profiles {
+		if s.data.Profiles[index].ID != id {
+			continue
+		}
+		s.data.Profiles[index].VPNSources = append([]VPNSource(nil), sources...)
+		s.data.Profiles[index].WireGuardConfigs = wireGuardConfigs
+		normalizeProfileVPNSources(&s.data.Profiles[index])
+		return s.saveInternal()
 	}
 	return fmt.Errorf("profile with ID %d not found", id)
 }
@@ -1347,6 +1374,29 @@ func (b *ConfigBuilderForStorage) BuildConfig(subscriptionURL string) error {
 
 // BuildConfigForProfile builds sing-box config for a specific profile.
 func (b *ConfigBuilderForStorage) BuildConfigForProfile(profileID int, subscriptionURL string, wireGuardConfigs []UserWireGuardConfig) error {
+	profile, err := b.storage.GetProfile(profileID)
+	if err != nil {
+		return err
+	}
+	sources := append([]VPNSource(nil), profile.VPNSources...)
+	if strings.TrimSpace(subscriptionURL) != strings.TrimSpace(profile.SubscriptionURL) || (len(sources) == 0 && strings.TrimSpace(subscriptionURL) != "") {
+		if strings.TrimSpace(subscriptionURL) == "" {
+			sources = nil
+		} else {
+			source, sourceErr := newVPNSource("source-1", "Primary", subscriptionURL)
+			if sourceErr != nil {
+				return sourceErr
+			}
+			sources = []VPNSource{source}
+		}
+	}
+	return b.BuildConfigForProfileSources(profileID, sources, wireGuardConfigs)
+}
+
+// BuildConfigForProfileSources builds one selected node per ordered source.
+// Provider order chooses node zero by default; source failover order is kept in
+// the generated selector and never expands to sibling nodes automatically.
+func (b *ConfigBuilderForStorage) BuildConfigForProfileSources(profileID int, sources []VPNSource, wireGuardConfigs []UserWireGuardConfig) error {
 	fmt.Printf("[BuildConfigForProfile] Called with profileID=%d, %d WireGuard configs\n", profileID, len(wireGuardConfigs))
 	for i, wg := range wireGuardConfigs {
 		fmt.Printf("[BuildConfigForProfile] WireGuard[%d]: tag=%s, dns=%s, allowedIPs=%v\n", i, wg.Tag, wg.DNS, wg.AllowedIPs)
@@ -1379,50 +1429,49 @@ func (b *ConfigBuilderForStorage) BuildConfigForProfile(profileID int, subscript
 	fmt.Printf("[BuildConfigForProfile] Adding WireGuard route rules...\n")
 	b.updateRouteRulesForWireGuardNew(template, wireGuardConfigs)
 
-	// Get proxies from subscription
-	var proxies []ProxyConfig
-	var err error
-
-	if subscriptionURL != "" {
-		isDirectLink := isDirectProxyLink(subscriptionURL)
-
-		if isDirectLink {
-			proxy, err := b.fetcher.ParseSingleLink(subscriptionURL)
-			if err != nil {
-				return fmt.Errorf("ошибка парсинга ссылки: %w", err)
+	updatedSources := append([]VPNSource(nil), sources...)
+	proxies := make([]ProxyConfig, 0, len(updatedSources))
+	xrayCandidates := make([]ProxyConfig, 0)
+	enabledSources := 0
+	sourceErrors := make([]string, 0)
+	for index := range updatedSources {
+		source := &updatedSources[index]
+		if source.Disabled {
+			continue
+		}
+		enabledSources++
+		nodes, fetchErr := b.fetchVPNSourceNodes(*source)
+		if fetchErr != nil && len(source.CachedNodes) > 0 {
+			nodes, fetchErr = b.parseCachedVPNNodes(source.CachedNodes)
+		}
+		if fetchErr != nil || len(nodes) == 0 {
+			if fetchErr == nil {
+				fetchErr = fmt.Errorf("source contains no supported nodes")
 			}
-			proxy.Tag = generateTag(proxy, 0)
-			proxies = []ProxyConfig{proxy}
-		} else {
-			proxies, err = b.fetcher.FetchAndParse(subscriptionURL)
-			if err != nil {
-				return fmt.Errorf("ошибка загрузки подписки: %w", err)
-			}
-			for i := range proxies {
-				proxies[i].Tag = generateTag(proxies[i], i)
-			}
+			markVPNSourceUpdated(source, nil, fetchErr)
+			sourceErrors = append(sourceErrors, source.ID+": "+fetchErr.Error())
+			continue
 		}
-
-		splitResult := SplitProxyConfigs(proxies)
-		if splitResult.AllFiltered {
-			return fmt.Errorf("%s", splitResult.Message)
+		markVPNSourceUpdated(source, nodes, nil)
+		selected := nodes[source.SelectedNode]
+		selected.Tag = "vpn-source-" + source.ID
+		split := SplitProxyConfigs([]ProxyConfig{selected})
+		if split.AllFiltered || len(split.SingBox)+len(split.XrayBridge) == 0 {
+			sourceErr := fmt.Errorf("selected node %d uses an unsupported transport", source.SelectedNode)
+			source.LastError = sourceErr.Error()
+			sourceErrors = append(sourceErrors, source.ID+": "+sourceErr.Error())
+			continue
 		}
-		if len(splitResult.Filtered) > 0 {
-			fmt.Printf("[BuildConfigForProfile] Warning: %s\n", splitResult.Message)
-		}
-		xrayBridge := BuildXrayBridgeConfig(splitResult.XrayBridge)
-		proxies = append(splitResult.SingBox, xrayBridge.SingBoxProxies...)
-		if len(splitResult.XrayBridge) > 0 {
-			fmt.Printf("[BuildConfigForProfile] Bridged %d xhttp proxy/proxies through Xray\n", len(splitResult.XrayBridge))
-		}
-
-		if err := b.storage.UpdateProfileXrayConfig(profileID, xrayBridge.XrayConfig); err != nil {
-			return err
-		}
-	} else {
-		if err := b.storage.UpdateProfileXrayConfig(profileID, nil); err != nil {
-			return err
-		}
+		proxies = append(proxies, split.SingBox...)
+		xrayCandidates = append(xrayCandidates, split.XrayBridge...)
+	}
+	if enabledSources > 0 && len(proxies)+len(xrayCandidates) == 0 {
+		return fmt.Errorf("no VPN source is usable: %s", strings.Join(sourceErrors, "; "))
+	}
+	xrayBridge := BuildXrayBridgeConfig(xrayCandidates)
+	proxies = append(proxies, xrayBridge.SingBoxProxies...)
+	if err := b.storage.UpdateProfileXrayConfig(profileID, xrayBridge.XrayConfig); err != nil {
+		return err
 	}
 
 	// Generate outbounds
@@ -1446,7 +1495,7 @@ func (b *ConfigBuilderForStorage) BuildConfigForProfile(profileID int, subscript
 	delete(template, "_comment_outbounds")
 
 	// Update profile in storage
-	if err := b.storage.UpdateProfileSubscription(profileID, subscriptionURL, len(proxies), wireGuardConfigs); err != nil {
+	if err := b.storage.UpdateProfileVPNSources(profileID, updatedSources, wireGuardConfigs); err != nil {
 		return err
 	}
 
@@ -1455,6 +1504,31 @@ func (b *ConfigBuilderForStorage) BuildConfigForProfile(profileID int, subscript
 	}
 
 	return nil
+}
+
+func (b *ConfigBuilderForStorage) fetchVPNSourceNodes(source VPNSource) ([]ProxyConfig, error) {
+	if source.Kind == VPNSourceDirect || isDirectProxyLink(source.URI) {
+		node, err := b.fetcher.ParseSingleLink(source.URI)
+		if err != nil {
+			return nil, err
+		}
+		return []ProxyConfig{node}, nil
+	}
+	return b.fetcher.FetchAndParse(source.URI)
+}
+
+func (b *ConfigBuilderForStorage) parseCachedVPNNodes(rawNodes []string) ([]ProxyConfig, error) {
+	result := make([]ProxyConfig, 0, len(rawNodes))
+	for _, raw := range rawNodes {
+		node, err := b.fetcher.ParseSingleLink(raw)
+		if err == nil {
+			result = append(result, node)
+		}
+	}
+	if len(result) == 0 {
+		return nil, fmt.Errorf("cached source contains no parseable nodes")
+	}
+	return result, nil
 }
 
 // generateOutbounds generates outbounds list.
@@ -1473,7 +1547,7 @@ func (b *ConfigBuilderForStorage) generateOutbounds(template map[string]interfac
 	}
 
 	if len(proxyTags) > 0 {
-		outbounds = append(outbounds, buildAutoSelectOutbound(proxyTags))
+		outbounds = append(outbounds, buildVPNSourceFallbackOutbound(proxyTags))
 
 		selectorOutbounds := append([]string{"auto-select"}, proxyTags...)
 		selectorOutbounds = append(selectorOutbounds, "direct")
@@ -1866,8 +1940,8 @@ func (b *ConfigBuilderForStorage) addFreeAccessOutbounds(template map[string]int
 	// dynamically. Route that realtime plane through its own runtime-controlled
 	// selector so the health monitor can keep web/API traffic untouched while it
 	// keeps voice/video/Go Live on one route. Automatic mode prefers a
-	// UDP-capable subscription node; the stable direct zapret2 discovery profile
-	// remains available when a subscription is absent or explicitly bypassed.
+	// UDP-capable VPN source; the stable direct native discovery profile remains
+	// the default in automatic mode and VPN is used only after health failure.
 	if hasVPNProxy {
 		vpnCandidates := outboundGroupCandidates(outbounds, "auto-select")
 		if len(vpnCandidates) == 0 {
@@ -1886,7 +1960,7 @@ func (b *ConfigBuilderForStorage) addFreeAccessOutbounds(template map[string]int
 	}
 	realtimeDefault := "direct"
 	discordMethod := FreeAccessServiceMethod(settings, "discord")
-	if discordMethod == FreeAccessMethodVPN || discordMethod == FreeAccessMethodAuto || !FreeMethodsAllowed(settings) {
+	if discordMethod == FreeAccessMethodVPN || !FreeMethodsAllowed(settings) {
 		if hasVPNProxy {
 			realtimeDefault = discordVPNGroupTag
 		}
@@ -2558,7 +2632,10 @@ func isDirectProxyLink(url string) bool {
 	return strings.HasPrefix(url, "vless://") ||
 		strings.HasPrefix(url, "trojan://") ||
 		strings.HasPrefix(url, "ss://") ||
-		strings.HasPrefix(url, "vmess://")
+		strings.HasPrefix(url, "vmess://") ||
+		strings.HasPrefix(url, "hysteria2://") ||
+		strings.HasPrefix(url, "hy2://") ||
+		strings.HasPrefix(url, "tuic://")
 }
 
 // GetUserSettings returns user settings for active profile (compatibility method).
@@ -2570,6 +2647,7 @@ func (s *Storage) GetUserSettings() (*UserSettings, error) {
 
 	return &UserSettings{
 		SubscriptionURL:  profile.SubscriptionURL,
+		VPNSources:       append([]VPNSource(nil), profile.VPNSources...),
 		LastUpdated:      profile.LastUpdated,
 		ProxyCount:       profile.ProxyCount,
 		WireGuardConfigs: profile.WireGuardConfigs,

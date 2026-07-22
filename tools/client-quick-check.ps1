@@ -601,7 +601,7 @@ Write-Host "  Blocked failed:$($summary.BlockedFailed)"
 if ($summary.BlockedFailed -gt 0 -and $DeepMethodCheck -and $summary.MethodRecovered -eq 0 -and $configSummary -and -not $configSummary.HasVpnCandidate) {
     Write-Host ""
     Write-Host "Blocked services failed through every live free proxy method and active config has no VPN/VLESS candidate." -ForegroundColor Yellow
-    Write-Host "If winws2/zapret2 is running, send the full output folder; transparent-method results are visible in route-probe logs." -ForegroundColor Yellow
+    Write-Host "Send the full output folder; native strategy target results and fallback decisions are visible in route-probe logs." -ForegroundColor Yellow
 }
 Write-Host ""
 Write-Host "Send this folder back for analysis:" -ForegroundColor Yellow

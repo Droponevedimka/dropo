@@ -162,6 +162,36 @@ func TestManualFreeAccessRuntimeFromEnv(t *testing.T) {
 	}
 }
 
+// TestManualNativeRuntimeFromEnv validates the self-contained Windows runtime
+// without starting a deprecated helper process. The deeper live smoke below
+// additionally opens WinDivert and exercises lifecycle cleanup.
+func TestManualNativeRuntimeFromEnv(t *testing.T) {
+	basePath := os.Getenv("DROPO_TEST_FREE_ACCESS_BASE")
+	if basePath == "" {
+		t.Skip("DROPO_TEST_FREE_ACCESS_BASE is not set")
+	}
+	requireManualLiveRuntimeFiles(t, basePath)
+	manager := NewNativeTrafficManager(basePath, func(message string) { t.Log(message) })
+	if !manager.IsInstalled() {
+		t.Fatal("native WinDivert runtime was not detected in the release bundle")
+	}
+	storage := NewStorage(basePath)
+	if err := storage.Init(); err != nil {
+		t.Fatalf("storage init failed: %v", err)
+	}
+	builder := NewConfigBuilderForStorage(storage)
+	if err := builder.BuildConfig(""); err != nil {
+		t.Fatalf("native free-access config build failed: %v", err)
+	}
+	configPath, err := storage.WriteActiveConfigToFile()
+	if err != nil {
+		t.Fatalf("write active config failed: %v", err)
+	}
+	if output, err := newBackgroundCommand(filepath.Join(basePath, "bin", "sing-box.exe"), "check", "-c", configPath).CombinedOutput(); err != nil {
+		t.Fatalf("sing-box config check failed: %v\n%s", err, output)
+	}
+}
+
 func TestManualSubscriptionRuntimeFromEnv(t *testing.T) {
 	basePath := os.Getenv("DROPO_TEST_FREE_ACCESS_BASE")
 	subscriptionURL := os.Getenv("DROPO_TEST_SUBSCRIPTION_URL")
@@ -367,9 +397,13 @@ func TestManualWindowsUnifiedAppRuntimeFromEnv(t *testing.T) {
 
 	startResult := app.Start()
 	requireAPISuccess(t, startResult)
-	if !waitForRuntimeProcessName(t, basePath, ZapretProcessName, 12*time.Second) {
-		t.Fatalf("%s did not start; runtime processes: %v", ZapretProcessName, mustRuntimeProcessSnapshot(t, basePath))
+	if app.trafficEngine == nil || app.trafficEngine.SuccessfulOpenCount() == 0 {
+		t.Fatalf("native traffic engine never opened WinDivert; runtime processes: %v", mustRuntimeProcessSnapshot(t, basePath))
 	}
+	// The engine may be inactive here when startup validation proved that every
+	// configured service is reachable directly in the current network. The
+	// successful-open counter above is the lifecycle assertion; ActiveTag is the
+	// final routing decision rather than evidence that driver startup was tried.
 	if !waitForRuntimeProcessName(t, basePath, "sing-box.exe", 20*time.Second) {
 		t.Fatalf("Windows Unified must start sing-box/TUN; processes: %v", mustRuntimeProcessSnapshot(t, basePath))
 	}
@@ -386,6 +420,7 @@ func TestManualWindowsUnifiedAppRuntimeFromEnv(t *testing.T) {
 		return
 	}
 
+	openCountBeforeSubscription := app.trafficEngine.SuccessfulOpenCount()
 	prepareManualLiveConfig(t, app, subscriptionURL, func(settings *GlobalAppSettings) {
 		settings.RoutingMode = RoutingModeBlockedOnly
 		settings.NetworkMode = NetworkModeWindowsUnified
@@ -394,8 +429,8 @@ func TestManualWindowsUnifiedAppRuntimeFromEnv(t *testing.T) {
 	})
 	startResult = app.Start()
 	requireAPISuccess(t, startResult)
-	if !waitForRuntimeProcessName(t, basePath, ZapretProcessName, 12*time.Second) {
-		t.Fatalf("%s did not start with subscription; runtime processes: %v", ZapretProcessName, mustRuntimeProcessSnapshot(t, basePath))
+	if app.trafficEngine.SuccessfulOpenCount() <= openCountBeforeSubscription {
+		t.Fatalf("native traffic engine did not reopen WinDivert for subscription scenario; runtime processes: %v", mustRuntimeProcessSnapshot(t, basePath))
 	}
 	if !waitForRuntimeProcessName(t, basePath, "sing-box.exe", 20*time.Second) {
 		t.Fatalf("sing-box TUN runtime did not start with subscription; runtime processes: %v", mustRuntimeProcessSnapshot(t, basePath))
@@ -523,10 +558,6 @@ func requireManualLiveRuntimeFiles(t *testing.T, basePath string) {
 	for _, rel := range []string{
 		"bin/sing-box.exe",
 		"bin/xray.exe",
-		"bin/winws2.exe",
-		"bin/zapret-lib.lua",
-		"bin/zapret-antidpi.lua",
-		"bin/cygwin1.dll",
 		"bin/WinDivert.dll",
 		"bin/WinDivert64.sys",
 		"resources/template.json",
@@ -707,7 +738,7 @@ func assertDeepWindowsSettingsMatrix(t *testing.T, app *App, subscriptionURL str
 			},
 		},
 		{
-			name: "manual-zapret",
+			name: "manual-native",
 			configure: func(settings *GlobalAppSettings) {
 				settings.FreeAccessMethods["telegram"] = DefaultZapretTransparentStrategies[0].Tag
 			},

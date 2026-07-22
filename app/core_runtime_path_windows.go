@@ -35,6 +35,41 @@ func prepareProtectedRuntime(version string) (string, error) {
 	return path, nil
 }
 
+// cleanupStaleProtectedRuntimes removes only versioned dependency caches owned
+// by dropo. The current runtime and the protected updater workspace are kept.
+// Startup process cleanup runs before this function, so no managed executable
+// from an older cache should still be alive.
+func cleanupStaleProtectedRuntimes(currentVersion string) (int, error) {
+	programData, err := windows.KnownFolderPath(windows.FOLDERID_ProgramData, windows.KF_FLAG_DEFAULT)
+	if err != nil || strings.TrimSpace(programData) == "" {
+		return 0, fmt.Errorf("resolve ProgramData known folder: %w", err)
+	}
+	runtimeRoot := filepath.Join(filepath.Clean(programData), AppDataDirName, "runtime")
+	entries, err := os.ReadDir(runtimeRoot)
+	if os.IsNotExist(err) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	removed := 0
+	for _, entry := range entries {
+		if !entry.IsDir() || entry.Name() == filepath.Base(currentVersion) || entry.Name() == "updates" {
+			continue
+		}
+		target := filepath.Join(runtimeRoot, entry.Name())
+		rel, relErr := filepath.Rel(runtimeRoot, target)
+		if relErr != nil || rel == "." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+			return removed, fmt.Errorf("refuse stale runtime path %q", target)
+		}
+		if err := os.RemoveAll(target); err != nil {
+			return removed, fmt.Errorf("remove stale runtime %s: %w", entry.Name(), err)
+		}
+		removed++
+	}
+	return removed, nil
+}
+
 func createAndProtectDirectory(path string) error {
 	if err := rejectWindowsReparsePoint(path); err != nil && !os.IsNotExist(err) {
 		return err

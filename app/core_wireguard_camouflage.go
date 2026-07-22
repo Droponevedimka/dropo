@@ -165,16 +165,16 @@ func (a *App) disableWireGuardCamouflageForSession(configID int) {
 	a.wireGuardCamouflageTargets = filtered
 	a.wireGuardCamouflageMu.Unlock()
 
-	a.writeLog(fmt.Sprintf("[WireGuard] camouflage disabled for tunnel %d after unhealthy handshake; recomposing winws2 before restart", configID))
-	a.AddToLogBuffer(fmt.Sprintf("WireGuard %d: обход zapret2 отключён для стабильности", configID))
+	a.writeLog(fmt.Sprintf("[WireGuard] scoped camouflage disabled for tunnel %d after an unhealthy handshake; applying a new native traffic plan", configID))
+	a.AddToLogBuffer(fmt.Sprintf("WireGuard %d: локальная маскировка отключена для стабильности", configID))
 	a.emitEvent("wireguard-camouflage-disabled", configID)
 	if err := a.recomposeServiceEngineWithoutDiscovery(); err != nil {
-		a.writeLog(fmt.Sprintf("[WireGuard] failed to recompose winws2 after camouflage rollback: %v", err))
+		a.writeLog(fmt.Sprintf("[WireGuard] failed to apply the native plan after camouflage rollback: %v", err))
 	}
 }
 
 func (a *App) recomposeServiceEngineWithoutDiscovery() error {
-	if a == nil || a.zapret == nil || a.storage == nil {
+	if a == nil || a.trafficEngine == nil || a.storage == nil {
 		return nil
 	}
 	selections := map[string]serviceWinwsSelection{}

@@ -74,14 +74,25 @@ func (a *App) Start() map[string]interface{} {
 	defer a.endBusy(busyID)
 
 	a.updateBusy(busyID, "Проверяем состояние приложения...")
-	// Heavy binaries (bin/) ship as a separate release asset and are fetched on
-	// first run. Refuse to start until they are present.
+	// The Defender-compatible VPN core is fetched only after the user presses
+	// Connect. Opening dropo must never download or extract native tools. The
+	// separate local DPI-bypass package is never installed from this path.
 	depsStatus := a.DependenciesStatus()
 	if depsStatus.Managed {
 		if !depsStatus.Ready {
-			return map[string]interface{}{
-				"success": false,
-				"error":   "Компоненты ещё не загружены. Подключитесь к интернету и дождитесь первичной загрузки компонентов.",
+			a.updateBusy(busyID, "Загружаем безопасное VPN-ядро...")
+			if err := a.DownloadDependencies(); err != nil {
+				return map[string]interface{}{
+					"success": false,
+					"error":   err.Error(),
+				}
+			}
+			depsStatus = a.DependenciesStatus()
+			if !depsStatus.Ready {
+				return map[string]interface{}{
+					"success": false,
+					"error":   "Безопасное VPN-ядро не установлено. Повторите подключение после проверки сети.",
+				}
 			}
 		}
 		a.refreshSingBoxPath()
@@ -293,7 +304,7 @@ func (a *App) Start() map[string]interface{} {
 	}
 	a.logActiveConfigDiagnostics(configPath)
 
-	a.writeLog("[NetworkMode] Windows Unified startup: sing-box TUN + one composed winws2 engine")
+	a.writeLog("[NetworkMode] Windows Unified startup: sing-box TUN + one in-process WinDivert traffic engine")
 
 	a.updateBusy(busyID, "Проверяем sing-box...")
 	if singboxPath == "" || !fileExists(singboxPath) {
@@ -365,9 +376,11 @@ func (a *App) Start() map[string]interface{} {
 	// until after the search can fill child-process pipes and stall the runtime.
 	go a.logOutput(stdout, "sing-box/out")
 	go a.logOutput(stderr, "sing-box/log")
+	a.updateBusy(busyID, "Проверяем цепочку VPN-источников...")
+	a.startVPNSourceMonitor()
 
-	// Windows Unified: sing-box owns TUN routing and one composed winws2 owns
-	// every per-service zapret2 profile. Every enabled service validates its
+	// Windows Unified: sing-box owns TUN routing and the native packet engine
+	// owns one WinDivert handle. Every enabled service validates its
 	// current strategy; failing services advance in ranked order.
 	// Camouflage must be installed before native WireGuard sends its first
 	// initiation packet. It remains a sidecar; WireGuard owns the tunnel.
@@ -375,13 +388,12 @@ func (a *App) Start() map[string]interface{} {
 	a.prepareDiscordRealtimeSession()
 	a.updateBusy(busyID, "Подбираем стратегии для заблокированных сервисов...")
 	if err := a.startComposedTransparentEngine(busyID); err != nil {
-		a.writeLog(fmt.Sprintf("[NetworkMode] Windows Unified winws2 engine failed to start: %v", err))
-		if isAntimalwareBlockError(err) {
-			a.markDepsComponentBlocked(ZapretProcessName)
-			_, _ = a.forceSubscriptionFallbackForTransparentRuntime(configPath)
-			switched := a.activateSubscriptionFallbackForTransparentRuntime()
-			a.writeLog(fmt.Sprintf("[Security][Defender] trusted zapret2 component was blocked at execution; kept sing-box running and switched %d blocked-service group(s) to VPN/VLESS without creating antivirus exclusions", switched))
-			a.AddToLogBuffer("Microsoft Defender заблокировал zapret2. Подключение продолжено через VPN/VLESS; локальный обход временно недоступен.")
+		a.writeLog(fmt.Sprintf("[NetworkMode] native traffic engine failed to start: %v", err))
+		_, _ = a.forceSubscriptionFallbackForTransparentRuntime(configPath)
+		switched := a.activateSubscriptionFallbackForTransparentRuntime()
+		if switched > 0 {
+			a.writeLog(fmt.Sprintf("[NetworkMode] kept sing-box running and switched %d blocked-service group(s) to the ordered VPN-source fallback", switched))
+			a.AddToLogBuffer("Локальный движок трафика недоступен. Заблокированные сервисы временно направлены через VPN-источник.")
 		} else {
 			terminateProcessTree(cmd)
 			_ = cmd.Wait()
@@ -396,14 +408,14 @@ func (a *App) Start() map[string]interface{} {
 			UpdateTrayIcon("error")
 			return map[string]interface{}{
 				"success": false,
-				"error":   fmt.Sprintf("Windows Unified: не удалось запустить подбор стратегий winws2: %v", err),
+				"error":   fmt.Sprintf("Windows Unified: не удалось запустить локальный движок и отсутствует доступный VPN fallback: %v", err),
 			}
 		}
 	}
 	a.startDiscordRealtimeMonitor()
 
-	// Start Native WireGuard tunnels only after the strictly-scoped zapret2
-	// handshake profiles are active.
+	// Start Native WireGuard tunnels only after strictly-scoped handshake
+	// transformations are active.
 	if a.nativeWG != nil && a.nativeWG.IsInstalled() {
 		a.updateBusy(busyID, "Запускаем рабочие WireGuard-сети...")
 		a.startNativeWireGuardTunnels()
@@ -452,6 +464,7 @@ func (a *App) Start() map[string]interface{} {
 		// This prevents orphaned tunnels that block user's native WireGuard
 		a.mu.Unlock() // Unlock before calling stopNativeWireGuardTunnels to avoid deadlock
 		a.stopNativeWireGuardTunnels()
+		a.stopVPNSourceMonitor()
 		a.stopDiscordRealtimeMonitor()
 		a.stopFreeAccess()
 		a.stopXrayBridge()
@@ -746,6 +759,7 @@ func (a *App) startSingBoxProxyFallback(configPath, logLevel string) error {
 
 	go a.logOutput(stdout, "sing-box/out")
 	go a.logOutput(stderr, "sing-box/log")
+	a.startVPNSourceMonitor()
 	go a.monitorSingBoxProcess(cmd, cmdDone)
 	return nil
 }
@@ -771,6 +785,7 @@ func (a *App) monitorSingBoxProcess(cmd *exec.Cmd, done chan error) {
 
 	a.mu.Unlock()
 	a.stopNativeWireGuardTunnels()
+	a.stopVPNSourceMonitor()
 	a.stopDiscordRealtimeMonitor()
 	a.stopFreeAccess()
 	a.stopXrayBridge()
@@ -1087,6 +1102,7 @@ func (a *App) Stop() map[string]interface{} {
 		a.mu.Unlock()
 		// Also stop Native WireGuard tunnels and free access process
 		a.stopNativeWireGuardTunnels()
+		a.stopVPNSourceMonitor()
 		a.stopDiscordRealtimeMonitor()
 		a.stopFreeAccess()
 		a.stopXrayBridge()
@@ -1132,6 +1148,7 @@ func (a *App) Stop() map[string]interface{} {
 
 	a.updateBusy(busyID, "Останавливаем WireGuard-сети...")
 	a.stopNativeWireGuardTunnels()
+	a.stopVPNSourceMonitor()
 	a.updateBusy(busyID, "Останавливаем бесплатные методы обхода...")
 	a.stopDiscordRealtimeMonitor()
 	a.stopFreeAccess()
@@ -1308,7 +1325,7 @@ func (a *App) filterActiveFreeAccessOutbounds(configPath string, activeFreeAcces
 	}
 
 	if len(removedFreeOutbounds) > 0 {
-		a.writeLog(fmt.Sprintf("[ByeDPI] removed inactive strategy outbounds from config: %s", strings.Join(removedFreeOutbounds, ",")))
+		a.writeLog(fmt.Sprintf("[Migration] removed inactive legacy strategy outbounds from config: %s", strings.Join(removedFreeOutbounds, ",")))
 	}
 	return nil
 }
@@ -1317,7 +1334,7 @@ func (a *App) emptyBypassGroupFallbackOutbound() string {
 	if a != nil {
 		status := a.currentNetworkModeStatus()
 		if status.Active == NetworkModeWindowsUnified {
-			a.writeLog("[FreeAccess] empty bypass group fallback: direct via Windows Unified winws2 engine")
+			a.writeLog("[FreeAccess] empty bypass group fallback: direct via the native Windows traffic engine")
 			return "direct"
 		}
 	}
@@ -1571,16 +1588,16 @@ func (a *App) startFreeAccess(activeConfig map[string]interface{}) []string {
 	}
 
 	activeTags := []string{}
-	if a.zapret != nil {
-		a.zapret.Stop()
+	if a.trafficEngine != nil {
+		a.trafficEngine.Stop()
 	}
 	if runtime.GOOS == "windows" {
-		a.writeLog("[FreeAccess] Windows Unified uses the composed winws2 engine; legacy ByeDPI proxy strategies are disabled")
+		a.writeLog("[FreeAccess] Windows Unified uses the native in-process traffic engine; legacy proxy helpers are disabled")
 		a.startTelegramProxyIfNeeded(activeConfig)
 		return activeTags
 	}
 	if a.freeProxySidecarsCapturedByActiveNetwork(activeConfig) {
-		a.writeLog("[FreeAccess] ByeDPI proxy helpers skipped: Windows TUN auto_route captures helper process traffic; transparent methods/VPN will be used")
+		a.writeLog("[FreeAccess] legacy proxy helpers skipped: TUN auto_route captures helper traffic; native strategies or VPN sources will be used")
 		return activeTags
 	}
 	if runtime.GOOS == "windows" && tunAutoRouteEnabled(activeConfig) {
@@ -1588,19 +1605,19 @@ func (a *App) startFreeAccess(activeConfig map[string]interface{}) []string {
 	}
 
 	if a.byeDPI == nil {
-		a.writeLog("[ByeDPI] manager is not initialized")
+		a.writeLog("[LegacyProxy] manager is not initialized")
 	} else if !a.byeDPI.IsInstalled() {
-		a.writeLog("[ByeDPI] binary not bundled, ByeDPI strategies unavailable this session")
+		a.writeLog("[LegacyProxy] helper is not bundled and is unavailable this session")
 	}
 
 	if a.byeDPI != nil && a.byeDPI.IsInstalled() {
 		if err := a.byeDPI.Start(); err != nil {
-			a.writeLog(fmt.Sprintf("[ByeDPI] Failed to start: %v", err))
-			a.AddToLogBuffer("Бесплатный доступ: не удалось запустить ByeDPI")
+			a.writeLog(fmt.Sprintf("[LegacyProxy] failed to start: %v", err))
+			a.AddToLogBuffer("Бесплатный доступ: не удалось запустить старый proxy helper")
 		} else {
 			tags := a.byeDPI.WaitForActiveTags(byeDPIStartupWait)
 			activeTags = append(activeTags, tags...)
-			a.writeLog(fmt.Sprintf("[ByeDPI] Free access bypass started (%d/%d strategy/strategies active: %s)",
+			a.writeLog(fmt.Sprintf("[LegacyProxy] free access helper started (%d/%d strategy/strategies active: %s)",
 				len(tags), len(DefaultByeDPIStrategies), strings.Join(tags, ",")))
 		}
 	}
@@ -1848,8 +1865,8 @@ func (a *App) stopFreeAccess() {
 	if a.byeDPI != nil {
 		a.byeDPI.Stop()
 	}
-	if a.zapret != nil {
-		a.zapret.Stop()
+	if a.trafficEngine != nil {
+		a.trafficEngine.Stop()
 	}
 	if a.tgwsproxy != nil {
 		a.tgwsproxy.Stop()

@@ -2,10 +2,9 @@
 
 package main
 
-// Windows interception engine: zapret2/winws2 + WinDivert (Windows Unified). This is the
-// production engine; the concrete implementation lives in
-// core_freeaccess_sidecars.go (*TransparentBypassManager).
+// Windows interception engine: Dropo's native typed packet processor with one
+// WinDivert owner. No external strategy process or interpreter is involved.
 var (
 	interceptionEngineSupportedFlag = true
-	interceptionEngineKindLabel     = "winws2 + WinDivert"
+	interceptionEngineKindLabel     = "Dropo native + WinDivert"
 )

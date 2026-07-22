@@ -16,7 +16,7 @@ func TestTrustedDepsManifestIgnoresAdjacentManifest(t *testing.T) {
 	trustedDepsAsset = "dropo-Windows-Dependencies-x64.zip"
 	trustedDepsSHA256 = "687d903d03f5dcbda1dbd0f66231fa32ecfd67a9dc0e451aa34a669e49db1f89"
 	trustedDepsSize = "123"
-	trustedDepsRequired = "sing-box.exe,winws2.exe,WinDivert.dll,zapret-lib.lua,zapret-antidpi.lua"
+	trustedDepsRequired = "sing-box.exe,xray.exe,wireguard.exe,wg.exe,wintun.dll"
 
 	base := t.TempDir()
 	if err := os.WriteFile(filepath.Join(base, "dependencies.json"), []byte(`{"url":"https://evil.invalid/payload.zip","sha256":""}`), 0600); err != nil {

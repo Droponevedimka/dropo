@@ -15,47 +15,50 @@ import (
 
 // App is the main application struct that holds all state and dependencies.
 type App struct {
-	ctx                  context.Context
-	cmd                  *exec.Cmd
-	cmdDone              chan error
-	isRunning            bool
-	isStarting           bool
-	hasError             atomic.Bool // connection-error flag; atomic so log-reader/monitor goroutines can set it without a.mu
-	stoppedManually      bool        // Manual stop flag
-	initialized          bool        // Initialization complete flag
-	windowVisible        bool        // Window visibility flag for ping optimization
-	mu                   sync.Mutex
-	basePath             string // Base path (exe directory)
-	dataPath             string // Per-user writable state directory
-	runtimePath          string // Protected base for executable dependencies
-	runtimePathErr       error
-	depsIntegrityMu      sync.Mutex
-	depsIntegrityFor     string
-	depsIntegrityOK      bool
-	depsIntegrityBlocked []string
-	depsDownloadMu       sync.Mutex
-	singboxPath          string
-	logPath              string
-	tempLogPath          string
-	logFile              *os.File
-	logFileMu            sync.Mutex
-	storage              *Storage                 // Unified storage for all settings
-	configBuilder        *ConfigBuilderForStorage // Config builder for storage
-	trafficStats         *TrafficStats
-	nativeWG             *NativeWireGuardManager // Native WireGuard tunnel manager
-	byeDPI               *ByeDPIManager          // Free access (DPI-bypass) process manager
-	zapret               *TransparentBypassManager
-	tgwsproxy            *TgWsProxyManager  // Telegram MTProto-over-WebSocket proxy sidecar
-	xrayBridge           *XrayBridgeManager // Xray bridge for VLESS xhttp profiles
-	lastRouteProbe       map[string]routeProbeServiceResult
-	lastRouteProbeMu     sync.RWMutex
-	routeLatencyMu       sync.Mutex
-	routeLatencyCache    map[string]routeSummaryLatencyEntry
-	routeProbeRunMu      sync.Mutex
-	routeProbeRunning    bool
-	routeProbeDone       chan struct{}
-	routeStrategyJobs    chan string
-	routeStrategyLoop    atomic.Bool
+	ctx                    context.Context
+	cmd                    *exec.Cmd
+	cmdDone                chan error
+	isRunning              bool
+	isStarting             bool
+	hasError               atomic.Bool // connection-error flag; atomic so log-reader/monitor goroutines can set it without a.mu
+	stoppedManually        bool        // Manual stop flag
+	initialized            bool        // Initialization complete flag
+	windowVisible          bool        // Window visibility flag for ping optimization
+	mu                     sync.Mutex
+	basePath               string // Base path (exe directory)
+	dataPath               string // Per-user writable state directory
+	runtimePath            string // Protected base for executable dependencies
+	runtimePathErr         error
+	depsIntegrityMu        sync.Mutex
+	depsIntegrityFor       string
+	depsIntegrityOK        bool
+	depsIntegrityBlocked   []string
+	bypassIntegrityFor     string
+	bypassIntegrityOK      bool
+	bypassIntegrityBlocked []string
+	depsDownloadMu         sync.Mutex
+	singboxPath            string
+	logPath                string
+	tempLogPath            string
+	logFile                *os.File
+	logFileMu              sync.Mutex
+	storage                *Storage                 // Unified storage for all settings
+	configBuilder          *ConfigBuilderForStorage // Config builder for storage
+	trafficStats           *TrafficStats
+	nativeWG               *NativeWireGuardManager // Native WireGuard tunnel manager
+	byeDPI                 *ByeDPIManager          // Free access (DPI-bypass) process manager
+	trafficEngine          *NativeTrafficManager
+	tgwsproxy              *TgWsProxyManager  // Telegram MTProto-over-WebSocket proxy sidecar
+	xrayBridge             *XrayBridgeManager // Xray bridge for VLESS xhttp profiles
+	lastRouteProbe         map[string]routeProbeServiceResult
+	lastRouteProbeMu       sync.RWMutex
+	routeLatencyMu         sync.Mutex
+	routeLatencyCache      map[string]routeSummaryLatencyEntry
+	routeProbeRunMu        sync.Mutex
+	routeProbeRunning      bool
+	routeProbeDone         chan struct{}
+	routeStrategyJobs      chan string
+	routeStrategyLoop      atomic.Bool
 	// routeStrategy* keep per-service background searches unhurried and in order.
 	// Pending jobs are coalesced and completed searches use a cooldown, so a
 	// later confirmed failure can retune the same service again without churn.
@@ -74,6 +77,12 @@ type App struct {
 	tgProxyPromptedSession      atomic.Bool // tg://proxy was opened at most once per VPN session
 	busySeq                     uint64
 	vpnStopping                 atomic.Bool
+	vpnSourceMonitorMu          sync.Mutex
+	vpnSourceMonitorCancel      context.CancelFunc
+	vpnSourceActive             string
+	vpnSourceManual             string
+	vpnSourceLastSwitch         time.Time
+	vpnSourceHealth             map[string]vpnSourceHealthState
 	frontendQuitRequested       atomic.Bool
 	initializedReady            atomic.Bool
 	shutdownRequested           atomic.Bool
@@ -115,6 +124,15 @@ func (a *App) startup(ctx context.Context) {
 		a.setupLogPath()
 		a.findPaths()
 		a.cleanupDropoRuntimeResidue("startup")
+		currentRuntimeVersion := trustedDepsVersion
+		if bundledRuntimeEnabled() {
+			currentRuntimeVersion = trustedRuntimeVersion
+		}
+		if removed, err := cleanupStaleProtectedRuntimes(currentRuntimeVersion); err != nil {
+			a.writeLog(fmt.Sprintf("[Security] failed to clean stale protected runtimes: %v", err))
+		} else if removed > 0 {
+			a.writeLog(fmt.Sprintf("[Security] removed %d stale protected runtime(s) from previous releases", removed))
+		}
 		if a.isShuttingDown() {
 			return
 		}
@@ -314,8 +332,8 @@ func (a *App) shutdown(ctx context.Context) {
 	if a.byeDPI != nil {
 		a.byeDPI.Stop()
 	}
-	if a.zapret != nil {
-		a.zapret.Stop()
+	if a.trafficEngine != nil {
+		a.trafficEngine.Stop()
 	}
 	if a.tgwsproxy != nil {
 		a.tgwsproxy.Stop()
@@ -421,23 +439,21 @@ func (a *App) initFreeAccess() {
 	}
 
 	runtimeBase := a.runtimeBasePath()
-	a.byeDPI = NewByeDPIManager(runtimeBase, a.writeLog)
-	a.zapret = NewTransparentBypassManager(runtimeBase, DefaultZapretTransparentStrategies, a.writeLog)
-	if a.storage != nil {
-		a.zapret.hostlistPath = filepath.Join(a.storage.GetResourcesPath(), "zapret-hostlist.txt")
-		a.zapret.ipsetPath = filepath.Join(a.storage.GetResourcesPath(), "zapret-ipset.txt")
-	}
+	a.trafficEngine = NewNativeTrafficManager(runtimeBase, a.writeLog)
 	a.tgwsproxy = NewTgWsProxyManagerWithData(runtimeBase, a.dataPath, a.writeLog)
 
-	if a.byeDPI.IsInstalled() {
-		a.writeLog("Free access (ByeDPI) binary found")
-	} else {
-		a.writeLog("Free access (ByeDPI) binary not found - bundle ciadpi.exe in bin/ to enable")
+	if runtime.GOOS != "windows" {
+		a.byeDPI = NewByeDPIManager(runtimeBase, a.writeLog)
+		if a.byeDPI.IsInstalled() {
+			a.writeLog("Compatibility free-access helper found")
+		} else {
+			a.writeLog("Compatibility free-access helper is not installed")
+		}
 	}
-	if a.zapret.IsInstalled() {
-		a.writeLog("Free access (zapret2/winws2) runtime found")
+	if a.trafficEngine.IsInstalled() {
+		a.writeLog("Native traffic engine and bundled WinDivert driver found")
 	} else {
-		a.writeLog("Free access (zapret2/winws2) runtime not found - transparent methods unavailable")
+		a.writeLog("Native traffic engine unavailable: bundled WinDivert files are missing")
 	}
 	if a.tgwsproxy.IsInstalled() {
 		a.writeLog("Telegram MTProto proxy (tg-ws-proxy) binary found")
@@ -473,12 +489,26 @@ func (a *App) findPaths() {
 	a.basePath = exeDir
 	a.runtimePath = exeDir
 	a.runtimePathErr = nil
-	if strings.TrimSpace(trustedDepsSHA256) != "" {
+	if bundledRuntimeEnabled() {
+		a.runtimePath, a.runtimePathErr = prepareProtectedRuntime(trustedRuntimeVersion)
+		if a.runtimePathErr == nil {
+			a.runtimePathErr = installBundledRuntime(
+				a.basePath,
+				a.runtimePath,
+				trustedRuntimeVersion,
+				trustedRuntimeManifestSHA256,
+			)
+		}
+	} else if strings.TrimSpace(trustedDepsSHA256) != "" {
 		a.runtimePath, a.runtimePathErr = prepareProtectedRuntime(trustedDepsVersion)
 		if a.runtimePathErr != nil {
 			a.runtimePath = ""
 			a.writeLog(fmt.Sprintf("[Security] protected dependency runtime unavailable: %v", a.runtimePathErr))
 		}
+	}
+	if a.runtimePathErr != nil {
+		a.runtimePath = ""
+		a.writeLog(fmt.Sprintf("[Security] bundled dependency runtime unavailable: %v", a.runtimePathErr))
 	}
 	a.refreshSingBoxPath()
 }
@@ -487,7 +517,7 @@ func (a *App) runtimeBasePath() string {
 	if a.runtimePath != "" {
 		return a.runtimePath
 	}
-	if strings.TrimSpace(trustedDepsSHA256) != "" {
+	if bundledRuntimeEnabled() || strings.TrimSpace(trustedDepsSHA256) != "" {
 		return ""
 	}
 	return a.basePath
