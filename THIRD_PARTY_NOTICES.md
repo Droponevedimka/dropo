@@ -14,6 +14,7 @@
 | Xray-core | Поддержка отдельных VLESS transport-вариантов | [XTLS/Xray-core](https://github.com/XTLS/Xray-core); текст лицензии включается в release |
 | tg-ws-proxy | Локальный MTProto-over-WebSocket transport для Telegram | Локально закреплённая версия 1.7.3, MIT; текст лицензии включается в `licenses/tg-ws-proxy-LICENSE.txt` |
 | Flutter | Пользовательский интерфейс | [flutter/flutter](https://github.com/flutter/flutter), BSD-3-Clause |
+| Re-filter lists | Вложенный каталог заблокированных доменов и IP-сетей, а также локально скомпилированные sing-box rule-set | [1andrevich/Re-filter-lists](https://github.com/1andrevich/Re-filter-lists), MIT; точный release и SHA-256 записываются в `bin/filters/version.json`, лицензия включается в `licenses/Re-filter-lists-LICENSE.txt` |
 
 Точные версии и хеши закреплены в `version.json`, file-level
 `runtime-manifest.json` и `dropo-sbom.spdx.json`, создаваемых сборкой.

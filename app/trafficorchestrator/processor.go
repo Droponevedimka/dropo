@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"reflect"
 	"sync"
 	"sync/atomic"
 )
@@ -54,9 +55,22 @@ func (p *Processor) ApplyPlan(plan TrafficPlan) error {
 	if p == nil {
 		return errors.New("processor is nil")
 	}
-	classifier, err := NewClassifier(plan)
-	if err != nil {
-		return err
+	current := p.snapshot.Load()
+	if current != nil && plan.Revision <= current.plan.Revision {
+		return fmt.Errorf("plan revision %d is not newer than active revision %d", plan.Revision, current.plan.Revision)
+	}
+	var classifier *Classifier
+	if current != nil && sameClassificationPlan(current.plan, plan) {
+		if err := validateSelectionRevision(plan, current); err != nil {
+			return err
+		}
+		classifier = current.classifier
+	} else {
+		var err error
+		classifier, err = NewClassifier(plan)
+		if err != nil {
+			return err
+		}
 	}
 	snapshot := &processorSnapshot{
 		plan:       plan,
@@ -70,11 +84,38 @@ func (p *Processor) ApplyPlan(plan TrafficPlan) error {
 	for _, selection := range plan.Selections {
 		snapshot.selected[selection.ServiceID] = selection.StrategyID
 	}
-	current := p.snapshot.Load()
-	if current != nil && plan.Revision <= current.plan.Revision {
-		return fmt.Errorf("plan revision %d is not newer than active revision %d", plan.Revision, current.plan.Revision)
-	}
 	p.snapshot.Store(snapshot)
+	return nil
+}
+
+func sameClassificationPlan(previous, next TrafficPlan) bool {
+	return previous.CatalogRevision == next.CatalogRevision &&
+		reflect.DeepEqual(previous.Strategies, next.Strategies) &&
+		reflect.DeepEqual(previous.Services, next.Services) &&
+		reflect.DeepEqual(previous.WorkNetworks, next.WorkNetworks)
+}
+
+func validateSelectionRevision(plan TrafficPlan, current *processorSnapshot) error {
+	seen := make(map[string]struct{}, len(plan.Selections))
+	for _, selection := range plan.Selections {
+		if _, exists := current.strategies[selection.StrategyID]; !exists {
+			return fmt.Errorf("selection for %q references unknown strategy %q", selection.ServiceID, selection.StrategyID)
+		}
+		serviceExists := false
+		for _, service := range plan.Services {
+			if service.ID == selection.ServiceID {
+				serviceExists = true
+				break
+			}
+		}
+		if !serviceExists {
+			return fmt.Errorf("selection references unknown service %q", selection.ServiceID)
+		}
+		if _, duplicate := seen[selection.ServiceID]; duplicate {
+			return fmt.Errorf("duplicate selection for service %q", selection.ServiceID)
+		}
+		seen[selection.ServiceID] = struct{}{}
+	}
 	return nil
 }
 

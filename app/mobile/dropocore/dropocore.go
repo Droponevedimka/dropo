@@ -297,8 +297,42 @@ func Call(method, argsJSON string) string {
 	case "GetAppConfig":
 		return encode(appConfigLocked())
 	case "SaveAppConfig":
-		applyConfigArgsLocked(args)
-		_ = saveLocked()
+		nextConfig, err := appConfigFromArgsLocked(args)
+		if err != nil {
+			return encode(map[string]interface{}{"success": false, "error": err.Error()})
+		}
+		previousConfig := current.Config
+		previousCache := struct {
+			config       string
+			proxyCount   int
+			subscription string
+			signature    string
+			updatedAt    string
+		}{
+			config:       current.CachedSingBoxConfig,
+			proxyCount:   current.CachedProxyCount,
+			subscription: current.CachedConfigSubscription,
+			signature:    current.CachedConfigSignature,
+			updatedAt:    current.CachedConfigUpdatedAt,
+		}
+		oldEffectiveLogLevel := effectiveAndroidLogLevel(previousConfig.EnableLogging, previousConfig.LogLevel)
+		newEffectiveLogLevel := effectiveAndroidLogLevel(nextConfig.EnableLogging, nextConfig.LogLevel)
+		current.Config = nextConfig
+		if newEffectiveLogLevel != oldEffectiveLogLevel {
+			clearCachedConfigLocked()
+		}
+		if err := saveLocked(); err != nil {
+			current.Config = previousConfig
+			current.CachedSingBoxConfig = previousCache.config
+			current.CachedProxyCount = previousCache.proxyCount
+			current.CachedConfigSubscription = previousCache.subscription
+			current.CachedConfigSignature = previousCache.signature
+			current.CachedConfigUpdatedAt = previousCache.updatedAt
+			return encode(map[string]interface{}{"success": false, "error": "Could not save Android settings: " + err.Error()})
+		}
+		if newEffectiveLogLevel != oldEffectiveLogLevel {
+			appendLogLocked("android logging settings changed: " + newEffectiveLogLevel)
+		}
 		return encode(map[string]interface{}{"success": true, "message": "Android settings saved"})
 	case "ResolveAutoStartPrompt":
 		current.Config.AutoStart = boolArg(args, 0, false)
@@ -725,22 +759,37 @@ func currentSessionDurationLocked() time.Duration {
 	return time.Since(started)
 }
 
-func applyConfigArgsLocked(args []interface{}) {
-	oldEffectiveLogLevel := effectiveAndroidLogLevel(current.Config.EnableLogging, current.Config.LogLevel)
-	current.Config.AutoStart = boolArg(args, 0, current.Config.AutoStart)
-	current.Config.EnableLogging = boolArg(args, 1, current.Config.EnableLogging)
-	current.Config.CheckUpdates = boolArg(args, 2, current.Config.CheckUpdates)
-	current.Config.Notifications = boolArg(args, 3, current.Config.Notifications)
-	current.Config.AutoUpdateSub = boolArg(args, 4, current.Config.AutoUpdateSub)
-	current.Config.Theme = stringArg(args, 5, current.Config.Theme)
-	current.Config.Language = stringArg(args, 6, current.Config.Language)
-	current.Config.LogLevel = stringArg(args, 7, current.Config.LogLevel)
-	current.Config.SubUpdateInterval = intArg(args, 8, current.Config.SubUpdateInterval)
-	current.Config.AutoStartPrompted = true
-	if newEffectiveLogLevel := effectiveAndroidLogLevel(current.Config.EnableLogging, current.Config.LogLevel); newEffectiveLogLevel != oldEffectiveLogLevel {
-		clearCachedConfigLocked()
-		appendLogLocked("android logging settings changed: " + newEffectiveLogLevel)
+func appConfigFromArgsLocked(args []interface{}) (appConfig, error) {
+	next := current.Config
+	next.AutoStart = boolArg(args, 0, next.AutoStart)
+	next.EnableLogging = boolArg(args, 1, next.EnableLogging)
+	next.CheckUpdates = boolArg(args, 2, next.CheckUpdates)
+	next.Notifications = boolArg(args, 3, next.Notifications)
+	next.AutoUpdateSub = boolArg(args, 4, next.AutoUpdateSub)
+	next.Theme = strings.ToLower(strings.TrimSpace(stringArg(args, 5, next.Theme)))
+	next.Language = strings.ToLower(strings.TrimSpace(stringArg(args, 6, next.Language)))
+	next.LogLevel = strings.ToLower(strings.TrimSpace(stringArg(args, 7, next.LogLevel)))
+	next.SubUpdateInterval = intArg(args, 8, next.SubUpdateInterval)
+	next.AutoStartPrompted = true
+
+	if next.Theme != "dark" && next.Theme != "light" && next.Theme != "system" {
+		return appConfig{}, fmt.Errorf("unknown theme: %s", next.Theme)
 	}
+	if next.Language != "ru" {
+		return appConfig{}, fmt.Errorf("the interface is currently available only in Russian")
+	}
+	switch next.LogLevel {
+	case "trace", "debug", "info", "warn", "error", "silent":
+	default:
+		return appConfig{}, fmt.Errorf("unknown log level: %s", next.LogLevel)
+	}
+	if next.SubUpdateInterval < 1 || next.SubUpdateInterval > 24*30 {
+		return appConfig{}, fmt.Errorf("subscription update interval must be between 1 and 720 hours")
+	}
+	if current.Connected && effectiveAndroidLogLevel(next.EnableLogging, next.LogLevel) != effectiveAndroidLogLevel(current.Config.EnableLogging, current.Config.LogLevel) {
+		return appConfig{}, fmt.Errorf("stop VPN before changing logging settings")
+	}
+	return next, nil
 }
 
 func normalizeAndroidRoutingMode(value string) string {
@@ -979,7 +1028,42 @@ func loadLocked() error {
 	if current.RoutePolicies == nil {
 		current.RoutePolicies = map[string]string{}
 	}
+	normalizeLoadedAppConfigLocked()
 	return nil
+}
+
+func normalizeLoadedAppConfigLocked() {
+	defaults := defaultState().Config
+	if current.Config.Theme != "dark" && current.Config.Theme != "light" && current.Config.Theme != "system" {
+		current.Config.Theme = defaults.Theme
+	}
+	if current.Config.Language != "ru" {
+		current.Config.Language = defaults.Language
+	}
+	switch current.Config.LogLevel {
+	case "trace", "debug", "info", "warn", "error", "silent":
+	default:
+		current.Config.LogLevel = defaults.LogLevel
+	}
+	if current.Config.SubUpdateInterval < 1 || current.Config.SubUpdateInterval > 24*30 {
+		current.Config.SubUpdateInterval = defaults.SubUpdateInterval
+	}
+	if normalizeAndroidRoutingMode(current.Config.RoutingMode) == "" {
+		current.Config.RoutingMode = defaults.RoutingMode
+	}
+	current.Config.NetworkMode = "android_vpn"
+	if current.Config.GithubRepo == "" {
+		current.Config.GithubRepo = defaults.GithubRepo
+	}
+	if current.Config.GithubURL == "" {
+		current.Config.GithubURL = defaults.GithubURL
+	}
+	if current.Config.TelegramName == "" {
+		current.Config.TelegramName = defaults.TelegramName
+	}
+	if current.Config.TelegramURL == "" {
+		current.Config.TelegramURL = defaults.TelegramURL
+	}
 }
 
 func saveLocked() error {

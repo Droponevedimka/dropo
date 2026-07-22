@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -12,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	traffic "dropo/trafficorchestrator"
 )
 
 // isFreeAccessFallbackTag reports whether a cached selection is a VPN/direct
@@ -178,7 +181,11 @@ func (a *App) loadServiceStrategyCache() map[string]serviceStrategyCacheEntry {
 			continue
 		}
 		// Drop entries whose method no longer exists in the ranked registry.
-		if _, ok := findServiceBypassMethod(tag, entry.MethodTag); !ok {
+		if tag == commonBlockedServiceTag {
+			if _, ok := findCommonBlockedMethod(entry.MethodTag); !ok {
+				continue
+			}
+		} else if _, ok := findServiceBypassMethod(tag, entry.MethodTag); !ok {
 			continue
 		}
 		out[tag] = entry
@@ -321,6 +328,9 @@ func (a *App) resolveServiceSelections(dir string, cache map[string]serviceStrat
 		settings = a.storage.GetAppSettings()
 	}
 	for _, svc := range a.enabledTransparentServices() {
+		if !FreeAccessServiceEnabled(settings, svc.Tag) {
+			continue
+		}
 		methodSetting := FreeAccessServiceMethod(settings, svc.Tag)
 		if methodSetting == FreeAccessMethodVPN || methodSetting == FreeAccessMethodDirect {
 			continue
@@ -359,6 +369,32 @@ func (a *App) resolveServiceSelections(dir string, cache map[string]serviceStrat
 		selections[svc.Tag] = serviceWinwsSelection{ServiceTag: svc.Tag, HostlistPath: hostlistPath, Method: method}
 	}
 	return selections, needSearch
+}
+
+func (a *App) addCommonBlockedSelection(selections map[string]serviceWinwsSelection, cache map[string]serviceStrategyCacheEntry) (string, error) {
+	if a == nil || a.storage == nil || !FreeMethodsAllowed(a.storage.GetAppSettings()) {
+		return "", nil
+	}
+	if _, err := loadBlockedCatalog(a.runtimeBasePath()); err != nil {
+		return "", err
+	}
+	if entry, ok := cache[commonBlockedServiceTag]; ok && isFreeAccessFallbackTag(entry.MethodTag) {
+		// Subscription availability may have changed since the fallback was
+		// cached; preserve the required VPN -> direct order dynamically.
+		return a.preferredCommonBlockedFallback(), nil
+	}
+	methods := commonBlockedMethods()
+	if len(methods) == 0 {
+		return "", fmt.Errorf("native common strategy catalog is empty")
+	}
+	method := methods[0]
+	if entry, ok := cache[commonBlockedServiceTag]; ok {
+		if cached, found := findCommonBlockedMethod(entry.MethodTag); found {
+			method = cached
+		}
+	}
+	selections[commonBlockedServiceTag] = serviceWinwsSelection{ServiceTag: commonBlockedServiceTag, Method: method}
+	return "", nil
 }
 
 // orderedSelections returns selections in stable service order for deterministic
@@ -461,9 +497,15 @@ func (a *App) startWindowsUnifiedServiceEngine(busyID string) error {
 	dir := a.serviceHostlistDir()
 	cache := a.loadServiceStrategyCache()
 	selections, needSearch := a.resolveServiceSelections(dir, cache)
+	commonFallback, commonErr := a.addCommonBlockedSelection(selections, cache)
+	if commonErr != nil {
+		a.writeLog(fmt.Sprintf("[FreeAccess] bundled blocked catalog unavailable; using VPN/direct fallback: %v", commonErr))
+		commonFallback = a.preferredCommonBlockedFallback()
+	}
 	if len(selections) == 0 {
 		a.trafficEngine.Stop()
 		a.logServiceStrategySummary("all services use a temporary fallback")
+		a.applyCommonBlockedFallback(commonFallback)
 		return nil
 	}
 
@@ -489,7 +531,165 @@ func (a *App) startWindowsUnifiedServiceEngine(busyID string) error {
 	if err := a.firstRunServiceSearch(busyID, selections, validationTags); err != nil {
 		return fmt.Errorf("startup service strategy validation: %w", err)
 	}
+	if _, selected := selections[commonBlockedServiceTag]; selected {
+		if err := a.selectCommonBlockedStrategy(busyID, selections); err != nil {
+			a.writeLog(fmt.Sprintf("[FreeAccess] common blocked strategy selection failed: %v", err))
+			delete(selections, commonBlockedServiceTag)
+			if composeErr := a.composeAndStartServiceEngine(selections); composeErr != nil {
+				return fmt.Errorf("remove failed common blocked strategy: %w", composeErr)
+			}
+			a.applyCommonBlockedFallback(a.preferredCommonBlockedFallback())
+		}
+	} else if commonFallback != "" {
+		a.applyCommonBlockedFallback(commonFallback)
+	}
 	return nil
+}
+
+func (a *App) preferredCommonBlockedFallback() string {
+	if a != nil && a.storage != nil {
+		if hasVPN, err := configHasVPNProbeCandidates(a.storage.ActiveConfigFilePath()); err == nil && hasVPN {
+			return FreeAccessMethodVPN
+		}
+	}
+	return FreeAccessMethodDirect
+}
+
+func (a *App) applyCommonBlockedFallback(method string) {
+	if method == "" {
+		method = a.preferredCommonBlockedFallback()
+	}
+	outbound := "direct"
+	if method == FreeAccessMethodVPN {
+		outbound = "auto-select"
+	}
+	persisted := a.persistCommonBlockedFallback(outbound)
+	switched := a.switchOutboundSelector(SmartBypassGroupTag, outbound)
+	if persisted || switched {
+		a.cacheServiceMethod(commonBlockedServiceTag, method, "common-fallback")
+		a.writeLog(fmt.Sprintf("[FreeAccess] bundled blocked catalog fallback -> %s (live=%t persisted=%t)", outbound, switched, persisted))
+	}
+}
+
+func (a *App) persistCommonBlockedFallback(outboundTag string) bool {
+	if a == nil || a.storage == nil || outboundTag == "" {
+		return false
+	}
+	path := a.storage.ActiveConfigFilePath()
+	config, err := readJSONConfig(path)
+	if err != nil {
+		return false
+	}
+	outbounds, _ := config["outbounds"].([]interface{})
+	for _, raw := range outbounds {
+		outbound, ok := raw.(map[string]interface{})
+		if !ok || outbound["tag"] != SmartBypassGroupTag {
+			continue
+		}
+		if !containsStringValue(interfaceStringSlice(outbound["outbounds"]), outboundTag) {
+			return false
+		}
+		preferOutboundGroupCandidate(outbound, outboundTag)
+		outbound["type"] = "selector"
+		outbound["default"] = outboundTag
+		deleteOutboundGroupHealthCheckFields(outbound)
+		return writeJSONConfig(path, config) == nil
+	}
+	return false
+}
+
+func (a *App) selectCommonBlockedStrategy(busyID string, selections map[string]serviceWinwsSelection) error {
+	catalog, err := loadBlockedCatalog(a.runtimeBasePath())
+	if err != nil {
+		return err
+	}
+	targets, err := randomBlockedProbeTargets(catalog.Domains, commonBlockedProbeCount)
+	if err != nil {
+		return err
+	}
+	if busyID != "" {
+		a.updateBusy(busyID, "Проверяем общую DPI-стратегию на 4 случайных доменах...")
+	}
+	if !a.switchOutboundSelector(SmartBypassGroupTag, "direct") {
+		return fmt.Errorf("cannot select direct route for common strategy validation")
+	}
+
+	current := selections[commonBlockedServiceTag].Method
+	methods := make([]ServiceBypassMethod, 0, len(commonBlockedMethods()))
+	if current.Tag != "" {
+		methods = append(methods, current)
+	}
+	for _, method := range commonBlockedMethods() {
+		if method.Tag != current.Tag {
+			methods = append(methods, method)
+		}
+	}
+	runner := nativeProbeRunner{}
+	controller := nativeTrialController{manager: a.trafficEngine}
+	probeNames := make([]string, 0, len(targets))
+	for _, target := range targets {
+		probeNames = append(probeNames, strings.TrimPrefix(strings.TrimSuffix(target.URL, "/"), "https://"))
+	}
+	a.writeLog(fmt.Sprintf("[FreeAccess] common strategy random sample: %s", strings.Join(probeNames, ", ")))
+
+	for _, method := range methods {
+		if !a.routeStrategyWorkAllowed() {
+			return fmt.Errorf("common strategy selection interrupted because VPN is stopping")
+		}
+		strategy, found := nativeStrategyByID(method.NativeStrategyID)
+		if !found {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+		trial, beginErr := controller.BeginTrial(ctx, commonBlockedServiceTag, strategy)
+		if beginErr != nil {
+			cancel()
+			continue
+		}
+		observations := make([]traffic.ProbeObservation, len(targets))
+		var probes sync.WaitGroup
+		probes.Add(len(targets))
+		for index, target := range targets {
+			go func() {
+				defer probes.Done()
+				observations[index] = runner.Probe(ctx, target)
+			}()
+		}
+		probes.Wait()
+		cancel()
+		passed := true
+		for index, target := range targets {
+			if observation := observations[index]; !observation.Success {
+				passed = false
+				a.writeLog(fmt.Sprintf("[FreeAccess] common %s failed %s (%s: %s)", method.Tag, target.URL, observation.Failure, observation.Detail))
+			}
+		}
+		if !passed {
+			if rollbackErr := trial.Rollback(); rollbackErr != nil {
+				return fmt.Errorf("rollback common strategy %s: %w", method.Tag, rollbackErr)
+			}
+			continue
+		}
+		if err := trial.Commit(); err != nil {
+			_ = trial.Rollback()
+			return fmt.Errorf("commit common strategy %s: %w", method.Tag, err)
+		}
+		selections[commonBlockedServiceTag] = serviceWinwsSelection{ServiceTag: commonBlockedServiceTag, Method: method}
+		_ = a.persistCommonBlockedFallback("direct")
+		a.cacheServiceMethod(commonBlockedServiceTag, method.Tag, "common-random-four")
+		a.writeLog(fmt.Sprintf("[FreeAccess] common blocked strategy = %s; all 4 random domains passed", method.Label))
+		return nil
+	}
+	return fmt.Errorf("no native strategy passed all 4 random blocked domains")
+}
+
+func nativeStrategyByID(id string) (traffic.TrafficStrategy, bool) {
+	for _, strategy := range traffic.BuiltinStrategies() {
+		if strategy.ID == id {
+			return strategy, true
+		}
+	}
+	return traffic.TrafficStrategy{}, false
 }
 
 // serviceDisplayNameForTag maps a service tag to its human label (for status UI).

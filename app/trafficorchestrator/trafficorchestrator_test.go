@@ -76,6 +76,29 @@ func TestValidatePlanAndClassifier(t *testing.T) {
 	}
 }
 
+func TestProcessorSelectionOnlyRevisionReusesImmutableClassifier(t *testing.T) {
+	plan := testPlan()
+	processor, err := NewProcessor(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := processor.snapshot.Load().classifier
+	plan.Revision++
+	plan.Selections[0].StrategyID = "strong"
+	if err := processor.ApplyPlan(plan); err != nil {
+		t.Fatal(err)
+	}
+	if after := processor.snapshot.Load().classifier; after != before {
+		t.Fatal("selection-only revision rebuilt the immutable classifier")
+	}
+
+	plan.Revision++
+	plan.Selections[0].StrategyID = "missing"
+	if err := processor.ApplyPlan(plan); err == nil {
+		t.Fatal("selection-only revision accepted an unknown strategy")
+	}
+}
+
 func TestWorkNetworkWinsBeforeBlockedService(t *testing.T) {
 	plan := testPlan()
 	plan.WorkNetworks = []WorkNetworkRule{{ID: "corporate", DomainSuffixes: []string{"discord.com"}, IPCIDRs: []string{"66.22.192.0/18"}}}

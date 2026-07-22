@@ -171,15 +171,40 @@ const (
 	ThemeSystem Theme = "system"
 )
 
-// Language represents the UI language.
+// Language represents a persisted UI language value.
 type Language string
 
 const (
 	// LangRussian is Russian language.
 	LangRussian Language = "ru"
-	// LangEnglish is English language.
+	// LangEnglish is retained only to migrate older settings; the current UI is
+	// Russian-only and rejects new English selections.
 	LangEnglish Language = "en"
 )
+
+func validLogLevel(value LogLevel) bool {
+	switch value {
+	case LogLevelTrace, LogLevelDebug, LogLevelInfo, LogLevelWarn, LogLevelError, LogLevelSilent:
+		return true
+	default:
+		return false
+	}
+}
+
+func validTheme(value Theme) bool {
+	switch value {
+	case ThemeDark, ThemeLight, ThemeSystem:
+		return true
+	default:
+		return false
+	}
+}
+
+func validLanguage(value Language) bool {
+	// The current UI is Russian-only. Keep the enum for settings-file
+	// compatibility, but do not advertise or persist an untranslated mode.
+	return value == LangRussian
+}
 
 // RoutingMode defines how traffic is routed through VPN.
 type RoutingMode string

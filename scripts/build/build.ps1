@@ -153,212 +153,6 @@ function Test-ReleaseAssetAvailable {
     }
 }
 
-function Read-FilterList {
-    param(
-        [string]$Path,
-        [ValidateSet("Domain", "IP")]
-        [string]$Kind
-    )
-
-    $items = New-Object System.Collections.Generic.List[string]
-    foreach ($line in Get-Content $Path -Encoding UTF8) {
-        $value = $line.Trim()
-        if (-not $value -or $value.StartsWith("#") -or $value.StartsWith("//")) {
-            continue
-        }
-        if ($value.Contains("#")) {
-            $value = $value.Split("#", 2)[0].Trim()
-        }
-        if (-not $value) {
-            continue
-        }
-
-        if ($Kind -eq "Domain") {
-            $value = $value -replace '^\|\|', ''
-            $value = $value -replace '\^$', ''
-            $value = $value.TrimStart(".")
-        }
-
-        if ($value) {
-            $items.Add($value)
-        }
-    }
-
-    return $items | Sort-Object -Unique
-}
-
-function Compile-RuleSetFromList {
-    param(
-        [string]$ListPath,
-        [string]$OutputPath,
-        [string]$Kind
-    )
-
-    $items = @(Read-FilterList -Path $ListPath -Kind $Kind)
-    if ($items.Count -eq 0) {
-        throw "Filter list is empty: $ListPath"
-    }
-
-    $ruleKey = if ($Kind -eq "Domain") { "domain_suffix" } else { "ip_cidr" }
-    $jsonPath = [System.IO.Path]::ChangeExtension($OutputPath, ".json")
-    $rule = [ordered]@{ $ruleKey = $items }
-    $payload = [ordered]@{
-        version = 2
-        rules   = @($rule)
-    }
-    $json = $payload | ConvertTo-Json -Depth 20
-    [System.IO.File]::WriteAllText($jsonPath, $json, (New-Object System.Text.UTF8Encoding($false)))
-
-    & $SingBoxExe rule-set compile $jsonPath -o $OutputPath
-    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $OutputPath)) {
-        throw "sing-box rule-set compile failed for $ListPath"
-    }
-
-    Remove-Item $jsonPath -Force -ErrorAction SilentlyContinue
-    return $items.Count
-}
-
-function Update-BundledFilters {
-    $filtersDir = Join-Path $DepsDir "filters"
-    if (-not (Test-Path $filtersDir)) {
-        New-Item -ItemType Directory -Path $filtersDir | Out-Null
-    }
-
-    $requiredFiles = @(
-        "refilter_domains.srs",
-        "refilter_ips.srs",
-        "community_domains.srs",
-        "community_ips.srs",
-        "discord_ips.srs"
-    )
-
-    if (-not (Test-Path $SingBoxExe)) {
-        throw "Cannot update bundled filters: sing-box.exe not found at $SingBoxExe"
-    }
-
-    Write-Host "[FILTERS] Checking upstream Re-filter release..." -ForegroundColor Yellow
-    try {
-        $latest = Invoke-RestMethod -Headers @{ "User-Agent" = "dropo-build" } -Uri "https://api.github.com/repos/1andrevich/Re-filter-lists/releases/latest" -TimeoutSec 30
-    } catch {
-        $missingRequired = $false
-        foreach ($file in $requiredFiles) {
-            if (-not (Test-Path (Join-Path $filtersDir $file))) {
-                $missingRequired = $true
-                break
-            }
-        }
-        if ($missingRequired) {
-            throw "Cannot check upstream filters and bundled filters are incomplete: $($_.Exception.Message)"
-        }
-        Write-Host "[FILTERS] Upstream check failed, using bundled filters: $($_.Exception.Message)" -ForegroundColor Yellow
-        return
-    }
-    $publishedAt = ([DateTime]$latest.published_at).ToUniversalTime()
-
-    $versionFile = Join-Path $filtersDir "version.json"
-    $localUpdatedAt = [DateTime]::MinValue
-    if (Test-Path $versionFile) {
-        try {
-            $localVersion = Get-Content $versionFile -Raw -Encoding UTF8 | ConvertFrom-Json
-            if ($localVersion.updated_at) {
-                $localUpdatedAt = ([DateTime]$localVersion.updated_at).ToUniversalTime()
-            }
-        } catch {
-            Write-Host "[FILTERS] Could not parse local version.json: $($_.Exception.Message)" -ForegroundColor Yellow
-        }
-    }
-
-    $missingRequired = $false
-    foreach ($file in $requiredFiles) {
-        if (-not (Test-Path (Join-Path $filtersDir $file))) {
-            $missingRequired = $true
-            break
-        }
-    }
-
-    if (-not $missingRequired -and $publishedAt -le $localUpdatedAt) {
-        Write-Host "[FILTERS] Bundled filters are current ($($localUpdatedAt.ToString("yyyy-MM-dd")) >= $($publishedAt.ToString("yyyy-MM-dd")))" -ForegroundColor Green
-        return
-    }
-
-    Write-Host "[FILTERS] Updating bundled filters to $($latest.tag_name) ($($publishedAt.ToString("yyyy-MM-dd")))" -ForegroundColor Yellow
-    $tmpDir = Join-Path $env:TEMP ("dropo-filters-" + [Guid]::NewGuid().ToString("N"))
-    New-Item -ItemType Directory -Path $tmpDir | Out-Null
-
-    try {
-        $releaseAssets = @{
-            "refilter_domains.srs" = "ruleset-domain-refilter_domains.srs"
-            "refilter_ips.srs"     = "ruleset-ip-refilter_ipsum.srs"
-        }
-        foreach ($target in $releaseAssets.Keys) {
-            $assetName = $releaseAssets[$target]
-            $asset = $latest.assets | Where-Object { $_.name -eq $assetName } | Select-Object -First 1
-            if (-not $asset) {
-                throw "Release asset not found: $assetName"
-            }
-            $tmpFile = Join-Path $tmpDir $target
-            Download-File -Url $asset.browser_download_url -Destination $tmpFile
-            if ((Get-Item $tmpFile).Length -lt 1024) {
-                throw "Downloaded filter is unexpectedly small: $target"
-            }
-            Copy-Item $tmpFile (Join-Path $filtersDir $target) -Force
-            Write-Host "[FILTERS] Updated $target" -ForegroundColor Green
-        }
-
-        $rawLists = @(
-            @{ Name = "community_domains"; Url = "https://raw.githubusercontent.com/1andrevich/Re-filter-lists/main/community.lst"; Kind = "Domain"; Output = "community_domains.srs" },
-            @{ Name = "community_ips"; Url = "https://raw.githubusercontent.com/1andrevich/Re-filter-lists/main/community_ips.lst"; Kind = "IP"; Output = "community_ips.srs" },
-            @{ Name = "discord_ips"; Url = "https://raw.githubusercontent.com/1andrevich/Re-filter-lists/main/discord_ips.lst"; Kind = "IP"; Output = "discord_ips.srs" }
-        )
-        $entryCounts = @{}
-        foreach ($list in $rawLists) {
-            $listPath = Join-Path $tmpDir ($list.Name + ".lst")
-            $outPath = Join-Path $filtersDir $list.Output
-            Download-File -Url $list.Url -Destination $listPath
-            $entryCounts[$list.Name] = Compile-RuleSetFromList -ListPath $listPath -OutputPath $outPath -Kind $list.Kind
-            Write-Host "[FILTERS] Compiled $($list.Output) ($($entryCounts[$list.Name]) entries)" -ForegroundColor Green
-        }
-
-        $versionPayload = [ordered]@{
-            filters_version = [string]$latest.tag_name
-            updated_at      = $publishedAt.ToString("o")
-            source          = "https://github.com/1andrevich/Re-filter-lists"
-            release_url     = [string]$latest.html_url
-            max_age_days    = 30
-            files           = [ordered]@{
-                refilter_domains = [ordered]@{
-                    file       = "refilter_domains.srs"
-                    source_url = ($latest.assets | Where-Object { $_.name -eq "ruleset-domain-refilter_domains.srs" } | Select-Object -First 1).browser_download_url
-                }
-                refilter_ips = [ordered]@{
-                    file       = "refilter_ips.srs"
-                    source_url = ($latest.assets | Where-Object { $_.name -eq "ruleset-ip-refilter_ipsum.srs" } | Select-Object -First 1).browser_download_url
-                }
-                community_domains = [ordered]@{
-                    file       = "community_domains.srs"
-                    source_url = "https://raw.githubusercontent.com/1andrevich/Re-filter-lists/main/community.lst"
-                    entries    = $entryCounts["community_domains"]
-                }
-                community_ips = [ordered]@{
-                    file       = "community_ips.srs"
-                    source_url = "https://raw.githubusercontent.com/1andrevich/Re-filter-lists/main/community_ips.lst"
-                    entries    = $entryCounts["community_ips"]
-                }
-                discord_ips = [ordered]@{
-                    file       = "discord_ips.srs"
-                    source_url = "https://raw.githubusercontent.com/1andrevich/Re-filter-lists/main/discord_ips.lst"
-                    entries    = $entryCounts["discord_ips"]
-                }
-            }
-        }
-        $versionJson = $versionPayload | ConvertTo-Json -Depth 20
-        [System.IO.File]::WriteAllText($versionFile, $versionJson, (New-Object System.Text.UTF8Encoding($false)))
-        Write-Host "[FILTERS] version.json updated" -ForegroundColor Green
-    } finally {
-        Remove-Item $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
-    }
-}
-
 $VersionInfo = Get-VersionInfo
 $AppVersion = if ($Version) { $Version } else { $VersionInfo.version }
 $PubspecPath = Join-Path $ScriptRoot "flutter_app\pubspec.yaml"
@@ -726,8 +520,12 @@ function Build-Application {
     # Every Windows artifact is self-contained, including CI/AppOnly requests.
     Ensure-SingBoxWindowsDependency
     Ensure-WinDivertWindowsDependency
-    if (-not $AppOnly) {
-        Update-BundledFilters
+    # Every build, including AppOnly/CI builds, verifies the repository-owned
+    # blocked catalog and refreshes it when upstream published a new release.
+    # End-user startup never downloads routing data.
+    & (Join-Path $ScriptRoot "scripts\filters\update-blocked-lists.ps1") -RepositoryRoot $ScriptRoot -SingBoxPath $SingBoxExe
+    if ($LASTEXITCODE -ne 0) {
+        throw "Bundled blocked-list update failed with exit code $LASTEXITCODE"
     }
 
     # Keep release/ clean: every new build removes ALL previous build containers
@@ -946,6 +744,7 @@ function Build-Application {
     Copy-LicenseFile (Join-Path $XrayDir "LICENSE") $licensesDir "xray-LICENSE.txt"
     Copy-LicenseFile (Join-Path $WireGuardDir "LICENSE") $licensesDir "wireguard-windows-LICENSE.txt"
     Copy-LicenseFile (Join-Path $WinDivertDir "LICENSE") $licensesDir "WinDivert-LICENSE.txt"
+    Copy-LicenseFile (Join-Path $DepsDir "filters\LICENSE.Re-filter-lists.txt") $licensesDir "Re-filter-lists-LICENSE.txt"
     Copy-LicenseFile (Join-Path $ScriptRoot "THIRD_PARTY_NOTICES.md") $licensesDir "THIRD_PARTY_NOTICES.md"
     # Copy template.json
     $templateSrc = Join-Path $AppDir "config\template.json"
@@ -962,7 +761,7 @@ function Build-Application {
             New-Item -ItemType Directory -Path $filtersDest | Out-Null
         }
         # Copy all .srs files and version.json
-        Get-ChildItem -Path $filtersDir -Filter "*.srs" | ForEach-Object {
+        Get-ChildItem -Path $filtersDir -File | Where-Object { $_.Extension -in @(".srs", ".lst") } | ForEach-Object {
             Copy-Item $_.FullName $filtersDest -Force
         }
         $filtersVersion = Join-Path $filtersDir "version.json"
@@ -970,7 +769,8 @@ function Build-Application {
             Copy-Item $filtersVersion $filtersDest -Force
         }
         $filterCount = (Get-ChildItem -Path $filtersDest -Filter "*.srs").Count
-        Write-Host "[OK] Copied bin/filters/ ($filterCount rule-sets)" -ForegroundColor Green
+        $catalogCount = (Get-ChildItem -Path $filtersDest -Filter "*.lst").Count
+        Write-Host "[OK] Copied bin/filters/ ($filterCount rule-sets, $catalogCount native catalogs)" -ForegroundColor Green
     } else {
         Write-Host "[WARNING] Filters not found at: $filtersDir" -ForegroundColor Yellow
     }

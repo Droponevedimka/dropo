@@ -113,6 +113,16 @@ func TestSettingsAPIsPersistFreeAccessPolicy(t *testing.T) {
 	if success, _ := invalidResult["success"].(bool); success {
 		t.Fatalf("invalid service method unexpectedly succeeded: %+v", invalidResult)
 	}
+
+	result = app.ToggleFreeAccessService("youtube", false)
+	requireAPISuccess(t, result)
+	settings = app.storage.GetAppSettings()
+	if FreeAccessServiceEnabled(settings, "youtube") {
+		t.Fatal("disabled YouTube service still reports free access enabled")
+	}
+	if candidates := FreeAccessServiceCandidateTagsForSettings(DefaultFreeAccessServices[1], settings, true); len(candidates) != 1 || candidates[0] != "auto-select" {
+		t.Fatalf("disabled YouTube candidates = %v, want VPN-only fallback", candidates)
+	}
 }
 
 func TestSettingsAPIsPersistHideRuTrafficPolicy(t *testing.T) {

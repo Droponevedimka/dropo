@@ -3,6 +3,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('saved theme values map to effective Flutter modes', () {
+    expect(themeModeFromSetting('dark'), ThemeMode.dark);
+    expect(themeModeFromSetting('light'), ThemeMode.light);
+    expect(themeModeFromSetting('system'), ThemeMode.system);
+    expect(themeModeFromSetting('invalid'), ThemeMode.system);
+  });
+
   testWidgets('dropo Flutter shell keeps the compact map dashboard controls', (
     tester,
   ) async {

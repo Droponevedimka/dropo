@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -267,20 +268,20 @@ func (s *Storage) normalizeAppSettings() {
 	app := &s.data.App
 	applyCurrentDefaults := s.data.Version < SettingsVersion
 
-	if app.LogLevel == "" {
+	if !validLogLevel(app.LogLevel) {
 		app.LogLevel = LogLevelInfo
 	}
-	if app.Theme == "" {
+	if !validTheme(app.Theme) {
 		app.Theme = ThemeSystem
 	}
-	if app.Language == "" {
+	if !validLanguage(app.Language) {
 		app.Language = LangRussian
 	}
-	if app.RoutingMode == "" {
+	if app.RoutingMode != RoutingModeBlockedOnly && app.RoutingMode != RoutingModeExceptRussia && app.RoutingMode != RoutingModeAllTraffic {
 		app.RoutingMode = DefaultRoutingMode
 	}
 	app.NetworkMode = NormalizeNetworkMode(app.NetworkMode)
-	if app.SubUpdateInterval <= 0 {
+	if app.SubUpdateInterval <= 0 || app.SubUpdateInterval > 24*30 {
 		app.SubUpdateInterval = 24
 	}
 
@@ -1874,7 +1875,7 @@ func (b *ConfigBuilderForStorage) applyRoutingMode(template map[string]interface
 func (b *ConfigBuilderForStorage) addFreeAccessOutbounds(template map[string]interface{}, settings GlobalAppSettings) {
 	outbounds, _ := template["outbounds"].([]interface{})
 
-	if FreeMethodsAllowed(settings) {
+	if FreeMethodsAllowed(settings) && runtime.GOOS != "windows" {
 		for _, strategy := range DefaultByeDPIStrategies {
 			outbounds = append(outbounds, map[string]interface{}{
 				"type":        "socks",
@@ -1906,14 +1907,25 @@ func (b *ConfigBuilderForStorage) addFreeAccessOutbounds(template map[string]int
 	}
 
 	if FreeMethodsAllowed(settings) || hasVPNProxy {
-		// Blocked-service bypass must never include direct. A neutral urltest
-		// target such as gstatic is often reachable directly, which made direct
-		// win the group while Discord/YouTube still timed out.
-		smartBypass := []string{"auto-select"}
-		if FreeMethodsAllowed(settings) {
-			smartBypass = FreeAccessCandidateTags(hasVPNProxy, true)
+		if runtime.GOOS == "windows" && FreeMethodsAllowed(settings) {
+			// The broad bundled catalog uses one in-process WinDivert strategy.
+			// "direct" is the carrier for that typed packet transformation; the
+			// selector moves to the ordered VPN-source group only when all native
+			// candidates fail the four-domain validation gate.
+			commonCandidates := []string{"direct"}
+			if hasVPNProxy {
+				commonCandidates = append(commonCandidates, "auto-select")
+			}
+			outbounds = append(outbounds, BuildServiceRouteGroup(SmartBypassGroupTag, commonCandidates))
+		} else {
+			// Compatibility platforms still use the local SOCKS methods and must
+			// not let an unrelated neutral direct check win a blocked-site group.
+			smartBypass := []string{"auto-select"}
+			if FreeMethodsAllowed(settings) {
+				smartBypass = FreeAccessCandidateTags(hasVPNProxy, true)
+			}
+			outbounds = append(outbounds, BuildResilientGroupWithURL(SmartBypassGroupTag, smartBypass, "https://discord.com"))
 		}
-		outbounds = append(outbounds, BuildResilientGroupWithURL(SmartBypassGroupTag, smartBypass, "https://discord.com"))
 
 		if FreeMethodsAllowed(settings) || hasVPNProxy {
 			needsNoRouteOutbound := false

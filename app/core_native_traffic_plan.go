@@ -65,6 +65,26 @@ func (a *App) buildNativeTrafficPlan(selections map[string]serviceWinwsSelection
 		plan.Services = append(plan.Services, rule)
 		plan.Selections = append(plan.Selections, traffic.ServiceSelection{ServiceID: service.Tag, StrategyID: strategyID})
 	}
+	if selection, selected := selections[commonBlockedServiceTag]; selected {
+		catalog, err := loadBlockedCatalog(a.runtimeBasePath())
+		if err != nil {
+			return traffic.TrafficPlan{}, fmt.Errorf("load common blocked catalog: %w", err)
+		}
+		strategyID := selection.Method.NativeStrategyID
+		if _, ok := strategySet[strategyID]; !ok {
+			return traffic.TrafficPlan{}, fmt.Errorf("unknown common blocked strategy %q", strategyID)
+		}
+		plan.Services = append(plan.Services, traffic.ServiceRule{
+			ID: commonBlockedServiceTag, DisplayName: "Bundled blocked catalog",
+			DomainSuffixes: catalog.Domains, IPCIDRs: catalog.IPCIDRs,
+			TCPPorts: []int{80, 443}, UDPPorts: []int{443},
+			CandidateStrategyIDs: append([]string(nil), strategyIDs...),
+			AllowVPNFallback:     true, AllowDirectFallback: true,
+		})
+		plan.Selections = append(plan.Selections, traffic.ServiceSelection{
+			ServiceID: commonBlockedServiceTag, StrategyID: strategyID,
+		})
+	}
 	a.addNativeWireGuardRules(&plan, strategyIDs)
 	if err := traffic.ValidatePlan(plan); err != nil {
 		return traffic.TrafficPlan{}, err

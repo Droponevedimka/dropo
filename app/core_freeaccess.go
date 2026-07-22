@@ -533,7 +533,14 @@ func FreeMethodsAllowed(settings GlobalAppSettings) bool {
 }
 
 func FreeAccessServiceEnabled(settings GlobalAppSettings, serviceTag string) bool {
-	return FreeMethodsAllowed(settings)
+	if !FreeMethodsAllowed(settings) {
+		return false
+	}
+	if settings.FreeAccessServices == nil {
+		return true
+	}
+	enabled, exists := settings.FreeAccessServices[serviceTag]
+	return !exists || enabled
 }
 
 func NormalizeFreeAccessServiceMethod(method string) string {
@@ -629,6 +636,12 @@ func FreeAccessServiceCandidateTags(service FreeAccessService, hasVPNProxy bool,
 
 func FreeAccessServiceCandidateTagsForSettings(service FreeAccessService, settings GlobalAppSettings, hasVPNProxy bool) []string {
 	method := FreeAccessServiceMethod(settings, service.Tag)
+	if method == FreeAccessMethodAuto && !FreeAccessServiceEnabled(settings, service.Tag) {
+		if hasVPNProxy {
+			return []string{"auto-select"}
+		}
+		return nil
+	}
 	if runtime.GOOS == "windows" {
 		// Windows has one automatic path: direct traffic passes through the
 		// service-specific profile in the composed winws2 process. VPN is its

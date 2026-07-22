@@ -42,6 +42,22 @@ void main() {
   runApp(const DropoApp());
 }
 
+final ValueNotifier<ThemeMode> _dropoThemeMode = ValueNotifier(
+  ThemeMode.system,
+);
+
+@visibleForTesting
+ThemeMode themeModeFromSetting(String value) {
+  switch (value) {
+    case 'dark':
+      return ThemeMode.dark;
+    case 'light':
+      return ThemeMode.light;
+    default:
+      return ThemeMode.system;
+  }
+}
+
 ThemeData _dropoTheme(Brightness brightness) {
   final dark = brightness == Brightness.dark;
   return ThemeData(
@@ -81,20 +97,20 @@ class DropoApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'dropo',
-      debugShowCheckedModeBanner: false,
-      themeMode: ThemeMode.system,
-      theme: _dropoTheme(Brightness.light),
-      darkTheme: _dropoTheme(Brightness.dark),
-      builder: (context, child) {
-        final brightness = MediaQuery.platformBrightnessOf(context);
-        return AnnotatedRegion<SystemUiOverlayStyle>(
-          value: _systemOverlayFor(brightness),
+    return ValueListenableBuilder<ThemeMode>(
+      valueListenable: _dropoThemeMode,
+      builder: (context, themeMode, _) => MaterialApp(
+        title: 'dropo',
+        debugShowCheckedModeBanner: false,
+        themeMode: themeMode,
+        theme: _dropoTheme(Brightness.light),
+        darkTheme: _dropoTheme(Brightness.dark),
+        builder: (context, child) => AnnotatedRegion<SystemUiOverlayStyle>(
+          value: _systemOverlayFor(Theme.of(context).brightness),
           child: child ?? const SizedBox.shrink(),
-        );
-      },
-      home: DropoHomePage(bridge: createCoreBridge()),
+        ),
+        home: DropoHomePage(bridge: createCoreBridge()),
+      ),
     );
   }
 }
@@ -3331,6 +3347,7 @@ class _DropoHomePageState extends State<DropoHomePage>
         try {
           loadedSubscription = await widget.bridge.subscription();
           loadedAppConfig = AppConfig.fromJson(await widget.bridge.appConfig());
+          _dropoThemeMode.value = themeModeFromSetting(loadedAppConfig.theme);
           loadedWireGuards = await widget.bridge.wireGuards();
           loadedProfiles = (await widget.bridge.profiles()).profiles;
         } catch (error) {
@@ -10006,6 +10023,7 @@ class _SettingsDialogState extends State<_SettingsDialog> {
   }
 
   Future<void> _saveGeneral(AppConfig updated) async {
+    final previous = config;
     setState(() {
       config = updated;
       saving = true;
@@ -10017,11 +10035,15 @@ class _SettingsDialogState extends State<_SettingsDialog> {
     }
     setState(() {
       saving = false;
+      if (result['success'] == false) {
+        config = previous;
+      }
       statusText = result['success'] == false
           ? result['error']?.toString() ?? 'Не удалось сохранить настройки'
           : 'Настройки применены';
     });
     if (result['success'] != false) {
+      _dropoThemeMode.value = themeModeFromSetting(updated.theme);
       widget.onChanged?.call(updated);
     }
   }
@@ -10221,7 +10243,7 @@ class _SettingsDialogState extends State<_SettingsDialog> {
             icon: Icons.lock_outline,
             title: 'VPN активен',
             body:
-                'Некоторые настройки нельзя изменить во время активного VPN. Остановите VPN, если нужно поменять маршруты, режим сети, логирование или внешний вид.',
+                'Некоторые настройки нельзя изменить во время активного VPN. Остановите VPN, если нужно поменять маршруты, режим сети или логирование.',
           ),
           const SizedBox(height: 14),
         ],
@@ -10237,15 +10259,6 @@ class _SettingsDialogState extends State<_SettingsDialog> {
                     ? (value) => _saveGeneral(config.copyWith(autoStart: value))
                     : null,
               ),
-            _SwitchSetting(
-              title: 'Уведомления',
-              description: 'Показывать уведомления о подключении',
-              value: config.notifications,
-              onChanged: canUseLiveSafe
-                  ? (value) =>
-                        _saveGeneral(config.copyWith(notifications: value))
-                  : null,
-            ),
             _SwitchSetting(
               title: 'Логирование sing-box',
               description: 'Записывать логи в файл',
@@ -10346,17 +10359,8 @@ class _SettingsDialogState extends State<_SettingsDialog> {
                 'light': 'Светлая',
                 'system': 'Системная',
               },
-              onChanged: canChangeRuntime
+              onChanged: canUseLiveSafe
                   ? (value) => _saveGeneral(config.copyWith(theme: value))
-                  : null,
-            ),
-            _SelectSetting(
-              title: 'Язык',
-              description: 'Язык интерфейса',
-              value: config.language,
-              options: const {'ru': 'Русский', 'en': 'English'},
-              onChanged: canChangeRuntime
-                  ? (value) => _saveGeneral(config.copyWith(language: value))
                   : null,
             ),
           ],

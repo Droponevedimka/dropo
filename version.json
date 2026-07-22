@@ -1,33 +1,33 @@
 {
-    "version":  "3.0.10",
-    "name":  "dropo",
-    "productName":  "dropo",
-    "description":  "dropo VPN client with sing-box, WireGuard, and smart routing",
-    "author":  "Droponevedimka",
-    "license":  "MIT",
-    "homepage":  "https://k-ampus.dev",
-    "repository":  "https://github.com/Droponevedimka/dropo",
-    "singbox":  {
-                    "version":  "1.13.14",
-                    "minVersion":  "1.12.0"
-                },
-    "wireguard":  {
-                      "version":  "0.5.3",
-                      "wintunVersion":  "0.14.1"
-                  },
-    "windivert":  {
-                      "version":  "2.2.2",
-                      "archiveSha256":  "63cb41763bb4b20f600b6de04e991a9c2be73279e317d4d82f237b150c5f3f15",
-                      "url":  "https://reqrypt.org/download/WinDivert-2.2.2-A.zip"
-                  },
-    "tgwsproxy":  {
-                      "version":  "1.7.3"
-                  },
-    "xray":  {
-                 "version":  "26.3.27"
-             },
-    "build":  {
-                  "appId":  "in.droponevedimka.dropo",
-                  "copyright":  "Copyright © 2026 dropo"
-              }
+  "version": "3.0.11",
+  "name": "dropo",
+  "productName": "dropo",
+  "description": "dropo VPN client with sing-box, WireGuard, and smart routing",
+  "author": "Droponevedimka",
+  "license": "MIT",
+  "homepage": "https://k-ampus.dev",
+  "repository": "https://github.com/Droponevedimka/dropo",
+  "singbox": {
+    "version": "1.13.14",
+    "minVersion": "1.12.0"
+  },
+  "wireguard": {
+    "version": "0.5.3",
+    "wintunVersion": "0.14.1"
+  },
+  "windivert": {
+    "version": "2.2.2",
+    "archiveSha256": "63cb41763bb4b20f600b6de04e991a9c2be73279e317d4d82f237b150c5f3f15",
+    "url": "https://reqrypt.org/download/WinDivert-2.2.2-A.zip"
+  },
+  "tgwsproxy": {
+    "version": "1.7.3"
+  },
+  "xray": {
+    "version": "26.3.27"
+  },
+  "build": {
+    "appId": "in.droponevedimka.dropo",
+    "copyright": "Copyright © 2026 dropo"
+  }
 }

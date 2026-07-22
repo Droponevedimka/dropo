@@ -34,6 +34,9 @@ jobs:
       - name: Validate PowerShell script syntax
         shell: pwsh
         run: ./tools/check-powershell-syntax.ps1
+      - name: Verify bundled blocked lists are current
+        shell: pwsh
+        run: ./scripts/filters/update-blocked-lists.ps1 -CheckOnly
 
   windows-tests:
     runs-on: windows-latest

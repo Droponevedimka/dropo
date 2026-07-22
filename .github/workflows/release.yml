@@ -31,6 +31,10 @@ jobs:
         shell: pwsh
         run: .\tools\check-clean-contributors.ps1
 
+      - name: Verify release contains the latest blocked lists
+        shell: pwsh
+        run: .\scripts\filters\update-blocked-lists.ps1 -CheckOnly
+
       - name: Read version and check existing release
         id: version
         shell: pwsh

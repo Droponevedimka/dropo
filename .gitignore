@@ -19,10 +19,16 @@ release/
 # Local development documentation
 /docs/
 
-# Bundled dependencies are NOT stored in git: scripts/build/build.ps1 fetches and
-# verifies them in this local build cache, then embeds the complete runtime into
-# the single Windows EXE. Current clients never download executable dependencies.
-dependencies/
+# Executable dependencies remain a local verified build cache. The reviewed
+# routing catalogs are the one exception: they are versioned in GitHub and
+# embedded into every build so clients never download them at runtime.
+dependencies/*
+!dependencies/filters/
+dependencies/filters/*
+!dependencies/filters/*.srs
+!dependencies/filters/*.lst
+!dependencies/filters/version.json
+!dependencies/filters/LICENSE.Re-filter-lists.txt
 
 # Go
 *.so

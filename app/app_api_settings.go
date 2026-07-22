@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"strings"
 	"time"
 )
 
@@ -70,38 +71,59 @@ func (a *App) SaveAppConfig(autoStart, enableLogging, checkUpdates, notification
 	}
 
 	settings := a.storage.GetAppSettings()
+	requestedTheme := Theme(theme)
+	requestedLanguage := Language(language)
+	requestedLogLevel := LogLevel(logLevel)
+	if !validTheme(requestedTheme) {
+		return map[string]interface{}{"success": false, "error": fmt.Sprintf("неизвестная тема: %s", theme)}
+	}
+	if !validLanguage(requestedLanguage) {
+		return map[string]interface{}{"success": false, "error": "интерфейс пока доступен только на русском языке"}
+	}
+	if !validLogLevel(requestedLogLevel) {
+		return map[string]interface{}{"success": false, "error": fmt.Sprintf("неизвестный уровень логирования: %s", logLevel)}
+	}
+	if subUpdateInterval < 1 || subUpdateInterval > 24*30 {
+		return map[string]interface{}{"success": false, "error": "интервал обновления подписки должен быть от 1 до 720 часов"}
+	}
+	a.mu.Lock()
+	isRunning := a.isRunning
+	a.mu.Unlock()
+	if isRunning && (settings.EnableLogging != enableLogging || settings.LogLevel != requestedLogLevel) {
+		return map[string]interface{}{"success": false, "error": "остановите VPN перед изменением логирования"}
+	}
 
-	// Обновляем настройки
+	oldAutoStart := settings.AutoStart
 	settings.AutoStart = autoStart
-	// Изменение тумблера автозапуска в настройках — это осознанный выбор, поэтому
-	// первичный диалог автозапуска больше показывать не нужно.
 	settings.AutoStartPrompted = true
 	settings.EnableLogging = enableLogging
 	settings.CheckUpdates = checkUpdates
+	// Retained for settings-file/API compatibility. The current UI does not
+	// advertise connection notifications until a platform implementation exists.
 	settings.Notifications = notifications
 	settings.AutoUpdateSub = autoUpdateSub
-	settings.Theme = Theme(theme)
-	settings.Language = Language(language)
+	settings.Theme = requestedTheme
+	settings.Language = requestedLanguage
+	settings.LogLevel = requestedLogLevel
 	settings.SubUpdateInterval = subUpdateInterval
 
-	// Обновляем уровень логирования
-	if logLevel != "" {
-		settings.LogLevel = LogLevel(logLevel)
+	// Keep the persisted flag and the OS registration in sync. Apply the
+	// reversible external change first; if saving fails, restore the old state.
+	if autoStart != oldAutoStart {
+		if err := applyAutoStart(autoStart); err != nil {
+			return map[string]interface{}{
+				"success": false,
+				"error":   fmt.Sprintf("Ошибка настройки автозапуска: %v", err),
+			}
+		}
 	}
-
-	// Сохраняем в storage
 	if err := a.storage.UpdateAppSettings(settings); err != nil {
+		if autoStart != oldAutoStart {
+			_ = applyAutoStart(oldAutoStart)
+		}
 		return map[string]interface{}{
 			"success": false,
 			"error":   fmt.Sprintf("Ошибка сохранения настроек: %v", err),
-		}
-	}
-
-	// Применяем автозапуск
-	if err := applyAutoStart(autoStart); err != nil {
-		return map[string]interface{}{
-			"success": false,
-			"error":   fmt.Sprintf("Ошибка настройки автозапуска: %v", err),
 		}
 	}
 
@@ -134,7 +156,6 @@ func (a *App) ResolveAutoStartPrompt(enable bool) map[string]interface{} {
 			"error":   fmt.Sprintf("Ошибка сохранения выбора автозапуска: %v", err),
 		}
 	}
-
 	if err := applyAutoStart(enable); err != nil {
 		return map[string]interface{}{
 			"success":           false,
@@ -335,6 +356,7 @@ func (a *App) SetRoutingMode(mode string) map[string]interface{} {
 
 	// Update settings
 	settings := a.storage.GetAppSettings()
+	previousSettings := settings
 	settings.RoutingMode = routingMode
 
 	if err := a.storage.UpdateAppSettings(settings); err != nil {
@@ -351,6 +373,10 @@ func (a *App) SetRoutingMode(mode string) map[string]interface{} {
 
 	// Rebuild config for active profile
 	if err := a.RebuildActiveProfileConfig(); err != nil {
+		_ = a.storage.UpdateAppSettings(previousSettings)
+		if a.configBuilder != nil {
+			a.configBuilder.SetRoutingMode(previousSettings.RoutingMode)
+		}
 		return map[string]interface{}{
 			"success": false,
 			"error":   fmt.Sprintf("Ошибка перестройки конфига: %v", err),
@@ -445,11 +471,19 @@ func (a *App) GetFreeAccessConfig() map[string]interface{} {
 
 	services := make([]map[string]interface{}, 0, len(DefaultFreeAccessServices))
 	for _, svc := range DefaultFreeAccessServices {
+		enabled := FreeAccessServiceEnabled(settings, svc.Tag)
 		selectedMethod := FreeAccessServiceMethod(settings, svc.Tag)
 		effectiveMethod := selectedMethod
 		effectiveMethodLabel := FreeAccessOutboundLabel(selectedMethod)
 		effectiveSource := "manual"
-		if selectedMethod == FreeAccessMethodAuto {
+		if !enabled && selectedMethod == FreeAccessMethodAuto {
+			effectiveMethod = FreeAccessMethodDirect
+			if hasVPNProxy {
+				effectiveMethod = FreeAccessMethodVPN
+			}
+			effectiveMethodLabel = FreeAccessOutboundLabel(effectiveMethod)
+			effectiveSource = "service-disabled"
+		} else if selectedMethod == FreeAccessMethodAuto {
 			effective := a.selectFreeAccessStrategyForService(settings, svc, storedStrategies, serviceFallbackCache, map[string]bool{}, transparentTags, hasVPNProxy)
 			effectiveMethod = effective.MethodTag
 			effectiveMethodLabel = effective.MethodLabel
@@ -465,7 +499,7 @@ func (a *App) GetFreeAccessConfig() map[string]interface{} {
 			"name":                 svc.DisplayName,
 			"domainSuffixes":       append([]string(nil), svc.DomainSuffixes...),
 			"ipCidrs":              append([]string(nil), svc.IPCIDRs...),
-			"enabled":              true,
+			"enabled":              enabled,
 			"requiresVpn":          svc.RequiresVPN,
 			"selectedMethod":       selectedMethod,
 			"methodLabel":          FreeAccessOutboundLabel(selectedMethod),
@@ -525,6 +559,7 @@ func (a *App) SetDisableFreeAccess(disabled bool) map[string]interface{} {
 	}
 
 	settings := a.storage.GetAppSettings()
+	previousSettings := settings
 	settings.DisableFreeAccess = disabled
 	settings.FreeAccessEnabled = true
 	settings.FreeAccessReverse = false
@@ -537,6 +572,7 @@ func (a *App) SetDisableFreeAccess(disabled bool) map[string]interface{} {
 	}
 
 	if err := a.RebuildActiveProfileConfig(); err != nil {
+		_ = a.storage.UpdateAppSettings(previousSettings)
 		return map[string]interface{}{
 			"success": false,
 			"error":   fmt.Sprintf("Ошибка перестройки конфига: %v", err),
@@ -723,6 +759,7 @@ func (a *App) GetHideRuTraffic() map[string]interface{} {
 // proxy, then direct).
 func (a *App) SetHideRuTraffic(enabled bool, proxyAddress string) map[string]interface{} {
 	a.waitForInit()
+	proxyAddress = strings.TrimSpace(proxyAddress)
 
 	if a.storage == nil {
 		return map[string]interface{}{
@@ -756,6 +793,7 @@ func (a *App) SetHideRuTraffic(enabled bool, proxyAddress string) map[string]int
 	}
 
 	settings := a.storage.GetAppSettings()
+	previousSettings := settings
 	settings.HideRuTraffic = enabled
 	settings.RuProxyAddress = proxyAddress
 
@@ -767,6 +805,7 @@ func (a *App) SetHideRuTraffic(enabled bool, proxyAddress string) map[string]int
 	}
 
 	if err := a.RebuildActiveProfileConfig(); err != nil {
+		_ = a.storage.UpdateAppSettings(previousSettings)
 		return map[string]interface{}{
 			"success": false,
 			"error":   fmt.Sprintf("Ошибка перестройки конфига: %v", err),

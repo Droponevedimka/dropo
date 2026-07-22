@@ -5,8 +5,6 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
 	"path/filepath"
 	"time"
@@ -18,6 +16,8 @@ type FilterVersion struct {
 	UpdatedAt      time.Time `json:"updated_at"`      // When filters were last updated
 	MaxAgeDays     int       `json:"max_age_days"`    // Days before warning (default 30)
 	Sources        []string  `json:"sources"`         // Source URLs for reference
+	Source         string    `json:"source"`          // Canonical upstream repository
+	ReleaseURL     string    `json:"release_url"`     // Exact reviewed upstream release
 }
 
 // FilterInfo contains information about filters for UI.
@@ -64,21 +64,6 @@ var FilterFiles = []struct {
 	{"community_domains.srs", "community-domains"},
 	{"community_ips.srs", "community-ips"},
 	{"discord_ips.srs", "discord-ips"},
-}
-
-// Remote filter URLs for updates.
-//
-// The map key is the LOCAL filename (matches FilterFiles above); the value is
-// the upstream download URL, which can use a different filename than the
-// local one. Upstream (1andrevich/Re-filter-lists) renamed its release
-// assets at some point (refilter_domains.srs -> ruleset-domain-refilter_domains.srs,
-// refilter_ips.srs -> ruleset-ip-refilter_ipsum.srs), which silently broke
-// "Обновить" with a 404 — local filenames are kept as-is for backward
-// compatibility with the rest of the routing code, only the source URL changed.
-var FilterURLs = map[string]string{
-	"refilter_domains.srs": "https://github.com/1andrevich/Re-filter-lists/releases/latest/download/ruleset-domain-refilter_domains.srs",
-	"refilter_ips.srs":     "https://github.com/1andrevich/Re-filter-lists/releases/latest/download/ruleset-ip-refilter_ipsum.srs",
-	// Community filters don't have direct URLs - they're compiled from .lst files
 }
 
 // NewFilterManager creates a new filter manager.
@@ -184,8 +169,9 @@ func (fm *FilterManager) GetInfo() (*FilterInfo, error) {
 	info.FilterCount = filterCount
 	info.TotalSizeKB = int(totalSize / 1024)
 
-	// Check if update is possible
-	info.CanUpdate = filterCount > 0
+	// Runtime updates are intentionally disabled. The build/release pipeline
+	// owns the reviewed catalog and embeds it into the signed runtime.
+	info.CanUpdate = false
 
 	if info.IsOutdated {
 		info.UpdateMessage = fmt.Sprintf("Фильтры устарели (обновлены %d дней назад)", info.DaysOld)
@@ -237,54 +223,23 @@ func (fm *FilterManager) CheckFreshness() (bool, int, error) {
 	return daysOld > version.MaxAgeDays, daysOld, nil
 }
 
-// UpdateRefilters downloads latest Re:filter rule-sets.
-// Returns number of updated files.
+// UpdateRefilters is retained for API compatibility with old diagnostic code.
+// Runtime network updates are forbidden; builds use
+// scripts/filters/update-blocked-lists.ps1 before packaging.
 func (fm *FilterManager) UpdateRefilters() (int, error) {
-	// Ensure filters directory exists
-	if err := os.MkdirAll(fm.filtersPath, 0755); err != nil {
-		return 0, fmt.Errorf("failed to create filters directory: %w", err)
+	if !fm.EnsureFiltersExist() {
+		return 0, fmt.Errorf("bundled routing filters are incomplete; rebuild the application")
 	}
-
-	updated := 0
-
-	for filename, url := range FilterURLs {
-		filterPath := filepath.Join(fm.filtersPath, filename)
-
-		// Download file
-		fm.logf("[FilterManager] Downloading %s from %s", filename, url)
-		if err := downloadFile(url, filterPath); err != nil {
-			fm.logf("[FilterManager] Failed to download %s: %v", filename, err)
-			continue
-		}
-
-		updated++
-		fm.logf("[FilterManager] Updated %s", filename)
-	}
-
-	if updated > 0 {
-		// Update version
-		version, _ := fm.LoadVersion()
-		if version == nil {
-			version = &FilterVersion{MaxAgeDays: DefaultMaxAgeDays}
-		}
-
-		version.FiltersVersion = time.Now().Format("2006.01.02")
-		version.UpdatedAt = time.Now()
-
-		if err := fm.SaveVersion(version); err != nil {
-			fm.logf("[FilterManager] Failed to save version: %v", err)
-		}
-	}
-
-	return updated, nil
+	fm.logf("[FilterManager] Runtime update skipped; using the signed bundled catalog")
+	return 0, nil
 }
 
 // EnsureFiltersExist checks if filter files exist.
 // Returns true if all required filters are present.
 func (fm *FilterManager) EnsureFiltersExist() bool {
-	requiredFilters := []string{
-		"refilter_domains.srs",
-		"refilter_ips.srs",
+	requiredFilters := []string{FiltersVersionFile, blockedDomainsFileName, blockedIPsFileName}
+	for _, filter := range FilterFiles {
+		requiredFilters = append(requiredFilters, filter.Name)
 	}
 
 	for _, f := range requiredFilters {
@@ -321,46 +276,4 @@ func (fm *FilterManager) GetRuleSetConfigs() []map[string]interface{} {
 	}
 
 	return configs
-}
-
-// downloadFile downloads a file from URL to local path.
-func downloadFile(url, destPath string) error {
-	// Create HTTP request
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return err
-	}
-
-	req.Header.Set("User-Agent", AppName+"/"+Version)
-
-	// Send request
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, resp.Status)
-	}
-
-	// Create temp file
-	tempPath := destPath + ".tmp"
-	out, err := os.Create(tempPath)
-	if err != nil {
-		return err
-	}
-
-	// Copy response body
-	_, err = io.Copy(out, resp.Body)
-	out.Close()
-
-	if err != nil {
-		os.Remove(tempPath)
-		return err
-	}
-
-	// Rename to final path
-	return os.Rename(tempPath, destPath)
 }

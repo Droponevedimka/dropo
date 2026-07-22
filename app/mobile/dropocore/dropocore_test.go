@@ -288,6 +288,36 @@ func TestAndroidSaveConfigAffectsLogLevelAndInvalidatesCache(t *testing.T) {
 	}
 }
 
+func TestAndroidSaveConfigRejectsInvalidValuesAndLiveLoggingChange(t *testing.T) {
+	mu.Lock()
+	current = defaultState()
+	current.BasePath = t.TempDir()
+	original := current.Config
+	mu.Unlock()
+
+	invalid := []string{
+		`[false,true,true,true,true,"neon","ru","info",24]`,
+		`[false,true,true,true,true,"system","en","info",24]`,
+		`[false,true,true,true,true,"system","ru","verbose",24]`,
+		`[false,true,true,true,true,"system","ru","info",0]`,
+	}
+	for _, args := range invalid {
+		if ok := decodeSuccess(Call("SaveAppConfig", args)); ok {
+			t.Fatalf("SaveAppConfig accepted invalid args %s", args)
+		}
+	}
+
+	mu.Lock()
+	if current.Config != original {
+		t.Fatalf("invalid settings mutated config: got %#v, want %#v", current.Config, original)
+	}
+	current.Connected = true
+	mu.Unlock()
+	if ok := decodeSuccess(Call("SaveAppConfig", `[false,false,true,true,true,"system","ru","info",24]`)); ok {
+		t.Fatal("SaveAppConfig changed logging while VPN was connected")
+	}
+}
+
 func TestAndroidAutoUpdateDisabledReusesMatchingCache(t *testing.T) {
 	mu.Lock()
 	current = defaultState()

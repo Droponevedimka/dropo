@@ -21,7 +21,7 @@ type AppConfig struct {
 
 	// Appearance
 	Theme    Theme    `json:"theme"`    // UI theme (dark/light/system)
-	Language Language `json:"language"` // UI language (ru/en)
+	Language Language `json:"language"` // UI language (currently ru only)
 
 	// Subscription settings
 	AutoUpdateSub     bool      `json:"auto_update_sub"`     // Auto-update subscription
