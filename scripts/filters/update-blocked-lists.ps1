@@ -156,7 +156,12 @@ function Test-CurrentBundle {
 }
 
 Write-Host "[FILTERS] Checking the latest Re-filter release..." -ForegroundColor Yellow
-$latest = Invoke-RestMethod -Headers @{ "User-Agent" = "dropo-filter-updater" } -Uri "https://api.github.com/repos/1andrevich/Re-filter-lists/releases/latest" -TimeoutSec 30
+$githubHeaders = @{ "User-Agent" = "dropo-filter-updater"; "Accept" = "application/vnd.github+json" }
+$githubToken = if (-not [string]::IsNullOrWhiteSpace($env:GH_TOKEN)) { $env:GH_TOKEN } else { $env:GITHUB_TOKEN }
+if (-not [string]::IsNullOrWhiteSpace($githubToken)) {
+    $githubHeaders["Authorization"] = "Bearer $githubToken"
+}
+$latest = Invoke-RestMethod -Headers $githubHeaders -Uri "https://api.github.com/repos/1andrevich/Re-filter-lists/releases/latest" -TimeoutSec 30
 $latestTag = [string]$latest.tag_name
 if (-not $latestTag) {
     throw "The latest Re-filter release has no tag."
