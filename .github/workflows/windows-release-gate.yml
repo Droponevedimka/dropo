@@ -67,7 +67,12 @@ jobs:
           if (-not $folder) { throw "First release folder was not produced" }
           $firstSetup = (Get-FileHash (Join-Path $folder.FullName "dropo-Windows-Setup-x64.exe") -Algorithm SHA256).Hash
           $firstPortable = (Get-FileHash (Join-Path $folder.FullName "dropo-Windows-Portable-x64.zip") -Algorithm SHA256).Hash
-          .\scripts\build\build.ps1 -Build -AppOnly -ReuseFlutterWindowsOutput
+          $postBuildStatus = @(git status --porcelain=v1)
+          if ($postBuildStatus.Count -gt 0) {
+            Write-Host "Tracked/untracked paths left by first build:"
+            $postBuildStatus | ForEach-Object { Write-Host $_ }
+          }
+          .\scripts\build\build.ps1 -Build -AppOnly -ReuseFlutterWindowsOutput -AllowDirtySource
           $folder = Get-ChildItem release -Directory | Where-Object Name -Like "dropo-$version-*" | Select-Object -First 1
           $secondSetup = (Get-FileHash (Join-Path $folder.FullName "dropo-Windows-Setup-x64.exe") -Algorithm SHA256).Hash
           $secondPortable = (Get-FileHash (Join-Path $folder.FullName "dropo-Windows-Portable-x64.zip") -Algorithm SHA256).Hash
