@@ -430,6 +430,7 @@ func TestEngineOwnsOneBackendLoopAndReinjectsDecision(t *testing.T) {
 		input:    []backendPacket{{data: testIPv4TCPPacket(t, "discord.com")}},
 		received: make(chan struct{}),
 	}
+	received := backend.received
 	engine, err := NewEngine(backend, processor, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -437,7 +438,7 @@ func TestEngineOwnsOneBackendLoopAndReinjectsDecision(t *testing.T) {
 	if err := engine.Start(); err != nil {
 		t.Fatal(err)
 	}
-	<-backend.received
+	<-received
 	err = engine.Wait()
 	if !errors.Is(err, io.EOF) {
 		t.Fatalf("Wait() error = %v", err)

@@ -1,52 +1,52 @@
 {
-    "schema_version":  2,
-    "filters_version":  "01072026",
-    "updated_at":  "2026-07-03T15:47:18.0000000Z",
-    "source":  "https://github.com/1andrevich/Re-filter-lists",
-    "release_url":  "https://github.com/1andrevich/Re-filter-lists/releases/tag/01072026",
-    "max_age_days":  30,
-    "files":  {
-                  "domains_all":  {
-                                      "file":  "domains_all.lst",
-                                      "source_url":  "https://github.com/1andrevich/Re-filter-lists/releases/download/01072026/domains_all.lst",
-                                      "sha256":  "d6476f6689704f7dd38534058b6db9a01a93877e4db123dd5ba16a6bebb5f43c",
-                                      "entries":  86140
-                                  },
-                  "ipsum":  {
-                                "file":  "ipsum.lst",
-                                "source_url":  "https://github.com/1andrevich/Re-filter-lists/releases/download/01072026/ipsum.lst",
-                                "sha256":  "7121935d5f10f26443a503d288ac05842f519db96aac165b7a3be4faf0424e0b",
-                                "entries":  30726
-                            },
-                  "refilter_domains":  {
-                                           "file":  "refilter_domains.srs",
-                                           "source_url":  "https://github.com/1andrevich/Re-filter-lists/releases/download/01072026/domains_all.lst",
-                                           "sha256":  "8110f330ed962bc719a4f0d33903543e13b7dbf73201cdd7d5c649b81dfb64cb",
-                                           "entries":  86140
-                                       },
-                  "refilter_ips":  {
-                                       "file":  "refilter_ips.srs",
-                                       "source_url":  "https://github.com/1andrevich/Re-filter-lists/releases/download/01072026/ipsum.lst",
-                                       "sha256":  "f4bf9368d34837492ae6aa9a8730133f5cd9638f6ac8362ec9f146f48b53c660",
-                                       "entries":  30726
-                                   },
-                  "community_domains":  {
-                                            "file":  "community_domains.srs",
-                                            "source_url":  "https://raw.githubusercontent.com/1andrevich/Re-filter-lists/main/community.lst",
-                                            "sha256":  "72d2f31dec7d807cc6933f8284fe0917b065c45296ab21ac4d8e4858e05a0b3b",
-                                            "entries":  672
-                                        },
-                  "community_ips":  {
-                                        "file":  "community_ips.srs",
-                                        "source_url":  "https://raw.githubusercontent.com/1andrevich/Re-filter-lists/main/community_ips.lst",
-                                        "sha256":  "66b05b86cca49d86c58c598c04a05d61ed97497306d01b1f13db56b5ce827668",
-                                        "entries":  14
-                                    },
-                  "discord_ips":  {
-                                      "file":  "discord_ips.srs",
-                                      "source_url":  "https://raw.githubusercontent.com/1andrevich/Re-filter-lists/main/discord_ips.lst",
-                                      "sha256":  "ecaabec71ed4a54d9254e3613c0a0486126ecbfa8c072a13d20e9a35dcdf1345",
-                                      "entries":  2322
-                                  }
-              }
+  "schema_version": 2,
+  "filters_version": "01072026",
+  "updated_at": "2026-07-03T15:47:18.0000000Z",
+  "source": "https://github.com/1andrevich/Re-filter-lists",
+  "release_url": "https://github.com/1andrevich/Re-filter-lists/releases/tag/01072026",
+  "max_age_days": 30,
+  "files": {
+    "domains_all": {
+      "file": "domains_all.lst",
+      "source_url": "https://github.com/1andrevich/Re-filter-lists/releases/download/01072026/domains_all.lst",
+      "sha256": "c74fab1dfec84c161a4d814a6348ac63a476a0cb597bcb46b78fc82551b03c2a",
+      "entries": 86140
+    },
+    "ipsum": {
+      "file": "ipsum.lst",
+      "source_url": "https://github.com/1andrevich/Re-filter-lists/releases/download/01072026/ipsum.lst",
+      "sha256": "d88c221d343b4bb4faea1816c193c69e44e7f4fc34c938d1d45b7ee788c6e638",
+      "entries": 30726
+    },
+    "refilter_domains": {
+      "file": "refilter_domains.srs",
+      "source_url": "https://github.com/1andrevich/Re-filter-lists/releases/download/01072026/domains_all.lst",
+      "sha256": "8110f330ed962bc719a4f0d33903543e13b7dbf73201cdd7d5c649b81dfb64cb",
+      "entries": 86140
+    },
+    "refilter_ips": {
+      "file": "refilter_ips.srs",
+      "source_url": "https://github.com/1andrevich/Re-filter-lists/releases/download/01072026/ipsum.lst",
+      "sha256": "f4bf9368d34837492ae6aa9a8730133f5cd9638f6ac8362ec9f146f48b53c660",
+      "entries": 30726
+    },
+    "community_domains": {
+      "file": "community_domains.srs",
+      "source_url": "https://raw.githubusercontent.com/1andrevich/Re-filter-lists/main/community.lst",
+      "sha256": "72d2f31dec7d807cc6933f8284fe0917b065c45296ab21ac4d8e4858e05a0b3b",
+      "entries": 672
+    },
+    "community_ips": {
+      "file": "community_ips.srs",
+      "source_url": "https://raw.githubusercontent.com/1andrevich/Re-filter-lists/main/community_ips.lst",
+      "sha256": "66b05b86cca49d86c58c598c04a05d61ed97497306d01b1f13db56b5ce827668",
+      "entries": 14
+    },
+    "discord_ips": {
+      "file": "discord_ips.srs",
+      "source_url": "https://raw.githubusercontent.com/1andrevich/Re-filter-lists/main/discord_ips.lst",
+      "sha256": "ecaabec71ed4a54d9254e3613c0a0486126ecbfa8c072a13d20e9a35dcdf1345",
+      "entries": 2322
+    }
+  }
 }

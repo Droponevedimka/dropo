@@ -109,6 +109,22 @@ function Compile-RuleSet {
 
 function Get-Sha256 {
     param([string]$Path)
+
+    # Git may check text catalogs out with LF or CRLF depending on the host.
+    # Hash their canonical LF representation so the repository integrity gate
+    # is deterministic on Windows, Linux and macOS. Binary rule-sets keep their
+    # byte-for-byte digest.
+    if ([IO.Path]::GetExtension($Path).Equals(".lst", [StringComparison]::OrdinalIgnoreCase)) {
+        $text = [IO.File]::ReadAllText($Path, [Text.UTF8Encoding]::new($false, $true))
+        $canonical = ($text -replace "`r`n", "`n" -replace "`r", "`n")
+        $bytes = [Text.UTF8Encoding]::new($false).GetBytes($canonical)
+        $algorithm = [Security.Cryptography.SHA256]::Create()
+        try {
+            return ([BitConverter]::ToString($algorithm.ComputeHash($bytes))).Replace("-", "").ToLowerInvariant()
+        } finally {
+            $algorithm.Dispose()
+        }
+    }
     return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 

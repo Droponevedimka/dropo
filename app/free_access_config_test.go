@@ -46,7 +46,7 @@ func TestBuildConfigWithoutSubscriptionUsesFreeAccess(t *testing.T) {
 		t.Fatalf("get profile config failed: %v", err)
 	}
 
-	if containsOutbound(config, ByeDPIOutboundTag) {
+	if runtime.GOOS == "windows" && containsOutbound(config, ByeDPIOutboundTag) {
 		t.Fatalf("Windows Unified config must not contain inactive %q SOCKS outbound", ByeDPIOutboundTag)
 	}
 	if !containsOutbound(config, SmartBypassGroupTag) {
@@ -71,8 +71,12 @@ func TestBuildConfigWithoutSubscriptionUsesFreeAccess(t *testing.T) {
 	}
 
 	candidates := getOutboundCandidates(config, SmartBypassGroupTag)
-	if len(candidates) != 1 || candidates[0] != "direct" {
-		t.Fatalf("%s candidates without subscription = %v, want native carrier [direct]", SmartBypassGroupTag, candidates)
+	if runtime.GOOS == "windows" {
+		if len(candidates) != 1 || candidates[0] != "direct" {
+			t.Fatalf("%s candidates without subscription = %v, want native carrier [direct]", SmartBypassGroupTag, candidates)
+		}
+	} else if methodTags := FreeAccessMethodTags(); !sameStringSet(candidates, methodTags) || containsString(candidates, "direct") {
+		t.Fatalf("%s compatibility candidates without subscription = %v, want %v without direct", SmartBypassGroupTag, candidates, methodTags)
 	}
 	if !containsProcessDirectRule(config, ByeDPIProcessName) {
 		t.Fatalf("generated config does not bypass %s process traffic directly", ByeDPIProcessName)
@@ -1770,8 +1774,19 @@ func TestSmartBypassPrefersFreeAccessWhenSubscriptionExists(t *testing.T) {
 
 	config := map[string]interface{}{"outbounds": template["outbounds"]}
 	candidates := getOutboundCandidates(config, SmartBypassGroupTag)
-	if len(candidates) != 2 || candidates[0] != "direct" || candidates[1] != "auto-select" {
-		t.Fatalf("%s candidates with subscription = %v, want native direct then ordered VPN fallback", SmartBypassGroupTag, candidates)
+	if runtime.GOOS == "windows" {
+		if len(candidates) != 2 || candidates[0] != "direct" || candidates[1] != "auto-select" {
+			t.Fatalf("%s candidates with subscription = %v, want native direct then ordered VPN fallback", SmartBypassGroupTag, candidates)
+		}
+	} else {
+		for _, tag := range FreeAccessMethodTags() {
+			if !containsString(candidates, tag) {
+				t.Fatalf("%s compatibility candidates with subscription = %v, missing %s", SmartBypassGroupTag, candidates, tag)
+			}
+		}
+		if len(candidates) == 0 || candidates[len(candidates)-1] != "auto-select" || containsString(candidates, "direct") {
+			t.Fatalf("%s compatibility candidates = %v, want free methods then VPN without direct", SmartBypassGroupTag, candidates)
+		}
 	}
 
 	for _, serviceTag := range []string{"telegram", "meta", "whatsapp"} {
