@@ -186,11 +186,10 @@ $XrayExeSHA256 = ([string]$VersionInfo.xray.executableSha256).ToLowerInvariant()
 $TgWsProxyVersion = $VersionInfo.tgwsproxy.version
 $TgWsProxyHeadlessSHA256 = ([string]$VersionInfo.tgwsproxy.headlessSha256).ToLowerInvariant()
 $TgWsProxyOfficialSHA256 = ([string]$VersionInfo.tgwsproxy.officialWindowsSha256).ToLowerInvariant()
-$SourceRevision = (& git -C $ScriptRoot rev-parse HEAD 2>$null | Select-Object -First 1)
-if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace([string]$SourceRevision)) {
+$SourceRevision = ([string](& git -C $ScriptRoot rev-parse HEAD 2>$null | Select-Object -First 1)).Trim()
+if ($SourceRevision -notmatch '^[0-9a-fA-F]{40}$') {
     $SourceRevision = "unknown"
 }
-$SourceRevision = ([string]$SourceRevision).Trim()
 $SourceDirty = @(& git -C $ScriptRoot status --porcelain 2>$null).Count -gt 0
 $dirtyBuildAllowed = $AllowDirtySource -or $env:DROPO_ALLOW_DIRTY_BUILD -eq "1"
 $willBuildWindows = $Build -or $Flutter -or $AppOnly -or $All -or (-not $Portable -and -not $Android -and -not $Clean)
@@ -200,15 +199,18 @@ if ($willBuildWindows -and $SourceDirty -and -not $dirtyBuildAllowed) {
 $BuildHash = Get-BuildHash -Revision $SourceRevision
 $sourceEpoch = 0L
 if ([long]::TryParse([string]$env:SOURCE_DATE_EPOCH, [ref]$sourceEpoch) -and $sourceEpoch -gt 0) {
-    $BuildDate = [DateTimeOffset]::FromUnixTimeSeconds($sourceEpoch).UtcDateTime
+    $BuildDate = ([DateTimeOffset]::FromUnixTimeSeconds($sourceEpoch)).UtcDateTime
 } elseif ($SourceRevision -ne "unknown") {
     $commitEpoch = (& git -C $ScriptRoot show -s --format=%ct $SourceRevision 2>$null | Select-Object -First 1)
     if (-not [long]::TryParse(([string]$commitEpoch).Trim(), [ref]$sourceEpoch) -or $sourceEpoch -le 0) {
         throw "Could not resolve the source commit timestamp."
     }
-    $BuildDate = [DateTimeOffset]::FromUnixTimeSeconds($sourceEpoch).UtcDateTime
+    $BuildDate = ([DateTimeOffset]::FromUnixTimeSeconds($sourceEpoch)).UtcDateTime
 } else {
-    $BuildDate = [DateTime]::UnixEpoch
+    $BuildDate = [DateTime]::new(1970, 1, 1, 0, 0, 0, [DateTimeKind]::Utc)
+}
+if ($null -eq $BuildDate) {
+    throw "Could not construct deterministic UTC build time."
 }
 $BuildTime = $BuildDate.ToString("yyyy-MM-dd HH:mm:ss")
 $BuildTimestampISO = $BuildDate.ToString("yyyy-MM-ddTHH:mm:ssZ")
