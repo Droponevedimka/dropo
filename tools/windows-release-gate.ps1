@@ -61,11 +61,14 @@ function Invoke-WindowsInstallSmoke {
         "/VERYSILENT",
         "/SUPPRESSMSGBOXES",
         "/NORESTART",
-        "/TASKS=autostart,backgroundcore",
         "/DIR=$installRoot"
     )
     foreach ($pass in 1..2) {
-        $process = Start-Process -FilePath $SetupPath -ArgumentList $setupArgs -Wait -PassThru
+        $passArgs = @($setupArgs)
+        if ($pass -eq 1) {
+            $passArgs += "/TASKS=autostart,backgroundcore"
+        }
+        $process = Start-Process -FilePath $SetupPath -ArgumentList $passArgs -Wait -PassThru
         if ($process.ExitCode -ne 0) {
             throw "Installer smoke pass $pass failed with exit code $($process.ExitCode)."
         }
@@ -85,9 +88,20 @@ function Invoke-WindowsInstallSmoke {
     if ([string]::IsNullOrWhiteSpace([string]$runCommand) -or $runCommand -notlike "*$installRoot*") {
         throw "Installer did not configure the selected per-user UI autostart entry."
     }
-    & schtasks.exe /Query /TN "dropo-background-core" | Out-Null
-    if ($LASTEXITCODE -ne 0) {
+    $scheduledTask = Get-ScheduledTask -TaskName "dropo-background-core" -ErrorAction SilentlyContinue
+    if (-not $scheduledTask) {
         throw "Installer did not configure the selected background-core task."
+    }
+    $expectedCore = [IO.Path]::GetFullPath((Join-Path $installRoot "resources\dropo-core.exe"))
+    $taskAction = @($scheduledTask.Actions) | Select-Object -First 1
+    $actualCore = ([string]$taskAction.Execute).Trim('"')
+    if (-not $taskAction -or
+        -not [string]::Equals([IO.Path]::GetFullPath($actualCore), $expectedCore, [StringComparison]::OrdinalIgnoreCase) -or
+        [string]$taskAction.Arguments -ne "--listen 127.0.0.1:17890 --no-tray") {
+        throw "Installer configured an unexpected background-core action."
+    }
+    if ([string]$scheduledTask.Principal.RunLevel -ne "Highest") {
+        throw "Installer did not configure the background-core task with the highest run level."
     }
 
     $uninstaller = Join-Path $installRoot "unins000.exe"
@@ -102,11 +116,9 @@ function Invoke-WindowsInstallSmoke {
     if (-not [string]::IsNullOrWhiteSpace([string]$runCommand)) {
         throw "Uninstaller left the dropo UI autostart entry behind."
     }
-    & schtasks.exe /Query /TN "dropo-background-core" 2>$null | Out-Null
-    if ($LASTEXITCODE -eq 0) {
+    if (Get-ScheduledTask -TaskName "dropo-background-core" -ErrorAction SilentlyContinue) {
         throw "Uninstaller left the background-core task behind."
     }
-    $global:LASTEXITCODE = 0
 }
 
 $installer = (Resolve-Path -LiteralPath $InstallerPath).Path

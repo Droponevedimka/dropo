@@ -65,12 +65,14 @@ Name: "{autoprograms}\dropo"; Filename: "{app}\dropo.exe"; WorkingDir: "{app}"
 Name: "{autodesktop}\dropo"; Filename: "{app}\dropo.exe"; WorkingDir: "{app}"; Tasks: desktopicon
 
 [Run]
+Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /TN ""dropo-background-core"" /F"; Flags: runhidden waituntilterminated logoutput 64bit; Check: IsWin64
+Filename: "{sys}\schtasks.exe"; Parameters: "/Create /F /TN ""dropo-background-core"" /SC ONLOGON /RL HIGHEST /TR ""\""{app}\resources\dropo-core.exe\"" --listen 127.0.0.1:17890 --no-tray"""; Flags: runhidden waituntilterminated logoutput 64bit; Check: ShouldCreateBackgroundTask
 Filename: "{app}\dropo.exe"; Description: "Запустить dropo"; WorkingDir: "{app}"; Flags: nowait postinstall skipifsilent runasoriginaluser
 
 [UninstallRun]
 Filename: "{sys}\taskkill.exe"; Parameters: "/F /IM dropo-ui.exe"; Flags: runhidden waituntilterminated; RunOnceId: "StopDropoUI"
 Filename: "{sys}\taskkill.exe"; Parameters: "/F /IM dropo-core.exe"; Flags: runhidden waituntilterminated; RunOnceId: "StopDropoCore"
-Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /TN ""dropo-background-core"" /F"; Flags: runhidden waituntilterminated; RunOnceId: "DeleteDropoCoreTask"
+Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /TN ""dropo-background-core"" /F"; Flags: runhidden waituntilterminated logoutput 64bit; Check: IsWin64; RunOnceId: "DeleteDropoCoreTask"
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}\updates"
@@ -79,10 +81,10 @@ Type: filesandordirs; Name: "{app}\updates"
 const
   DropoRegistryPath = 'Software\dropo';
   DropoRunRegistryPath = 'Software\Microsoft\Windows\CurrentVersion\Run';
-  BackgroundTaskName = 'dropo-background-core';
 
 var
-  UpgradeInstall: Boolean;
+  PreserveInstallerChoices: Boolean;
+  PreviousBackgroundCoreChoice: Boolean;
 
 function IsUpgradeInstall(): Boolean;
 begin
@@ -91,33 +93,35 @@ begin
     RegKeyExists(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{D493210B-63F8-4CA8-B97D-FED5B9E6711E}_is1');
 end;
 
-function InitializeSetup(): Boolean;
+function HasTaskSelectionParameter(): Boolean;
+var
+  ParameterIndex: Integer;
 begin
-  UpgradeInstall := IsUpgradeInstall();
+  Result := False;
+  for ParameterIndex := 1 to ParamCount do
+    if Pos('/tasks=', LowerCase(ParamStr(ParameterIndex))) = 1 then begin
+      Result := True;
+      exit;
+    end;
+end;
+
+function InitializeSetup(): Boolean;
+var
+  StoredChoice: Cardinal;
+begin
+  PreserveInstallerChoices := IsUpgradeInstall() and WizardSilent() and not HasTaskSelectionParameter();
+  if RegQueryDWordValue(HKCU, DropoRegistryPath, 'InstallerBackgroundCoreChoice', StoredChoice) then
+    PreviousBackgroundCoreChoice := StoredChoice <> 0
+  else
+    PreviousBackgroundCoreChoice := FileExists(ExpandConstant('{sys}\Tasks\dropo-background-core'));
   Result := True;
 end;
 
-procedure RemoveBackgroundTask();
-var
-  ResultCode: Integer;
+function ShouldCreateBackgroundTask(): Boolean;
 begin
-  Exec(ExpandConstant('{sys}\schtasks.exe'), '/Delete /TN "' + BackgroundTaskName + '" /F', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-end;
-
-procedure ConfigureBackgroundTask();
-var
-  ResultCode: Integer;
-  CorePath: String;
-  Arguments: String;
-begin
-  RemoveBackgroundTask();
-  if not WizardIsTaskSelected('backgroundcore') then
-    exit;
-
-  CorePath := ExpandConstant('{app}\resources\dropo-core.exe');
-  Arguments := '/Create /F /TN "' + BackgroundTaskName + '" /SC ONLOGON /RL HIGHEST /TR """' + CorePath + '"" --listen 127.0.0.1:17890 --no-tray"';
-  if not Exec(ExpandConstant('{sys}\schtasks.exe'), Arguments, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) or (ResultCode <> 0) then
-    RaiseException('Не удалось создать фоновую задачу dropo (код ' + IntToStr(ResultCode) + ').');
+  Result := IsWin64 and
+    ((PreserveInstallerChoices and PreviousBackgroundCoreChoice) or
+     ((not PreserveInstallerChoices) and WizardIsTaskSelected('backgroundcore')));
 end;
 
 procedure ConfigureAutoStart();
@@ -125,6 +129,9 @@ var
   Enabled: Cardinal;
   Command: String;
 begin
+  if PreserveInstallerChoices then
+    exit;
+
   if WizardIsTaskSelected('autostart') then begin
     Enabled := 1;
     Command := '"' + ExpandConstant('{app}\dropo.exe') + '" --autostart';
@@ -134,20 +141,25 @@ begin
     RegDeleteValue(HKCU, DropoRunRegistryPath, 'dropo');
   end;
   RegWriteDWordValue(HKCU, DropoRegistryPath, 'InstallerAutoStartChoice', Enabled);
+
+  if WizardIsTaskSelected('backgroundcore') then
+    Enabled := 1
+  else
+    Enabled := 0;
+  RegWriteDWordValue(HKCU, DropoRegistryPath, 'InstallerBackgroundCoreChoice', Enabled);
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
-  if (CurStep = ssPostInstall) and not UpgradeInstall then begin
+  if CurStep = ssPostInstall then
     ConfigureAutoStart();
-    ConfigureBackgroundTask();
-  end;
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
   if CurUninstallStep = usUninstall then begin
     RegDeleteValue(HKCU, DropoRunRegistryPath, 'dropo');
-    RemoveBackgroundTask();
+    RegDeleteValue(HKCU, DropoRegistryPath, 'InstallerAutoStartChoice');
+    RegDeleteValue(HKCU, DropoRegistryPath, 'InstallerBackgroundCoreChoice');
   end;
 end;
