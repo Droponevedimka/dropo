@@ -163,7 +163,10 @@ try {
     Invoke-DefenderScan -MpCmdRun $mpCmdRun -Path $extract
     if ($InstallSmoke) {
         Write-Host "[GATE] Exercising fresh install, in-place upgrade and uninstall..." -ForegroundColor Cyan
-        Invoke-WindowsInstallSmoke -SetupPath $installerCopy -GateRoot $gateRoot
+        # The Internet-marked copy was already scanned above. Use the original
+        # byte-identical artifact for unattended execution so SmartScreen does
+        # not require an interactive desktop on the CI runner.
+        Invoke-WindowsInstallSmoke -SetupPath $installer -GateRoot $gateRoot
     }
 } finally {
     Remove-Item -LiteralPath $gateRoot -Recurse -Force -ErrorAction SilentlyContinue
