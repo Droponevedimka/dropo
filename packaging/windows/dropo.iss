@@ -34,6 +34,7 @@ Compression=lzma2/normal
 SolidCompression=yes
 WizardStyle=modern
 PrivilegesRequired=admin
+PrivilegesRequiredOverridesAllowed=commandline
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 CloseApplications=force
@@ -85,7 +86,9 @@ var
 
 function IsUpgradeInstall(): Boolean;
 begin
-  Result := RegKeyExists(HKLM64, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{D493210B-63F8-4CA8-B97D-FED5B9E6711E}_is1');
+  Result :=
+    RegKeyExists(HKLM64, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{D493210B-63F8-4CA8-B97D-FED5B9E6711E}_is1') or
+    RegKeyExists(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{D493210B-63F8-4CA8-B97D-FED5B9E6711E}_is1');
 end;
 
 function InitializeSetup(): Boolean;
