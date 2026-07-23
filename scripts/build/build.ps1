@@ -520,9 +520,11 @@ function New-DeterministicZip {
 }
 
 function Get-InnoSetupCommand {
-    $fromPath = Get-Command ISCC.exe -ErrorAction SilentlyContinue
-    if ($fromPath) {
-        return $fromPath.Source
+    if ($env:DROPO_INNO_ISCC_PATH) {
+        if (-not (Test-Path -LiteralPath $env:DROPO_INNO_ISCC_PATH -PathType Leaf)) {
+            throw "DROPO_INNO_ISCC_PATH does not point to ISCC.exe: $env:DROPO_INNO_ISCC_PATH"
+        }
+        return $env:DROPO_INNO_ISCC_PATH
     }
     foreach ($candidate in @(
         (Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 6\ISCC.exe"),
@@ -532,6 +534,10 @@ function Get-InnoSetupCommand {
         if (Test-Path -LiteralPath $candidate -PathType Leaf) {
             return $candidate
         }
+    }
+    $fromPath = Get-Command ISCC.exe -ErrorAction SilentlyContinue
+    if ($fromPath) {
+        return $fromPath.Source
     }
     return $null
 }

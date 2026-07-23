@@ -52,6 +52,9 @@ jobs:
           }
           $process = Start-Process $installer -ArgumentList @("/CURRENTUSER", "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART") -Wait -PassThru
           if ($process.ExitCode -ne 0) { throw "Inno Setup install failed: $($process.ExitCode)" }
+          $iscc = Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path -LiteralPath $iscc -PathType Leaf)) { throw "Pinned ISCC.exe was not installed: $iscc" }
+          "DROPO_INNO_ISCC_PATH=$iscc" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Update Defender intelligence
         shell: powershell
         run: Update-MpSignature
