@@ -61,7 +61,6 @@ function Invoke-WindowsInstallSmoke {
         "/VERYSILENT",
         "/SUPPRESSMSGBOXES",
         "/NORESTART",
-        "/CURRENTUSER",
         "/TASKS=autostart,backgroundcore",
         "/DIR=$installRoot"
     )
