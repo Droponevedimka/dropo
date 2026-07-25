@@ -2201,6 +2201,7 @@ class CoreStatus {
 class DepsStatus {
   const DepsStatus({
     required this.managed,
+    required this.bundled,
     required this.ready,
     required this.degraded,
     required this.required,
@@ -2211,6 +2212,7 @@ class DepsStatus {
   });
 
   final bool managed;
+  final bool bundled;
   final bool ready;
   final bool degraded;
   final String required;
@@ -2222,6 +2224,7 @@ class DepsStatus {
   factory DepsStatus.fromJson(Map<String, dynamic> json) {
     return DepsStatus(
       managed: json['managed'] == true,
+      bundled: json['bundled'] == true,
       ready: json['ready'] == true,
       degraded: json['degraded'] == true,
       required: json['required']?.toString() ?? '',
@@ -3672,7 +3675,7 @@ class _DropoHomePageState extends State<DropoHomePage>
       case 'deps-error':
         final message =
             event.payload['error']?.toString().trim() ??
-            'Не удалось загрузить компоненты';
+            'Не удалось восстановить встроенные компоненты';
         depsProgress = '';
         connectionHint = message;
         connectionHintDanger = true;
@@ -4144,7 +4147,8 @@ class _DropoHomePageState extends State<DropoHomePage>
       }
       if (result['success'] != true) {
         await _handleDependenciesFailure(
-          result['error']?.toString() ?? 'Не удалось скачать компоненты',
+          result['error']?.toString() ??
+              'Не удалось восстановить встроенные компоненты',
         );
         await _refresh(all: true);
         return;
@@ -4158,7 +4162,7 @@ class _DropoHomePageState extends State<DropoHomePage>
             : 'VPN-ядро не установлено';
         connectionHint = dependencyResult.ready
             ? 'Все встроенные компоненты проверены и готовы.'
-            : 'Не удалось восстановить встроенные компоненты; переустановите приложение из официального EXE.';
+            : 'Не удалось восстановить встроенные компоненты; переустановите приложение из официального пакета.';
         connectionHintDanger = !dependencyResult.ready;
         depsProgress = '';
       });
@@ -4168,13 +4172,13 @@ class _DropoHomePageState extends State<DropoHomePage>
 
   Future<void> _handleDependenciesFailure(String message) async {
     final clean = message.trim().isEmpty
-        ? 'Не удалось скачать компоненты'
+        ? 'Не удалось восстановить встроенные компоненты'
         : message.trim();
     if (!mounted) {
       return;
     }
     setState(() {
-      statusMessage = 'Ошибка загрузки';
+      statusMessage = 'Ошибка восстановления';
       connectionHint = clean;
       connectionHintDanger = true;
       depsProgress = '';
@@ -4210,7 +4214,7 @@ class _DropoHomePageState extends State<DropoHomePage>
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 const Text(
-                  'Не удалось загрузить необходимые компоненты. Если ошибка повторяется, обратитесь к администратору.',
+                  'Не удалось проверить или локально восстановить встроенные компоненты. Переустановите приложение из официального пакета; если ошибка повторяется, обратитесь к администратору.',
                   style: TextStyle(color: Color(0xFFD8E4E0), height: 1.4),
                 ),
                 const SizedBox(height: 10),
@@ -4827,7 +4831,10 @@ class _DropoHomePageState extends State<DropoHomePage>
           ),
           const SizedBox(height: 10),
         ],
-        if (status.dependencies.managed && !status.dependencies.ready)
+        if (!booting &&
+            status.dependencies.managed &&
+            !status.dependencies.bundled &&
+            (!status.dependencies.ready || status.dependencies.degraded))
           _DependencyStrip(
             status: status.dependencies,
             onDownload: controlsDisabled ? null : _downloadDependencies,
@@ -5130,7 +5137,7 @@ class _DropoHomePageState extends State<DropoHomePage>
     await showDialog<void>(
       context: context,
       builder: (context) => _AppDialog(
-        title: 'About',
+        title: 'О приложении',
         icon: Icons.info_outline,
         child: Column(
           children: [
@@ -6554,7 +6561,7 @@ class _DependencyStrip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (!status.managed) {
+    if (!status.managed || status.bundled) {
       return const SizedBox.shrink();
     }
     if (status.ready && !status.degraded) {
@@ -6727,7 +6734,7 @@ class _MiniStrip extends StatelessWidget {
   }
 }
 
-class _MenuPageSurface extends StatelessWidget {
+class _MenuPageSurface extends StatefulWidget {
   const _MenuPageSurface({
     required this.title,
     required this.icon,
@@ -6739,10 +6746,23 @@ class _MenuPageSurface extends StatelessWidget {
   final Widget child;
 
   @override
+  State<_MenuPageSurface> createState() => _MenuPageSurfaceState();
+}
+
+class _MenuPageSurfaceState extends State<_MenuPageSurface> {
+  final ScrollController scrollController = ScrollController();
+
+  @override
+  void dispose() {
+    scrollController.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final isMobile = _isMobileShell;
     return Container(
-      key: ValueKey(title),
+      key: ValueKey(widget.title),
       width: double.infinity,
       constraints: BoxConstraints(maxHeight: isMobile ? 720 : 640),
       padding: EdgeInsets.all(isMobile ? 14 : 18),
@@ -6770,11 +6790,11 @@ class _MenuPageSurface extends StatelessWidget {
           Row(
             crossAxisAlignment: CrossAxisAlignment.center,
             children: [
-              Icon(icon, color: const Color(0xFFBAF7D0), size: 22),
+              Icon(widget.icon, color: const Color(0xFFBAF7D0), size: 22),
               const SizedBox(width: 10),
               Expanded(
                 child: Text(
-                  title,
+                  widget.title,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
@@ -6788,10 +6808,12 @@ class _MenuPageSurface extends StatelessWidget {
           const SizedBox(height: 14),
           Flexible(
             child: Scrollbar(
+              controller: scrollController,
               thumbVisibility: !isMobile,
               child: SingleChildScrollView(
-                primary: isMobile ? false : null,
-                child: child,
+                controller: scrollController,
+                primary: false,
+                child: widget.child,
               ),
             ),
           ),
@@ -6899,7 +6921,7 @@ class _SideMenu extends StatelessWidget {
             ),
             _SideMenuButton(
               icon: Icons.info_outline,
-              label: 'About',
+              label: 'О приложении',
               description: 'Версия и ссылки',
               expanded: expanded,
               active: activeSection == 'about',
@@ -7170,7 +7192,7 @@ class _MobileMoreSheet extends StatelessWidget {
                   ),
                   _MobileMoreItem(
                     icon: Icons.info_outline,
-                    label: 'About',
+                    label: 'О приложении',
                     description: 'Версия и ссылки',
                     active: activeSection == 'about',
                     onPressed: () => onSelect('about'),
@@ -8022,7 +8044,7 @@ class _AboutSection extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return _MenuPageSurface(
-      title: 'About',
+      title: 'О приложении',
       icon: Icons.info_outline,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -10403,7 +10425,7 @@ class _SettingsDialogState extends State<_SettingsDialog> {
               _ButtonSetting(
                 title: 'Встроенный runtime',
                 description: widget.currentStatus.dependencies.ready
-                    ? 'Компоненты из единого EXE проверены и готовы'
+                    ? 'Компоненты из установленного пакета проверены и готовы'
                     : 'Нарушена целостность локальных компонентов',
                 label: widget.currentStatus.dependencies.ready
                     ? 'Готово'

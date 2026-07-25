@@ -77,14 +77,16 @@ type DepsManifest struct {
 	Required    []string `json:"requiredFiles,omitempty"`
 }
 
-// DepsStatus is reported to the frontend so it can gate first-run download.
+// DepsStatus reports runtime integrity and distinguishes current self-contained
+// packages from legacy split manifests.
 type DepsStatus struct {
-	Managed           bool     `json:"managed"`           // split build (manifest present)
+	Managed           bool     `json:"managed"`           // core owns runtime verification/repair
+	Bundled           bool     `json:"bundled"`           // complete runtime is part of the Windows package
 	Ready             bool     `json:"ready"`             // trusted runtime is usable, possibly without an AV-blocked optional engine
 	Degraded          bool     `json:"degraded"`          // optional packet engine is blocked by endpoint protection
 	Required          string   `json:"required"`          // required depsVersion
 	Installed         string   `json:"installed"`         // installed depsVersion (marker)
-	SizeMB            int64    `json:"sizeMB"`            // download size, for the UI
+	SizeMB            int64    `json:"sizeMB"`            // verified runtime size, for diagnostics
 	BlockedComponents []string `json:"blockedComponents"` // exact optional files unavailable to the runtime
 	Warning           string   `json:"warning,omitempty"`
 	BypassManaged     bool     `json:"bypassManaged"`
@@ -360,13 +362,14 @@ func (a *App) DependenciesStatus() DepsStatus {
 		}
 		status := DepsStatus{
 			Managed:   true,
+			Bundled:   true,
 			Ready:     ready,
 			Required:  trustedRuntimeVersion,
 			Installed: a.installedDepsVersion(),
 			SizeMB:    size / (1024 * 1024),
 		}
 		if !ready {
-			status.Warning = "Встроенный runtime не прошёл проверку целостности; переустановите приложение из официального EXE"
+			status.Warning = "Встроенный runtime не прошёл проверку целостности; переустановите приложение из официального пакета"
 		}
 		return status
 	}
@@ -432,9 +435,9 @@ func (a *App) failDepsDownload(m *DepsManifest, err error) error {
 	return fmt.Errorf("%s. Если ошибка повторяется, обратитесь к администратору: %s", message, TelegramUpdatesName)
 }
 
-// DownloadDependencies fetches, verifies and extracts the dependencies asset.
-// Idempotent: a no-op if bin/ already matches the required version. Safe to call
-// from the frontend; emits `deps-progress`.
+// DownloadDependencies is retained as a bridge-compatible name. Current
+// self-contained builds only verify and locally repair their embedded runtime;
+// legacy split builds may still fetch their pinned dependency asset.
 func (a *App) DownloadDependencies() error {
 	a.depsDownloadMu.Lock()
 	defer a.depsDownloadMu.Unlock()

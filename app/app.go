@@ -314,7 +314,7 @@ func (a *App) restoreVPNOnStartup() {
 	}
 	a.writeLog("Restoring VPN state from previous session")
 	if status := a.DependenciesStatus(); status.Managed && !status.Ready {
-		a.writeLog("VPN restore is waiting for the first-run component download")
+		a.writeLog("VPN restore is verifying and repairing the bundled runtime")
 		if err := a.DownloadDependencies(); err != nil {
 			a.writeLog(fmt.Sprintf("Failed to restore VPN on startup: %v", err))
 			return
@@ -536,7 +536,7 @@ func (a *App) runtimeBasePath() string {
 }
 
 // refreshSingBoxPath refreshes the sing-box executable path inside the current
-// basePath. Split portable builds download bin/ after startup, so this must be
+// basePath. Runtime verification can repair bin/ in place, so this must be
 // callable without recalculating basePath from os.Executable().
 func (a *App) refreshSingBoxPath() {
 	if a.basePath == "" {

@@ -35,10 +35,37 @@ void main() {
     expect(find.text('Настройки'), findsOneWidget);
     expect(find.text('Статистика'), findsOneWidget);
     expect(find.text('Логи'), findsOneWidget);
+    expect(find.text('О приложении'), findsOneWidget);
     expect(find.text('Выход'), findsOneWidget);
     expect(find.text('vdev'), findsOneWidget);
     expect(find.textContaining('Компоненты готовы:'), findsNothing);
     expect(find.byType(CircularProgressIndicator), findsWidgets);
+  });
+
+  testWidgets('compact Windows home and settings render without overflow', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(960, 640);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      MaterialApp(home: DropoHomePage(bridge: MockCoreBridge())),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 2));
+
+    expect(tester.takeException(), isNull);
+    expect(find.textContaining('Нужны компоненты'), findsNothing);
+
+    await tester.tap(find.byIcon(Icons.settings));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 600));
+
+    expect(find.text('Настройки приложения'), findsOneWidget);
+    expect(find.text('Встроенный runtime'), findsOneWidget);
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets(
@@ -165,6 +192,31 @@ void main() {
 
     await tester.pump(const Duration(seconds: 12));
   });
+
+  testWidgets(
+    'bundled Windows runtime never shows the legacy component download strip',
+    (tester) async {
+      tester.view.physicalSize = const Size(1280, 860);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: DropoHomePage(bridge: _BundledRuntimePreparingBridge()),
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 2));
+
+      expect(find.textContaining('Нужны компоненты'), findsNothing);
+      expect(find.textContaining('Нажмите, чтобы скачать'), findsNothing);
+      expect(
+        find.textContaining('Встроенный runtime не прошёл проверку'),
+        findsNothing,
+      );
+    },
+  );
 
   testWidgets('autostart prompt: «Нет, не надо» returns false (decline)', (
     tester,
@@ -322,19 +374,21 @@ void main() {
   test('DepsStatus preserves Defender degraded-mode diagnostics', () {
     final status = DepsStatus.fromJson(const {
       'managed': true,
+      'bundled': true,
       'ready': true,
       'degraded': true,
       'required': 'abc123',
       'installed': 'abc123',
       'sizeMB': 65,
-      'blockedComponents': ['winws2.exe'],
-      'warning': 'Defender blocked zapret2',
+      'blockedComponents': ['legacy-helper.exe'],
+      'warning': 'Runtime component unavailable',
     });
 
+    expect(status.bundled, isTrue);
     expect(status.ready, isTrue);
     expect(status.degraded, isTrue);
-    expect(status.blockedComponents, ['winws2.exe']);
-    expect(status.warning, 'Defender blocked zapret2');
+    expect(status.blockedComponents, ['legacy-helper.exe']);
+    expect(status.warning, 'Runtime component unavailable');
   });
 
   test('UpdateInfo rejects incomplete bridge responses', () {
@@ -376,6 +430,40 @@ class _UpdateAvailableBridge extends MockCoreBridge {
       'fileSize': 123456,
       'platform': 'windows',
       'selfUpdate': true,
+    });
+  }
+}
+
+class _BundledRuntimePreparingBridge extends MockCoreBridge {
+  @override
+  Future<CoreStatus> status() async {
+    return CoreStatus.fromJson(const {
+      'success': true,
+      'connected': false,
+      'running': false,
+      'connecting': false,
+      'hasError': false,
+      'configExists': true,
+      'singboxExists': false,
+      'networkMode': 'auto',
+      'networkModeLabel': 'Авто',
+      'networkModeDescription': 'Подготовка встроенного runtime.',
+      'dependencies': {
+        'managed': true,
+        'bundled': true,
+        'ready': false,
+        'degraded': false,
+        'required': 'runtime-test',
+        'installed': '',
+        'sizeMB': 86,
+        'warning':
+            'Встроенный runtime не прошёл проверку целостности; переустановите приложение из официального пакета',
+      },
+      'version': {
+        'version': '3.0.13',
+        'fullVersion': '3.0.13-test',
+        'singboxVersion': '1.13.14',
+      },
     });
   }
 }

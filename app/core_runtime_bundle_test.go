@@ -62,6 +62,40 @@ func TestInstallBundledRuntimeVerifiesAndRepairsDestination(t *testing.T) {
 	}
 }
 
+func TestBundledDependenciesStatusNeverLooksLikeExternalDownload(t *testing.T) {
+	const version = "runtime-status"
+	source, manifestSHA := createRuntimeBundleFixture(t, version, map[string][]byte{
+		"bin/sing-box.exe": []byte("sing-box"),
+	})
+	destination := t.TempDir()
+	if err := installBundledRuntime(source, destination, version, manifestSHA); err != nil {
+		t.Fatalf("install bundled runtime: %v", err)
+	}
+
+	previousVersion := trustedRuntimeVersion
+	previousManifestSHA := trustedRuntimeManifestSHA256
+	trustedRuntimeVersion = version
+	trustedRuntimeManifestSHA256 = manifestSHA
+	t.Cleanup(func() {
+		trustedRuntimeVersion = previousVersion
+		trustedRuntimeManifestSHA256 = previousManifestSHA
+	})
+
+	app := &App{basePath: source, runtimePath: destination}
+	status := app.DependenciesStatus()
+	if !status.Managed || !status.Bundled || !status.Ready {
+		t.Fatalf("installed bundled runtime status = %+v", status)
+	}
+
+	if err := os.Remove(filepath.Join(destination, "bin", "sing-box.exe")); err != nil {
+		t.Fatal(err)
+	}
+	status = app.DependenciesStatus()
+	if !status.Managed || !status.Bundled || status.Ready || status.Warning == "" {
+		t.Fatalf("damaged bundled runtime status = %+v", status)
+	}
+}
+
 func TestBundledRuntimeRejectsManifestTamperingAndTraversal(t *testing.T) {
 	source, manifestSHA := createRuntimeBundleFixture(t, "v1", map[string][]byte{
 		"bin/tool.exe": []byte("tool"),
