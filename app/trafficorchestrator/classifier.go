@@ -268,6 +268,10 @@ func normalizeProcessName(value string) string {
 	if value == "" {
 		return ""
 	}
+	// Flow evidence on Windows contains backslash-delimited executable paths.
+	// Keep classification deterministic when the same plan/tests are evaluated
+	// on Linux or macOS, where filepath.Base only recognizes '/'.
+	value = strings.ReplaceAll(value, `\`, "/")
 	return strings.ToLower(filepath.Base(value))
 }
 

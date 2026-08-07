@@ -3,6 +3,8 @@
 package trafficorchestrator
 
 import (
+	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -58,6 +60,12 @@ func TestWinDivertCaptureFilterCompilesWithBundledRuntime(t *testing.T) {
 	dllPath, err := filepath.Abs(filepath.Join("..", "..", "dependencies", "WinDivert-2.2.2-A", "x64", "WinDivert.dll"))
 	if err != nil {
 		t.Fatal(err)
+	}
+	if _, err := os.Stat(dllPath); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			t.Skip("bundled WinDivert cache is absent; the Windows release gate downloads the pinned runtime and runs this test")
+		}
+		t.Fatalf("stat bundled WinDivert: %v", err)
 	}
 	dll := windows.NewLazyDLL(dllPath)
 	if err := dll.Load(); err != nil {

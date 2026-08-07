@@ -63,6 +63,10 @@ jobs:
         env:
           DROPO_SKIP_WINDOWS_RELEASE_GATE: "1"
         run: .\scripts\build\build.ps1 -Build -AppOnly
+      - name: Compile WinDivert capture filter with pinned runtime
+        shell: powershell
+        working-directory: app
+        run: go test ./trafficorchestrator -run '^TestWinDivertCaptureFilterCompilesWithBundledRuntime$' -count=1
       - name: Verify reproducible Windows rebuild
         shell: powershell
         env:
