@@ -1,5 +1,5 @@
 {
-  "version": "3.0.13",
+  "version": "3.0.14",
   "name": "dropo",
   "productName": "dropo",
   "description": "dropo VPN client with sing-box, WireGuard, and smart routing",

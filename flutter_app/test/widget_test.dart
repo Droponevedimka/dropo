@@ -460,8 +460,8 @@ class _BundledRuntimePreparingBridge extends MockCoreBridge {
             'Встроенный runtime не прошёл проверку целостности; переустановите приложение из официального пакета',
       },
       'version': {
-        'version': '3.0.13',
-        'fullVersion': '3.0.13-test',
+        'version': '3.0.14',
+        'fullVersion': '3.0.14-test',
         'singboxVersion': '1.13.14',
       },
     });

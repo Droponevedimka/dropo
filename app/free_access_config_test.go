@@ -392,6 +392,21 @@ func TestFilterActiveFreeAccessOutboundsUsesDirectWhenDeepWindowsAvailable(t *te
 	}
 }
 
+func TestSteamAndCS2DirectRulesPrecedeBlockedCatalog(t *testing.T) {
+	rules := buildDirectServiceRules()
+	if len(rules) < 2 {
+		t.Fatalf("direct rules = %#v", rules)
+	}
+	domainRule, ok := rules[0].(map[string]interface{})
+	if !ok || domainRule["outbound"] != "direct" || !containsStringValue(interfaceStringSlice(domainRule["domain_suffix"]), "steam.com") || !containsStringValue(interfaceStringSlice(domainRule["domain_suffix"]), "steamcommunity.com") {
+		t.Fatalf("Steam direct domain rule = %#v", rules[0])
+	}
+	processRule := rules[len(rules)-1].(map[string]interface{})
+	if processRule["outbound"] != "direct" || !containsStringValue(interfaceStringSlice(processRule["process_name"]), "steam.exe") || !containsStringValue(interfaceStringSlice(processRule["process_name"]), "cs2.exe") {
+		t.Fatalf("Steam/CS2 direct process rule = %#v", processRule)
+	}
+}
+
 func TestApplyRouteProbeSelectionsPrefersServiceGroupsWithoutDroppingFallbacks(t *testing.T) {
 	config := map[string]interface{}{
 		"outbounds": []interface{}{

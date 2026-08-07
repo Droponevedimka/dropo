@@ -53,7 +53,7 @@ func (a *App) SelectTrafficStrategy(input TrafficStrategyUtilityRequest) map[str
 	if err != nil {
 		return map[string]interface{}{"success": false, "error": err.Error(), "fallback": "direct-or-vpn"}
 	}
-	candidates, err := selectCandidateStrategies(input.CandidateIDs)
+	candidates, err := selectCandidateStrategies(service.Tag, input.CandidateIDs)
 	if err != nil {
 		return map[string]interface{}{"success": false, "error": err.Error(), "fallback": "direct-or-vpn"}
 	}
@@ -100,12 +100,31 @@ func (a *App) SelectTrafficStrategy(input TrafficStrategyUtilityRequest) map[str
 			break
 		}
 	}
-	a.cacheServiceMethod(service.Tag, methodTag, "native-multi-target-selector")
-	a.writeLog(fmt.Sprintf("[StrategySelector] %s: committed %s for all %d target(s)", service.Tag, result.Strategy.ID, len(targets)))
+	awaitingLiveMedia := service.Tag == "discord" && !hasRequiredDiscordMediaTarget(targets)
+	if awaitingLiveMedia {
+		a.removeServiceStrategyCacheEntry(service.Tag)
+		a.cacheWebValidatedServiceMethod(service.Tag, methodTag, "native-multi-target-selector")
+	} else {
+		a.cacheServiceMethod(service.Tag, methodTag, "native-multi-target-selector")
+	}
+	if awaitingLiveMedia {
+		a.writeLog(fmt.Sprintf("[StrategySelector] discord: provisionally selected %s for %d web/TCP target(s); waiting for required live media proof", result.Strategy.ID, len(targets)))
+	} else {
+		a.writeLog(fmt.Sprintf("[StrategySelector] %s: committed %s for all %d target(s)", service.Tag, result.Strategy.ID, len(targets)))
+	}
 	return map[string]interface{}{
 		"success": true, "service": service.Tag, "strategy": result.Strategy.ID,
 		"baseline": result.Baseline, "candidates": result.Candidates,
 	}
+}
+
+func hasRequiredDiscordMediaTarget(targets []traffic.ProbeTarget) bool {
+	for _, target := range targets {
+		if target.Kind == traffic.ProbeDiscordMedia && !target.Optional {
+			return true
+		}
+	}
+	return false
 }
 
 func buildTrafficProbeTargets(input TrafficStrategyUtilityRequest) ([]traffic.ProbeTarget, error) {
@@ -171,10 +190,24 @@ func normalizedProbeID(value, prefix string, index int) string {
 	return value
 }
 
-func selectCandidateStrategies(ids []string) ([]traffic.TrafficStrategy, error) {
+func selectCandidateStrategies(serviceTag string, ids []string) ([]traffic.TrafficStrategy, error) {
 	available := traffic.BuiltinStrategies()
+	allowedIDs := nativeStrategyIDsForService(serviceTag)
+	allowed := make(map[string]struct{}, len(allowedIDs))
+	for _, id := range allowedIDs {
+		allowed[id] = struct{}{}
+	}
 	if len(ids) == 0 {
-		return available, nil
+		selected := make([]traffic.TrafficStrategy, 0, len(allowed))
+		for _, strategy := range available {
+			if _, ok := allowed[strategy.ID]; ok {
+				selected = append(selected, strategy)
+			}
+		}
+		if len(selected) == 0 {
+			return nil, fmt.Errorf("service %q has no native strategy candidates", serviceTag)
+		}
+		return selected, nil
 	}
 	byID := make(map[string]traffic.TrafficStrategy, len(available))
 	for _, strategy := range available {
@@ -184,6 +217,9 @@ func selectCandidateStrategies(ids []string) ([]traffic.TrafficStrategy, error) 
 	seen := map[string]struct{}{}
 	for _, id := range ids {
 		id = strings.TrimSpace(id)
+		if _, ok := allowed[id]; !ok {
+			return nil, fmt.Errorf("native strategy %q is not allowed for service %q", id, serviceTag)
+		}
 		strategy, ok := byID[id]
 		if !ok {
 			return nil, fmt.Errorf("unknown native strategy %q", id)

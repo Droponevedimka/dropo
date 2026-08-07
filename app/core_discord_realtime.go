@@ -30,7 +30,11 @@ const (
 	discordRealtimeMinMediaBytes  = 512
 	discordRealtimeMinMediaPolls  = 3
 	discordRealtimeMinUploadBytes = 64
-	discordRealtimeStallBytes     = 1024
+	// Discord's discovery reply is 74 bytes. Only a larger per-poll inbound
+	// delta is media evidence; discovery/control traffic must not keep a broken
+	// voice route alive or suppress another flow's failure.
+	discordRealtimeMeaningfulInboundBytes = 128
+	discordRealtimeStallBytes             = 1024
 )
 
 type discordRealtimeController struct {
@@ -45,6 +49,7 @@ type discordRealtimeController struct {
 	initialBusy      bool
 	initialReady     bool
 	initialIdle      time.Time
+	localTried       map[string]bool
 	vpnTried         map[string]bool
 	lastSwitch       time.Time
 	lastMediaInbound time.Time
@@ -161,6 +166,7 @@ func newDiscordRealtimeController() *discordRealtimeController {
 	return &discordRealtimeController{
 		profileIndex:    0,
 		attempt:         1,
+		localTried:      make(map[string]bool),
 		learnedPorts:    make(map[int]time.Time),
 		learnedUDPPorts: make(map[int]time.Time),
 		learnedUDPIPs:   make(map[string]time.Time),
@@ -175,6 +181,7 @@ func (c *discordRealtimeController) resetLocked() {
 	c.initialBusy = false
 	c.initialReady = false
 	c.initialIdle = time.Time{}
+	c.localTried = make(map[string]bool)
 	c.vpnTried = make(map[string]bool)
 	c.lastSwitch = time.Time{}
 	c.lastMediaInbound = time.Time{}
@@ -266,7 +273,13 @@ func (a *App) startDiscordRealtimeMonitor() {
 	controller.mu.Unlock()
 
 	hasVPN := a.discordHasVPNFallback()
-	preferVPN := hasVPN && (automatic || method == FreeAccessMethodVPN || !FreeMethodsAllowed(settings))
+	// Automatic mode must prove the native strategy first. A subscription is
+	// fallback, not an unconditional VPN-first route for Discord media. A VPN
+	// route that already passed the live-media gate on this network may be reused
+	// until its bounded fallback TTL expires.
+	cached := a.loadServiceStrategyCache()["discord"]
+	verifiedVPNCache := automatic && cached.MethodTag == FreeAccessMethodVPN && cached.Source == "discord-live-media"
+	preferVPN := hasVPN && (method == FreeAccessMethodVPN || !FreeMethodsAllowed(settings) || verifiedVPNCache)
 	target := "direct"
 	if preferVPN {
 		target = discordVPNGroupTag
@@ -370,6 +383,7 @@ func (a *App) runDiscordRealtimeMonitor(ctx context.Context, controller *discord
 			}
 			for _, action := range actions {
 				if action.healthy {
+					a.commitDiscordRealtimeHealthyStrategy()
 					a.writeLog(fmt.Sprintf("[DiscordRealtime] sustained bidirectional Discord media confirmed (upload=%d, download=%d, inbound_polls=%d); keeping the selected strategy", action.mediaUpload, action.mediaDownload, action.inboundPolls))
 					a.endBusy(discordRealtimeBusyID)
 				}
@@ -533,7 +547,7 @@ func (a *App) logDiscordRealtimeDiagnostic(diagnostic discordRealtimeDiagnostic)
 	if diagnostic.LastInboundAgo > 0 {
 		lastInbound = diagnostic.LastInboundAgo.Round(time.Second).String()
 	}
-	a.writeLog(fmt.Sprintf("[DiscordRealtime][Status] route=%s vpn_node=%s automatic=%v vpn_mode=%v state=%s route_healthy=%v last_media_inbound=%s attempt=%d/%d profile=%s active_flows=%d learned_tcp=%v learned_udp=%v learned_ips=%v realtime_candidates=%v vpn_candidates=%v", realtimeCurrent, vpnCurrent, diagnostic.Automatic, diagnostic.FallbackVPN, state, diagnostic.RouteHealthy, lastInbound, diagnostic.Attempt, discordRealtimeMaxTrials, diagnostic.Profile.Tag, len(diagnostic.Flows), diagnostic.TCPPorts, diagnostic.UDPPorts, diagnostic.UDPIPs, realtimeCandidates, vpnCandidates))
+	a.writeLog(fmt.Sprintf("[DiscordRealtime][Status] route=%s vpn_node=%s automatic=%v vpn_mode=%v state=%s route_healthy=%v last_media_inbound=%s attempt=%d/%d profile=%s active_flows=%d learned_tcp=%v learned_udp=%v learned_ips=%v realtime_candidates=%v vpn_candidates=%v", realtimeCurrent, vpnCurrent, diagnostic.Automatic, diagnostic.FallbackVPN, state, diagnostic.RouteHealthy, lastInbound, diagnostic.Attempt, discordLocalStrategyCount(), diagnostic.Profile.Tag, len(diagnostic.Flows), diagnostic.TCPPorts, diagnostic.UDPPorts, diagnostic.UDPIPs, realtimeCandidates, vpnCandidates))
 	if len(diagnostic.Flows) == 0 {
 		a.writeLog("[DiscordRealtime][Flow] snapshot: no active Discord realtime flows")
 		return
@@ -676,7 +690,7 @@ func (c *discordRealtimeController) observeConnections(connections []clashConnec
 				pendingIncludesHealthyUDP = true
 			}
 		}
-		recentInbound := !c.lastMediaInbound.IsZero() && now.Sub(c.lastMediaInbound) <= discordRealtimeInboundGrace
+		recentInbound := !c.routeHealthyAt.IsZero() && !c.lastMediaInbound.IsZero() && now.Sub(c.lastMediaInbound) <= discordRealtimeInboundGrace
 		establishedSibling := !pendingIncludesHealthyUDP && c.hasEstablishedUDPSiblingLocked(pendingIDs)
 		if recentInbound || establishedSibling {
 			for _, pending := range pendingFailures {
@@ -777,18 +791,20 @@ func (c *discordRealtimeController) observeDiscordFlow(connection clashConnectio
 			flow.MediaUpload += uploadDelta
 		}
 		if downloadDelta > 0 {
-			flow.MediaDownload += downloadDelta
-			flow.InboundPolls++
 			flow.LastInbound = now
-			if network == "udp" {
-				c.lastMediaInbound = now
+			if downloadDelta >= discordRealtimeMeaningfulInboundBytes {
+				flow.MediaDownload += downloadDelta
+				flow.InboundPolls++
+				if flow.FirstInbound.IsZero() {
+					flow.FirstInbound = now
+				}
 			}
-			if flow.FirstInbound.IsZero() {
-				flow.FirstInbound = now
+			if network == "udp" && downloadDelta >= discordRealtimeMeaningfulInboundBytes {
+				c.lastMediaInbound = now
 			}
 		}
 	}
-	if connection.Download > flow.WindowDownload {
+	if connection.Download-flow.Download >= discordRealtimeMeaningfulInboundBytes {
 		flow.WindowStarted = now
 		flow.WindowUpload = connection.Upload
 		flow.WindowDownload = connection.Download
@@ -809,6 +825,9 @@ func (c *discordRealtimeController) observeDiscordFlow(connection clashConnectio
 	sentWithoutReply := connection.Upload - flow.WindowUpload
 	if !flow.FailureReported && network == "udp" && connection.Download == 0 && connection.Upload >= 64 && now.Sub(flow.FirstSeen) >= discordRealtimeDialDeadline {
 		return fmt.Sprintf("UDP %s:%d did not receive the Discord discovery response within %s", flow.DestinationIP, flow.DestinationPort, discordRealtimeDialDeadline), flow.Healthy
+	}
+	if !flow.FailureReported && network == "udp" && !flow.Healthy && connection.Upload >= discordRealtimeMinUploadBytes && now.Sub(flow.FirstSeen) >= discordRealtimeProvenDeadline {
+		return fmt.Sprintf("UDP %s:%d never established sustained Discord media within %s (meaningful download=%d, polls=%d)", flow.DestinationIP, flow.DestinationPort, discordRealtimeProvenDeadline, flow.MediaDownload, flow.InboundPolls), false
 	}
 	// The voice gateway is a mostly-idle WebSocket. Once it has received any
 	// bytes, an outgoing heartbeat without a matching byte delta is normal and
@@ -976,7 +995,126 @@ func (a *App) handleDiscordRealtimeFailure(reason string) {
 	}
 	controller.lastSwitch = time.Now()
 	controller.mu.Unlock()
+	a.removeServiceStrategyCacheEntry("discord")
+	if a.rotateDiscordLocalStrategy(reason) {
+		return
+	}
 	a.activateDiscordRealtimeFallback(reason)
+}
+
+func discordLocalStrategyCount() int {
+	if count := len(nativeStrategyIDsForService("discord")); count > 0 {
+		return count
+	}
+	return 1
+}
+
+func (a *App) rotateDiscordLocalStrategy(reason string) bool {
+	if a == nil || a.trafficEngine == nil || a.discordRealtime == nil {
+		return false
+	}
+	for {
+		plan := a.trafficEngine.CurrentPlan()
+		current := ""
+		candidates := []string(nil)
+		for _, service := range plan.Services {
+			if service.ID == "discord" {
+				candidates = append(candidates, service.CandidateStrategyIDs...)
+				break
+			}
+		}
+		for _, selection := range plan.Selections {
+			if selection.ServiceID == "discord" {
+				current = selection.StrategyID
+				break
+			}
+		}
+		if current == "" || len(candidates) == 0 {
+			return false
+		}
+
+		controller := a.discordRealtime
+		controller.mu.Lock()
+		if controller.localTried == nil {
+			controller.localTried = make(map[string]bool)
+		}
+		controller.localTried[current] = true
+		next := ""
+		for _, candidate := range candidates {
+			if candidate != current && !controller.localTried[candidate] {
+				next = candidate
+				break
+			}
+		}
+		if next == "" {
+			controller.attempt = len(candidates)
+			controller.mu.Unlock()
+			return false
+		}
+		controller.attempt = len(controller.localTried) + 1
+		if controller.attempt > len(candidates) {
+			controller.attempt = len(candidates)
+		}
+		initialBusy := controller.initialBusy
+		controller.resetRouteObservationLocked()
+		controller.mu.Unlock()
+
+		trial := cloneTrafficPlan(plan)
+		trial.Revision++
+		for index := range trial.Selections {
+			if trial.Selections[index].ServiceID == "discord" {
+				trial.Selections[index].StrategyID = next
+				break
+			}
+		}
+		if err := a.trafficEngine.StartPlan(trial); err != nil {
+			a.writeLog(fmt.Sprintf("[DiscordRealtime] cannot activate local strategy %s after %s: %v", next, reason, err))
+			controller.mu.Lock()
+			controller.localTried[next] = true
+			controller.mu.Unlock()
+			continue
+		}
+		if !a.switchServiceRoute("discord", "direct") || a.probeServicesThroughEngine([]string{"discord"})["discord"] {
+			a.writeLog(fmt.Sprintf("[DiscordRealtime] local strategy %s failed the complete Discord web/API precheck", next))
+			controller.mu.Lock()
+			controller.localTried[next] = true
+			controller.mu.Unlock()
+			continue
+		}
+		if initialBusy {
+			a.updateBusy(discordRealtimeBusyID, fmt.Sprintf("Проверяем Discord voice, локальная стратегия %d/%d...", controller.currentAttempt(), len(candidates)))
+		}
+		a.writeLog(fmt.Sprintf("[DiscordRealtime] voice failure (%s); atomically switched the complete Discord policy %s -> %s; web/API passed, waiting for live media proof", reason, current, next))
+		a.closeDiscordRealtimeConnections()
+		return true
+	}
+}
+
+func (a *App) commitDiscordRealtimeHealthyStrategy() {
+	if a == nil || a.discordRealtime == nil {
+		return
+	}
+	if a.discordRealtime.usingVPN() {
+		a.cacheServiceMethod("discord", FreeAccessMethodVPN, "discord-live-media")
+		return
+	}
+	if a.trafficEngine == nil {
+		return
+	}
+	plan := a.trafficEngine.CurrentPlan()
+	selected := ""
+	for _, selection := range plan.Selections {
+		if selection.ServiceID == "discord" {
+			selected = selection.StrategyID
+			break
+		}
+	}
+	for _, method := range rankedMethodsForService("discord") {
+		if method.NativeStrategyID == selected {
+			a.cacheServiceMethod("discord", method.Tag, "discord-live-media")
+			return
+		}
+	}
 }
 
 func (a *App) activateDiscordRealtimeFallback(reason string) {
@@ -991,15 +1129,18 @@ func (a *App) activateDiscordRealtimeFallback(reason string) {
 		controller.resetRouteObservationLocked()
 		initialBusy := controller.initialBusy
 		controller.mu.Unlock()
-		if a.switchOutboundSelector(discordRealtimeGroupTag, discordVPNGroupTag) {
+		serviceSwitched := a.switchServiceRoute("discord", "auto-select")
+		realtimeSwitched := a.switchOutboundSelector(discordRealtimeGroupTag, discordVPNGroupTag)
+		if serviceSwitched && realtimeSwitched {
 			if initialBusy {
 				a.updateBusy(discordRealtimeBusyID, "Локальные методы не подошли, проверяем Discord voice через VPN...")
 			}
-			a.writeLog(fmt.Sprintf("[DiscordRealtime] all %d local attempts failed; switched voice/video/Go Live to VPN: %s", discordRealtimeMaxTrials, reason))
+			a.writeLog(fmt.Sprintf("[DiscordRealtime] all %d local attempts failed; switched the complete Discord policy to VPN: %s", discordLocalStrategyCount(), reason))
 			a.closeDiscordRealtimeConnections()
 			return
 		}
 	}
+	a.switchServiceRoute("discord", "direct")
 	a.switchOutboundSelector(discordRealtimeGroupTag, "direct")
 	controller.mu.Lock()
 	controller.automatic = false
@@ -1009,7 +1150,8 @@ func (a *App) activateDiscordRealtimeFallback(reason string) {
 	controller.initialIdle = time.Time{}
 	controller.mu.Unlock()
 	a.endBusy(discordRealtimeBusyID)
-	a.writeLog(fmt.Sprintf("[DiscordRealtime] all %d local attempts failed and no usable subscription exists; degraded direct fallback selected", discordRealtimeMaxTrials))
+	a.cacheServiceMethod("discord", FreeAccessMethodDirect, "discord-live-media-fallback")
+	a.writeLog(fmt.Sprintf("[DiscordRealtime] all %d local attempts failed and no usable subscription exists; degraded direct fallback selected", discordLocalStrategyCount()))
 }
 
 func (a *App) discordHasVPNFallback() bool {
@@ -1075,6 +1217,7 @@ func (a *App) closeDiscordRealtimeConnections() {
 func (a *App) rotateDiscordVPNSource(reason string) {
 	candidates, current := a.selectorCandidates(discordVPNGroupTag)
 	if len(candidates) == 0 {
+		a.switchServiceRoute("discord", "direct")
 		a.switchOutboundSelector(discordRealtimeGroupTag, "direct")
 		a.finishDiscordRealtimeInitialGate()
 		a.writeLog("[DiscordRealtime] VPN UDP failed and no alternative VPN source exists; switched to direct")
@@ -1098,6 +1241,7 @@ func (a *App) rotateDiscordVPNSource(reason string) {
 	}
 	controller.mu.Unlock()
 	if next == "" || !a.switchOutboundSelector(discordVPNGroupTag, next) {
+		a.switchServiceRoute("discord", "direct")
 		a.switchOutboundSelector(discordRealtimeGroupTag, "direct")
 		controller.mu.Lock()
 		controller.fallbackVPN = false

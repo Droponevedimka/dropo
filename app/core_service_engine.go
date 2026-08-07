@@ -284,7 +284,45 @@ func (a *App) cacheServiceMethod(serviceTag, methodTag, source string) {
 		return
 	}
 	if data, err := json.MarshalIndent(file, "", "  "); err == nil {
-		_ = os.WriteFile(path, data, 0644)
+		_ = atomicWriteFile(path, data, 0644)
+	}
+}
+
+// cacheWebValidatedServiceMethod records ordinary HTTP-validated services.
+// Discord is intentionally excluded: its strategy is only working after the
+// realtime monitor proves sustained bidirectional media on the same policy.
+func (a *App) cacheWebValidatedServiceMethod(serviceTag, methodTag, source string) {
+	if strings.EqualFold(strings.TrimSpace(serviceTag), "discord") {
+		a.writeLog("[FreeAccess] discord web/API precheck passed; waiting for live voice media before caching the strategy")
+		return
+	}
+	a.cacheServiceMethod(serviceTag, methodTag, source)
+}
+
+func (a *App) removeServiceStrategyCacheEntry(serviceTag string) {
+	path := a.serviceStrategyCachePath()
+	serviceTag = strings.TrimSpace(serviceTag)
+	if path == "" || serviceTag == "" {
+		return
+	}
+	a.serviceStrategyCacheMu.Lock()
+	defer a.serviceStrategyCacheMu.Unlock()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	var file serviceStrategyCacheFile
+	if json.Unmarshal(data, &file) != nil || file.Services == nil {
+		return
+	}
+	if _, exists := file.Services[serviceTag]; !exists {
+		return
+	}
+	delete(file.Services, serviceTag)
+	file.UpdatedAt = time.Now()
+	encoded, err := json.MarshalIndent(file, "", "  ")
+	if err == nil {
+		_ = atomicWriteFile(path, encoded, 0644)
 	}
 }
 
@@ -375,7 +413,7 @@ func (a *App) addCommonBlockedSelection(selections map[string]serviceWinwsSelect
 	if a == nil || a.storage == nil || !FreeMethodsAllowed(a.storage.GetAppSettings()) {
 		return "", nil
 	}
-	if _, err := loadBlockedCatalog(a.runtimeBasePath()); err != nil {
+	if _, err := a.loadBlockedCatalogCached(); err != nil {
 		return "", err
 	}
 	if entry, ok := cache[commonBlockedServiceTag]; ok && isFreeAccessFallbackTag(entry.MethodTag) {
@@ -599,7 +637,7 @@ func (a *App) persistCommonBlockedFallback(outboundTag string) bool {
 }
 
 func (a *App) selectCommonBlockedStrategy(busyID string, selections map[string]serviceWinwsSelection) error {
-	catalog, err := loadBlockedCatalog(a.runtimeBasePath())
+	catalog, err := a.loadBlockedCatalogCached()
 	if err != nil {
 		return err
 	}
@@ -849,12 +887,19 @@ func (a *App) firstRunServiceSearch(busyID string, selections map[string]service
 		next := make([]string, 0, len(pending))
 		for _, tag := range pending {
 			if !failing[tag] {
-				a.cacheServiceMethod(tag, selections[tag].Method.Tag, "startup-validation")
+				a.cacheWebValidatedServiceMethod(tag, selections[tag].Method.Tag, "startup-validation")
 				if !a.switchServiceRoute(tag, "direct") {
 					return fmt.Errorf("activate confirmed startup strategy for %s", tag)
 				}
-				a.writeLog(fmt.Sprintf("[FreeAccess] %s: working method = %s", tag, selections[tag].Method.Label))
+				if tag == "discord" {
+					a.writeLog(fmt.Sprintf("[FreeAccess] discord: provisional method = %s; live voice proof is still required", selections[tag].Method.Label))
+				} else {
+					a.writeLog(fmt.Sprintf("[FreeAccess] %s: working method = %s", tag, selections[tag].Method.Label))
+				}
 				continue
+			}
+			if tag == "discord" {
+				a.removeServiceStrategyCacheEntry(tag)
 			}
 			if round+1 < len(ladders[tag]) {
 				next = append(next, tag)
@@ -1083,6 +1128,9 @@ func (a *App) retunePerServiceStrategy(serviceTag, reason string) error {
 	defer a.finishRouteProbeDiscovery()
 
 	a.writeLog(fmt.Sprintf("[FreeAccess] per-service retune started for %s: %s", serviceTag, reason))
+	if serviceTag == "discord" {
+		a.removeServiceStrategyCacheEntry(serviceTag)
+	}
 	if !a.routeStrategyWorkAllowed() {
 		return fmt.Errorf("VPN is stopping")
 	}
@@ -1119,11 +1167,15 @@ func (a *App) retunePerServiceStrategy(serviceTag, reason string) error {
 			return fmt.Errorf("restore %s to transparent engine: %w", serviceTag, err)
 		}
 		if !a.probeServicesThroughEngine([]string{serviceTag})[serviceTag] {
-			a.cacheServiceMethod(serviceTag, selection.Method.Tag, "fallback-recovery")
+			a.cacheWebValidatedServiceMethod(serviceTag, selection.Method.Tag, "fallback-recovery")
 			if !a.switchServiceRoute(serviceTag, "direct") {
 				return fmt.Errorf("restore %s selector to confirmed transparent route", serviceTag)
 			}
-			a.writeLog(fmt.Sprintf("[FreeAccess] %s recovered from fallback with %s", serviceTag, selection.Method.Label))
+			if serviceTag == "discord" {
+				a.writeLog(fmt.Sprintf("[FreeAccess] discord web/API recovered with %s; waiting for live voice proof", selection.Method.Label))
+			} else {
+				a.writeLog(fmt.Sprintf("[FreeAccess] %s recovered from fallback with %s", serviceTag, selection.Method.Label))
+			}
 			return nil
 		}
 	}
@@ -1143,8 +1195,12 @@ func (a *App) retunePerServiceStrategy(serviceTag, reason string) error {
 	method, ok := a.searchServiceStrategy(serviceTag, selections)
 	if ok {
 		selections[serviceTag] = serviceWinwsSelection{ServiceTag: serviceTag, HostlistPath: selections[serviceTag].HostlistPath, Method: method}
-		a.cacheServiceMethod(serviceTag, method.Tag, "retune")
-		a.writeLog(fmt.Sprintf("[FreeAccess] %s retuned to %s", serviceTag, method.Label))
+		a.cacheWebValidatedServiceMethod(serviceTag, method.Tag, "retune")
+		if serviceTag == "discord" {
+			a.writeLog(fmt.Sprintf("[FreeAccess] discord provisionally retuned to %s; waiting for live voice proof", method.Label))
+		} else {
+			a.writeLog(fmt.Sprintf("[FreeAccess] %s retuned to %s", serviceTag, method.Label))
+		}
 	} else {
 		a.applyServiceFreeFallback(serviceTag)
 		delete(selections, serviceTag)

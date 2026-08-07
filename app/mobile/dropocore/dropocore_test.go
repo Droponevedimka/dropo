@@ -188,6 +188,9 @@ func TestAndroidBlockedOnlyRoutesOnlyBlockedServicesThroughVPN(t *testing.T) {
 	if androidContainsAnyDomainSuffix(config, "2ip.io") {
 		t.Fatal("2ip.io must not be part of Android blocked-service rules")
 	}
+	if androidContainsDomainRoute(config, "steam.com", "proxy") || androidContainsDomainRoute(config, "steamcommunity.com", "proxy") {
+		t.Fatal("Steam must keep the blocked-only final direct route on Android")
+	}
 }
 
 func TestAndroidRoutePolicyCanForceBlockedServiceDirect(t *testing.T) {

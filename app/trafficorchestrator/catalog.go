@@ -1,7 +1,7 @@
 package trafficorchestrator
 
 // BuiltinCatalogRevision changes whenever packet semantics or ordering changes.
-const BuiltinCatalogRevision = "dropo-native-windows-1"
+const BuiltinCatalogRevision = "dropo-native-windows-2"
 
 // BuiltinStrategies returns the bounded strategy ladder implemented by the
 // Dropo packet engine. It contains data only: no shell arguments, Lua or
@@ -18,7 +18,7 @@ func BuiltinStrategies() []TrafficStrategy {
 		MaxFlowData: 64 * 1024,
 	}
 	udpDecoy := []PacketAction{{Kind: ActionFake, Payload: "original", Repeats: 2, InvalidSum: true}}
-	return []TrafficStrategy{
+	strategies := []TrafficStrategy{
 		{
 			ID: "native-split-1", Revision: 1, Label: "Segment at byte 1",
 			TCP: []PacketAction{{Kind: ActionSplit, Position: 1}}, UDP: udpDecoy,
@@ -67,4 +67,45 @@ func BuiltinStrategies() []TrafficStrategy {
 			Cost:        StrategyCost{SyntheticPackets: 6, BufferedBytes: 1024, Risk: 42},
 		},
 	}
+	// Discord's active discovery/STUN candidates deliberately differ on UDP.
+	// The old catalog attached the same UDP action to every TCP strategy, so a
+	// "next strategy" was often a no-op for voice. Protocol decoys are generated
+	// in-process from the observed handshake and remain bounded to three packets.
+	strategies = append(strategies,
+		TrafficStrategy{
+			ID: "native-discord-active", Revision: 1, Label: "Discord active protocol decoys",
+			TCP: []PacketAction{
+				{Kind: ActionFake, Payload: "tls_client_hello", SequenceDelta: -10000, Repeats: 4, InvalidSum: true},
+				{Kind: ActionSplit, Position: 2},
+			},
+			UDP:         []PacketAction{{Kind: ActionFake, Payload: "protocol_decoy", Repeats: 3}},
+			Constraints: common,
+			Cost:        StrategyCost{SyntheticPackets: 7, BufferedBytes: 1024, Risk: 16},
+		},
+		TrafficStrategy{
+			ID: "native-discord-invalidsum", Revision: 1, Label: "Discord invalid-checksum protocol decoys",
+			TCP: []PacketAction{
+				{Kind: ActionFake, Payload: "tls_client_hello", SequenceDelta: -10000, Repeats: 4, InvalidSum: true},
+				{Kind: ActionSplit, Position: 2},
+			},
+			UDP:         []PacketAction{{Kind: ActionFake, Payload: "protocol_decoy", Repeats: 3, InvalidSum: true}},
+			Constraints: common,
+			Cost:        StrategyCost{SyntheticPackets: 7, BufferedBytes: 1024, Risk: 24},
+		},
+		TrafficStrategy{
+			ID: "native-discord-low-ttl", Revision: 1, Label: "Discord low-TTL protocol decoys",
+			TCP: []PacketAction{
+				{Kind: ActionTTL, TTL: 3},
+				{Kind: ActionFake, Payload: "tls_client_hello", SequenceDelta: -10000, Repeats: 4},
+				{Kind: ActionSplit, Position: 2},
+			},
+			UDP: []PacketAction{
+				{Kind: ActionTTL, TTL: 3},
+				{Kind: ActionFake, Payload: "protocol_decoy", Repeats: 3},
+			},
+			Constraints: common,
+			Cost:        StrategyCost{SyntheticPackets: 7, BufferedBytes: 1024, Risk: 36},
+		},
+	)
+	return strategies
 }

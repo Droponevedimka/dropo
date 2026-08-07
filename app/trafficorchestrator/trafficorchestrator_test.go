@@ -112,6 +112,44 @@ func TestWorkNetworkWinsBeforeBlockedService(t *testing.T) {
 	}
 }
 
+func TestDirectRuleWinsBeforeBlockedCatalogIP(t *testing.T) {
+	plan := testPlan()
+	plan.DirectRules = []DirectRule{{ID: "steam-direct", DomainSuffixes: []string{"steam.com"}}}
+	classifier, err := NewClassifier(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	classification := classifier.Classify(FlowEvidence{
+		Network: NetworkTCP, Destination: "66.22.200.1", Port: 443, Host: "store.steam.com",
+	})
+	if !classification.Direct || classification.Matched || classification.DirectRuleID != "steam-direct" {
+		t.Fatalf("classification = %+v", classification)
+	}
+}
+
+func TestDirectProcessWinsBeforeBroadBlockedCIDR(t *testing.T) {
+	plan := testPlan()
+	plan.DirectRules = []DirectRule{{ID: "steam-direct", ProcessNames: []string{"steam.exe", "cs2.exe"}}}
+	plan.Services[0].IPCIDRs = []string{"0.0.0.0/0"}
+	classifier, err := NewClassifier(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := classifier.Classify(FlowEvidence{Network: NetworkUDP, Destination: "203.0.113.50", Port: 443, ProcessName: `C:\Games\Steam\cs2.exe`, Fingerprints: []string{"quic"}})
+	if !got.Direct || got.Matched || got.DirectRuleID != "steam-direct" {
+		t.Fatalf("classification = %#v, want explicit process direct", got)
+	}
+}
+
+func TestSelectionMustUseServiceCandidate(t *testing.T) {
+	plan := testPlan()
+	plan.Services[0].CandidateStrategyIDs = []string{"safe"}
+	plan.Selections[0].StrategyID = "strong"
+	if err := ValidatePlan(plan); err == nil {
+		t.Fatal("non-candidate service selection was accepted")
+	}
+}
+
 func TestValidateStrategyRejectsUnboundedActions(t *testing.T) {
 	strategy := testStrategy("bad", 1)
 	strategy.TCP[0].Repeats = 1000
@@ -336,6 +374,57 @@ func TestProcessorDoesNotTransformUnrecognizedEncryptedMedia(t *testing.T) {
 	decision := processor.Process(packet)
 	if decision.Transformed || len(decision.Packets) != 1 {
 		t.Fatalf("opaque media must pass unchanged: %+v", decision)
+	}
+}
+
+func TestDiscordActiveStrategySendsBoundedDiscoveryDecoysBeforeOriginal(t *testing.T) {
+	var active TrafficStrategy
+	for _, strategy := range BuiltinStrategies() {
+		if strategy.ID == "native-discord-active" {
+			active = strategy
+			break
+		}
+	}
+	if active.ID == "" {
+		t.Fatal("Discord active strategy is missing")
+	}
+	plan := TrafficPlan{
+		Revision: 1, CatalogRevision: BuiltinCatalogRevision,
+		Strategies: []TrafficStrategy{active},
+		Services: []ServiceRule{{
+			ID: "discord", DisplayName: "Discord", IPCIDRs: []string{"66.22.192.0/18"},
+			UDPPorts: []int{50000}, Fingerprints: []string{"discord-media"}, CandidateStrategyIDs: []string{active.ID},
+		}},
+		Selections: []ServiceSelection{{ServiceID: "discord", StrategyID: active.ID}},
+	}
+	processor, err := NewProcessor(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	discovery := make([]byte, 74)
+	discovery[1], discovery[3] = 1, 70
+	discovery[4], discovery[5], discovery[6], discovery[7] = 1, 2, 3, 4
+	packet := testIPv4UDPPacket("66.22.200.1", 50000, discovery)
+	decision := processor.Process(packet)
+	if !decision.Transformed || len(decision.Packets) != 4 {
+		t.Fatalf("decision = %#v, want exactly three decoys plus the original", decision)
+	}
+	for index := 0; index < 3; index++ {
+		parsed, parseErr := parsePacket(decision.Packets[index])
+		if parseErr != nil {
+			t.Fatalf("decoy %d is malformed: %v", index, parseErr)
+		}
+		if string(parsed.payload()) == string(discovery) || !isDiscordDiscovery(parsed.payload()) {
+			t.Fatalf("decoy %d is not a distinct valid discovery request", index)
+		}
+		checksummed := append([]byte(nil), decision.Packets[index]...)
+		calculateChecksums(checksummed)
+		if string(checksummed) != string(decision.Packets[index]) {
+			t.Fatalf("decoy %d unexpectedly has an invalid checksum", index)
+		}
+	}
+	if string(decision.Packets[3]) != string(packet) {
+		t.Fatal("the original Discord discovery packet was not preserved last")
 	}
 }
 

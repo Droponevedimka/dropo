@@ -121,6 +121,24 @@ func TestServiceCacheInvalidatesAfterNetworkChange(t *testing.T) {
 	}
 }
 
+func TestDiscordWebPrecheckIsNotCachedAsWorkingVoice(t *testing.T) {
+	app := newServiceEngineTestApp(t)
+	method := rankedMethodsForService("discord")[0]
+	app.cacheWebValidatedServiceMethod("discord", method.Tag, "test-web-only")
+	if _, ok := app.loadServiceStrategyCache()["discord"]; ok {
+		t.Fatal("Discord web-only validation was cached as a working voice strategy")
+	}
+	app.cacheServiceMethod("discord", method.Tag, "discord-live-media")
+	entry, ok := app.loadServiceStrategyCache()["discord"]
+	if !ok || entry.MethodTag != method.Tag || entry.Source != "discord-live-media" {
+		t.Fatalf("live-media strategy was not cached: %#v", entry)
+	}
+	app.removeServiceStrategyCacheEntry("discord")
+	if _, ok := app.loadServiceStrategyCache()["discord"]; ok {
+		t.Fatal("failed voice strategy remained cached after invalidation")
+	}
+}
+
 func TestWindowsUnifiedServiceGroupIsDeterministicSelector(t *testing.T) {
 	group := BuildServiceRouteGroup("bypass-youtube", []string{"direct", "auto-select"})
 	if group["type"] != "selector" || group["default"] != "direct" {

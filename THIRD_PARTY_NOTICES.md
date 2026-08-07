@@ -24,10 +24,15 @@
 | Проект | Что изучается | Статус в release |
 | --- | --- | --- |
 | [bol-van/zapret2](https://github.com/bol-van/zapret2) | Узкая kernel-side фильтрация, классификация STUN/Discord/WireGuard, порядок и ограничения desync-техник | Процесс, Lua, Cygwin, бинарники и исходники не поставляются. Собственная реализация написана на Go с типизированными bounded actions. Upstream MIT license учитывается при любом будущем переносе существенного кода. |
+| [Flowseal/zapret-discord-youtube](https://github.com/Flowseal/zapret-discord-youtube) | Актуальная ALT12-комбинация активных Discord/STUN decoy-пакетов и список прямых исключений Steam | Не поставляется и не вызывается; использована только как проверочная конфигурация для собственной типизированной реализации |
 | [bol-van/zapret](https://github.com/bol-van/zapret) | Исторические описания split/overlap/fake-подходов и blockcheck | Не поставляется и не вызывается |
 | [hufrea/byedpi](https://github.com/hufrea/byedpi) | Сравнение proxy-based обхода с прозрачным packet engine | Не входит в Windows release |
 
-Последняя исследованная ревизия zapret2 на 2026-07-21:
-`e6b22f3868afe92be2a8a922a85ea563eed1aedd`. Обновление upstream само по себе
-не обновляет dropo: сначала выполняются license/security review, перевод идеи в
-типизированную модель, unit/fixture/Windows VM тесты и release audit.
+Последние исследованные ревизии на 2026-08-07:
+
+- zapret2: `032651deeb2117a32c67fdf5cec115d5e52a63dd`;
+- Flowseal zapret-discord-youtube: `61d7596c7ce82b6f320e5c79ff4598856f4ae7d3`.
+
+Обновление upstream само по себе не обновляет dropo: сначала выполняются
+license/security review, перевод идеи в типизированную модель, unit/fixture/
+Windows VM тесты и release audit.

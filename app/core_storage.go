@@ -2086,7 +2086,14 @@ func uniqueStrings(items []string) []string {
 }
 
 func buildDirectServiceRules() []interface{} {
-	rules := make([]interface{}, 0, 2)
+	rules := make([]interface{}, 0, 3)
+	if len(DirectDomainSuffixes) > 0 {
+		rules = append(rules, map[string]interface{}{
+			"domain_suffix": DirectDomainSuffixes,
+			"action":        "route",
+			"outbound":      "direct",
+		})
+	}
 	if len(DirectIPCIDRs) > 0 {
 		rules = append(rules, map[string]interface{}{
 			"ip_cidr":  DirectIPCIDRs,

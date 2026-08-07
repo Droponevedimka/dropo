@@ -83,6 +83,9 @@ func (m *NativeTrafficManager) AvailableStrategies() []TransparentFreeAccessStra
 	builtin := traffic.BuiltinStrategies()
 	result := make([]TransparentFreeAccessStrategy, 0, len(builtin))
 	for _, strategy := range builtin {
+		if strings.HasPrefix(strategy.ID, "native-discord-") {
+			continue
+		}
 		result = append(result, TransparentFreeAccessStrategy{
 			Tag:       strategy.ID,
 			Label:     strategy.Label,
@@ -200,8 +203,10 @@ func (m *NativeTrafficManager) Stop() {
 	}
 }
 
-// StartForProbe temporarily selects one native strategy for every service. The
-// returned closure restores the exact previous immutable plan.
+// StartForProbe temporarily selects one native strategy for each service that
+// explicitly lists it as a candidate. Service-scoped candidates (notably
+// Discord) can never leak into sibling service policies. The returned closure
+// restores the exact previous immutable plan.
 func (m *NativeTrafficManager) StartForProbe(strategy TransparentFreeAccessStrategy) (func(), error) {
 	previous := m.CurrentPlan()
 	if previous.Revision == 0 {
@@ -209,8 +214,19 @@ func (m *NativeTrafficManager) StartForProbe(strategy TransparentFreeAccessStrat
 	}
 	trial := cloneTrafficPlan(previous)
 	trial.Revision++
+	allowedByService := make(map[string]bool, len(trial.Services))
+	for _, service := range trial.Services {
+		allowedByService[service.ID] = containsTrafficStrategyID(service.CandidateStrategyIDs, strategy.Tag)
+	}
+	changed := false
 	for index := range trial.Selections {
-		trial.Selections[index].StrategyID = strategy.Tag
+		if allowedByService[trial.Selections[index].ServiceID] {
+			trial.Selections[index].StrategyID = strategy.Tag
+			changed = true
+		}
+	}
+	if !changed {
+		return nil, fmt.Errorf("strategy %q is not a candidate for any active service", strategy.Tag)
 	}
 	if err := m.StartPlan(trial); err != nil {
 		return nil, err
@@ -223,12 +239,22 @@ func (m *NativeTrafficManager) StartForProbe(strategy TransparentFreeAccessStrat
 	}, nil
 }
 
+func containsTrafficStrategyID(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
 func cloneTrafficPlan(plan traffic.TrafficPlan) traffic.TrafficPlan {
 	copyPlan := plan
 	copyPlan.Strategies = append([]traffic.TrafficStrategy(nil), plan.Strategies...)
 	copyPlan.Services = append([]traffic.ServiceRule(nil), plan.Services...)
 	copyPlan.Selections = append([]traffic.ServiceSelection(nil), plan.Selections...)
 	copyPlan.WorkNetworks = append([]traffic.WorkNetworkRule(nil), plan.WorkNetworks...)
+	copyPlan.DirectRules = append([]traffic.DirectRule(nil), plan.DirectRules...)
 	return copyPlan
 }
 

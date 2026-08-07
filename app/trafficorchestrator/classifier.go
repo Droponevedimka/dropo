@@ -24,12 +24,14 @@ type Classifier struct {
 	revision     uint64
 	rules        []compiledServiceRule
 	workNetworks []compiledWorkNetwork
+	directRules  []compiledWorkNetwork
 }
 
 type compiledWorkNetwork struct {
-	id       string
-	suffixes map[string]struct{}
-	prefixes map[netip.Prefix]struct{}
+	id           string
+	suffixes     map[string]struct{}
+	prefixes     map[netip.Prefix]struct{}
+	processNames map[string]struct{}
 }
 
 // NewClassifier compiles a validated plan into matching structures.
@@ -69,6 +71,18 @@ func NewClassifier(plan TrafficPlan) (*Classifier, error) {
 		}
 		classifier.workNetworks = append(classifier.workNetworks, compiled)
 	}
+	for _, rule := range plan.DirectRules {
+		compiled := compiledWorkNetwork{
+			id: rule.ID, suffixes: stringSet(rule.DomainSuffixes, normalizeHost),
+			prefixes:     make(map[netip.Prefix]struct{}, len(rule.IPCIDRs)),
+			processNames: stringSet(rule.ProcessNames, normalizeProcessName),
+		}
+		for _, cidr := range rule.IPCIDRs {
+			prefix, _ := netip.ParsePrefix(strings.TrimSpace(cidr))
+			compiled.prefixes[prefix.Masked()] = struct{}{}
+		}
+		classifier.directRules = append(classifier.directRules, compiled)
+	}
 	return classifier, nil
 }
 
@@ -97,6 +111,17 @@ func (c *Classifier) Classify(flow FlowEvidence) Classification {
 		}
 		if hasAddress && longestIPPrefixBits(address, network.prefixes) >= 0 {
 			return Classification{WorkNetwork: true, WorkNetworkID: network.id, Evidence: []string{"work-cidr"}}
+		}
+	}
+	for _, rule := range c.directRules {
+		if _, matched := rule.processNames[processName]; matched && processName != "" {
+			return Classification{Direct: true, DirectRuleID: rule.id, Evidence: []string{"direct-process"}}
+		}
+		if _, matched := longestDomainSuffix(host, rule.suffixes); matched {
+			return Classification{Direct: true, DirectRuleID: rule.id, Evidence: []string{"direct-domain"}}
+		}
+		if hasAddress && longestIPPrefixBits(address, rule.prefixes) >= 0 {
+			return Classification{Direct: true, DirectRuleID: rule.id, Evidence: []string{"direct-cidr"}}
 		}
 	}
 

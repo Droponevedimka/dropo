@@ -23,7 +23,7 @@ func writeTestBlockedCatalog(t *testing.T, root string, domains, cidrs string) {
 func TestLoadBlockedCatalogRejectsPrivateAndNamedEntries(t *testing.T) {
 	root := t.TempDir()
 	writeTestBlockedCatalog(t, root,
-		"blocked-a.example\nblocked-b.example\nblocked-c.example\nblocked-d.example\ndiscord.com\ncdn.discord.com\n",
+		"blocked-a.example\nblocked-b.example\nblocked-c.example\nblocked-d.example\ndiscord.com\ncdn.discord.com\nsteam.com\nstore.steampowered.com\n",
 		"8.8.8.0/24\n10.0.0.0/8\n127.0.0.0/8\n",
 	)
 
@@ -36,6 +36,45 @@ func TestLoadBlockedCatalogRejectsPrivateAndNamedEntries(t *testing.T) {
 	}
 	if len(catalog.IPCIDRs) != 1 || catalog.IPCIDRs[0] != "8.8.8.0/24" {
 		t.Fatalf("CIDRs = %v, want only the public test network", catalog.IPCIDRs)
+	}
+}
+
+func TestDirectSteamNamespacesNeverEnterBlockedCatalog(t *testing.T) {
+	root := t.TempDir()
+	writeTestBlockedCatalog(t, root,
+		"blocked-a.example\nblocked-b.example\nblocked-c.example\nblocked-d.example\nsteam.com\nstore.steampowered.com\nsteamcommunity.com\n",
+		"8.8.8.0/24\n",
+	)
+
+	catalog, err := loadBlockedCatalog(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, domain := range catalog.Domains {
+		if domain == "steam.com" || domain == "store.steampowered.com" || domain == "steamcommunity.com" {
+			t.Fatalf("Steam domain leaked into blocked catalog: %s", domain)
+		}
+	}
+}
+
+func TestBlockedCatalogCacheIsImmutableAcrossPlanRevisions(t *testing.T) {
+	root := t.TempDir()
+	writeTestBlockedCatalog(t, root,
+		"blocked-a.example\nblocked-b.example\nblocked-c.example\nblocked-d.example\n",
+		"8.8.8.0/24\n",
+	)
+	app := &App{basePath: root}
+	first, err := app.loadBlockedCatalogCached()
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.Domains[0] = "mutated.example"
+	second, err := app.loadBlockedCatalogCached()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Domains[0] == "mutated.example" {
+		t.Fatal("caller mutation leaked into the cached blocked catalog")
 	}
 }
 

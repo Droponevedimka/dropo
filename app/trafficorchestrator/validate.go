@@ -35,7 +35,7 @@ func ValidatePlan(plan TrafficPlan) error {
 		strategies[strategy.ID] = strategy
 	}
 
-	services := make(map[string]struct{}, len(plan.Services))
+	services := make(map[string]map[string]struct{}, len(plan.Services))
 	for _, service := range plan.Services {
 		if err := validateServiceRule(service, strategies); err != nil {
 			return fmt.Errorf("service %q: %w", service.ID, err)
@@ -43,7 +43,11 @@ func ValidatePlan(plan TrafficPlan) error {
 		if _, exists := services[service.ID]; exists {
 			return fmt.Errorf("duplicate service id %q", service.ID)
 		}
-		services[service.ID] = struct{}{}
+		candidates := make(map[string]struct{}, len(service.CandidateStrategyIDs))
+		for _, candidate := range service.CandidateStrategyIDs {
+			candidates[candidate] = struct{}{}
+		}
+		services[service.ID] = candidates
 	}
 	workNetworks := make(map[string]struct{}, len(plan.WorkNetworks))
 	for _, network := range plan.WorkNetworks {
@@ -55,18 +59,57 @@ func ValidatePlan(plan TrafficPlan) error {
 		}
 		workNetworks[network.ID] = struct{}{}
 	}
+	directRules := make(map[string]struct{}, len(plan.DirectRules))
+	for _, rule := range plan.DirectRules {
+		if err := validateDirectRule(rule); err != nil {
+			return fmt.Errorf("direct rule %q: %w", rule.ID, err)
+		}
+		if _, duplicate := directRules[rule.ID]; duplicate {
+			return fmt.Errorf("duplicate direct rule id %q", rule.ID)
+		}
+		directRules[rule.ID] = struct{}{}
+	}
 	selections := make(map[string]struct{}, len(plan.Selections))
 	for _, selection := range plan.Selections {
-		if _, exists := services[selection.ServiceID]; !exists {
+		candidates, exists := services[selection.ServiceID]
+		if !exists {
 			return fmt.Errorf("selection references unknown service %q", selection.ServiceID)
 		}
 		if _, exists := strategies[selection.StrategyID]; !exists {
 			return fmt.Errorf("selection for %q references unknown strategy %q", selection.ServiceID, selection.StrategyID)
 		}
+		if _, allowed := candidates[selection.StrategyID]; !allowed {
+			return fmt.Errorf("selection for %q uses non-candidate strategy %q", selection.ServiceID, selection.StrategyID)
+		}
 		if _, duplicate := selections[selection.ServiceID]; duplicate {
 			return fmt.Errorf("duplicate selection for service %q", selection.ServiceID)
 		}
 		selections[selection.ServiceID] = struct{}{}
+	}
+	return nil
+}
+
+func validateDirectRule(rule DirectRule) error {
+	if !validIdentifier(rule.ID) {
+		return errors.New("invalid direct rule id")
+	}
+	if len(rule.DomainSuffixes)+len(rule.IPCIDRs)+len(rule.ProcessNames) == 0 {
+		return errors.New("at least one domain suffix, CIDR or process name is required")
+	}
+	for _, suffix := range rule.DomainSuffixes {
+		if normalizeHost(suffix) == "" {
+			return fmt.Errorf("invalid domain suffix %q", suffix)
+		}
+	}
+	for _, cidr := range rule.IPCIDRs {
+		if _, err := netip.ParsePrefix(strings.TrimSpace(cidr)); err != nil {
+			return fmt.Errorf("invalid CIDR %q: %w", cidr, err)
+		}
+	}
+	for _, processName := range rule.ProcessNames {
+		if normalizeProcessName(processName) == "" {
+			return fmt.Errorf("invalid process name %q", processName)
+		}
 	}
 	return nil
 }
@@ -145,6 +188,11 @@ func validateAction(network Network, action PacketAction) error {
 		}
 		if strings.TrimSpace(action.Payload) == "" {
 			return errors.New("fake payload is required")
+		}
+		switch action.Payload {
+		case "original", "tls_client_hello", "quic_initial", "protocol_decoy":
+		default:
+			return fmt.Errorf("unsupported fake payload %q", action.Payload)
 		}
 	case ActionSplit, ActionDisorder:
 		if network != NetworkTCP {

@@ -1,15 +1,15 @@
 {
-  "version": 7,
-  "updated": "2026-06-26",
+  "version": 8,
+  "updated": "2026-08-07",
   "note": "Per-service native DPI-bypass ladders. blockType: 'dpi' uses the local packet engine; 'vpn' uses the ordered VPN-source fallback. Strategy names describe Dropo's typed packet actions; research provenance is kept in THIRD_PARTY_NOTICES.md.",
   "services": {
     "discord": {
-      "source": "Dropo research baseline; refined by client diagnostics",
+      "source": "Dropo live-media diagnostics plus the bounded active Discord UDP decoy pattern reviewed against zapret2 and Flowseal ALT12",
       "blockType": "dpi",
       "methods": [
-        { "tag": "fakedsplit-ts", "label": "Fakedsplit (ts)", "technique": "fakedsplit-ts", "quic": "google" },
-        { "tag": "fake-multisplit-664", "label": "Fake+multisplit 664 ts", "technique": "fake-multisplit", "seqovl": 664, "pos": 1, "repeats": 8, "quic": "google" },
-        { "tag": "multisplit-652-2", "label": "Multisplit 652/2", "technique": "multisplit", "seqovl": 652, "pos": 2, "quic": "google" }
+        { "tag": "discord-active-3", "label": "Discord active decoys x3", "technique": "fake-multisplit", "nativeStrategy": "native-discord-active", "seqovl": 664, "pos": 1, "repeats": 8, "quic": "google" },
+        { "tag": "discord-invalidsum-3", "label": "Discord invalid-checksum decoys x3", "technique": "fake-multisplit", "nativeStrategy": "native-discord-invalidsum", "seqovl": 664, "pos": 1, "repeats": 8, "quic": "google" },
+        { "tag": "discord-low-ttl-3", "label": "Discord low-TTL decoys x3", "technique": "fake-ttl", "nativeStrategy": "native-discord-low-ttl", "ttl": 3, "repeats": 4, "quic": "google" }
       ]
     },
     "youtube": {

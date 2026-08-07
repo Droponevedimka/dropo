@@ -68,6 +68,10 @@ type App struct {
 	transparentReselectionDone  bool
 	serviceStrategyCacheMu      sync.Mutex
 	serviceEngineComposeMu      sync.Mutex
+	blockedCatalogMu            sync.Mutex
+	blockedCatalogPath          string
+	blockedCatalogValue         blockedCatalog
+	blockedCatalogReady         bool
 	discordRealtime             *discordRealtimeController
 	wireGuardCamouflageMu       sync.RWMutex
 	wireGuardCamouflageReady    bool

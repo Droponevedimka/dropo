@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	traffic "dropo/trafficorchestrator"
@@ -32,7 +33,22 @@ func TestBuildTrafficProbeTargetsRejectsUnknownUDPKind(t *testing.T) {
 }
 
 func TestSelectCandidateStrategiesRejectsUnknownID(t *testing.T) {
-	if _, err := selectCandidateStrategies([]string{"shell-command"}); err == nil {
+	if _, err := selectCandidateStrategies("discord", []string{"shell-command"}); err == nil {
 		t.Fatal("expected unknown strategy error")
+	}
+}
+
+func TestSelectCandidateStrategiesAreServiceScoped(t *testing.T) {
+	candidates, err := selectCandidateStrategies("discord", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != len(rankedMethodsForService("discord")) {
+		t.Fatalf("candidate count = %d, ranked methods = %d", len(candidates), len(rankedMethodsForService("discord")))
+	}
+	for _, candidate := range candidates {
+		if !strings.HasPrefix(candidate.ID, "native-discord-") {
+			t.Fatalf("unscoped Discord candidate: %s", candidate.ID)
+		}
 	}
 }

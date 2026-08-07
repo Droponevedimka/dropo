@@ -123,6 +123,16 @@ type WorkNetworkRule struct {
 	IPCIDRs        []string `json:"ipCidrs,omitempty"`
 }
 
+// DirectRule is a high-priority pass-through rule for traffic that must never
+// inherit a broad blocked-catalog strategy. Work networks remain higher
+// priority; both are evaluated before blocked-service classification.
+type DirectRule struct {
+	ID             string   `json:"id"`
+	DomainSuffixes []string `json:"domainSuffixes,omitempty"`
+	IPCIDRs        []string `json:"ipCidrs,omitempty"`
+	ProcessNames   []string `json:"processNames,omitempty"`
+}
+
 // TrafficPlan is an immutable configuration snapshot installed atomically in
 // the packet engine.
 type TrafficPlan struct {
@@ -132,6 +142,7 @@ type TrafficPlan struct {
 	Services        []ServiceRule      `json:"services"`
 	Selections      []ServiceSelection `json:"selections,omitempty"`
 	WorkNetworks    []WorkNetworkRule  `json:"workNetworks,omitempty"`
+	DirectRules     []DirectRule       `json:"directRules,omitempty"`
 }
 
 // FlowEvidence contains observable properties used to classify a flow.
@@ -153,4 +164,6 @@ type Classification struct {
 	Evidence      []string
 	WorkNetwork   bool
 	WorkNetworkID string
+	Direct        bool
+	DirectRuleID  string
 }

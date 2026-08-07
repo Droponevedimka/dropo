@@ -38,11 +38,60 @@ func loadBlockedCatalog(runtimeBasePath string) (blockedCatalog, error) {
 		return blockedCatalog{}, err
 	}
 	domains = excludeNamedServiceDomains(domains)
+	domains = excludeDirectDomains(domains)
 	cidrs = excludeNamedServiceCIDRs(cidrs)
 	if len(domains) < commonBlockedProbeCount {
 		return blockedCatalog{}, fmt.Errorf("blocked domain catalog has only %d usable entries", len(domains))
 	}
 	return blockedCatalog{Domains: domains, IPCIDRs: cidrs}, nil
+}
+
+// loadBlockedCatalogCached avoids reparsing the signed multi-megabyte catalog
+// on every immutable plan revision. Runtime files do not change in place, and
+// callers receive fresh slices so plan assembly cannot mutate the cache.
+func (a *App) loadBlockedCatalogCached() (blockedCatalog, error) {
+	if a == nil {
+		return blockedCatalog{}, fmt.Errorf("app is nil")
+	}
+	path := a.runtimeBasePath()
+	a.blockedCatalogMu.Lock()
+	defer a.blockedCatalogMu.Unlock()
+	if a.blockedCatalogReady && a.blockedCatalogPath == path {
+		return cloneBlockedCatalog(a.blockedCatalogValue), nil
+	}
+	catalog, err := loadBlockedCatalog(path)
+	if err != nil {
+		return blockedCatalog{}, err
+	}
+	a.blockedCatalogPath = path
+	a.blockedCatalogValue = cloneBlockedCatalog(catalog)
+	a.blockedCatalogReady = true
+	return cloneBlockedCatalog(catalog), nil
+}
+
+func cloneBlockedCatalog(catalog blockedCatalog) blockedCatalog {
+	return blockedCatalog{
+		Domains: append([]string(nil), catalog.Domains...),
+		IPCIDRs: append([]string(nil), catalog.IPCIDRs...),
+	}
+}
+
+func excludeDirectDomains(domains []string) []string {
+	result := domains[:0]
+	for _, domain := range domains {
+		direct := false
+		for _, suffix := range DirectDomainSuffixes {
+			suffix = strings.ToLower(strings.TrimSpace(suffix))
+			if suffix != "" && (domain == suffix || strings.HasSuffix(domain, "."+suffix)) {
+				direct = true
+				break
+			}
+		}
+		if !direct {
+			result = append(result, domain)
+		}
+	}
+	return result
 }
 
 func readBlockedCatalogLines(path string, domains bool) ([]string, error) {
@@ -189,6 +238,9 @@ func commonBlockedMethods() []ServiceBypassMethod {
 	strategies := traffic.BuiltinStrategies()
 	methods := make([]ServiceBypassMethod, 0, len(strategies))
 	for _, strategy := range strategies {
+		if strings.HasPrefix(strategy.ID, "native-discord-") {
+			continue
+		}
 		methods = append(methods, ServiceBypassMethod{
 			Tag: strategy.ID, Label: strategy.Label, NativeStrategyID: strategy.ID,
 		})

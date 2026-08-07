@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	traffic "dropo/trafficorchestrator"
 )
 
 // ServiceBypassMethod is one ranked native DPI-bypass technique for a single
@@ -235,16 +237,17 @@ type serviceStrategyDef struct {
 }
 
 type serviceStrategyMethodSpec struct {
-	Tag        string `json:"tag"`
-	Label      string `json:"label"`
-	Technique  string `json:"technique"`
-	Quic       string `json:"quic"`
-	Seqovl     int    `json:"seqovl"`
-	Pos        int    `json:"pos"`
-	Repeats    int    `json:"repeats"`
-	Ttl        int    `json:"ttl"`
-	FakeTLSMod bool   `json:"fakeTlsMod"` // add tls_mod=rnd,dupsid,sni=www.google.com to zapret2 fake()
-	IPIDZero   bool   `json:"ipIdZero"`   // add ip_id=zero to each zapret2 Lua desync call
+	Tag              string `json:"tag"`
+	Label            string `json:"label"`
+	Technique        string `json:"technique"`
+	NativeStrategyID string `json:"nativeStrategy"`
+	Quic             string `json:"quic"`
+	Seqovl           int    `json:"seqovl"`
+	Pos              int    `json:"pos"`
+	Repeats          int    `json:"repeats"`
+	Ttl              int    `json:"ttl"`
+	FakeTLSMod       bool   `json:"fakeTlsMod"` // add tls_mod=rnd,dupsid,sni=www.google.com to zapret2 fake()
+	IPIDZero         bool   `json:"ipIdZero"`   // add ip_id=zero to each zapret2 Lua desync call
 }
 
 var (
@@ -309,6 +312,19 @@ func buildMethodFromSpec(spec serviceStrategyMethodSpec) (ServiceBypassMethod, b
 				method.TCPArgs[i] = arg + ":ip_id=zero"
 			}
 		}
+	}
+	if spec.NativeStrategyID != "" {
+		found := false
+		for _, strategy := range traffic.BuiltinStrategies() {
+			if strategy.ID == spec.NativeStrategyID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return ServiceBypassMethod{}, false
+		}
+		method.NativeStrategyID = spec.NativeStrategyID
 	}
 	return method, true
 }
@@ -384,15 +400,43 @@ func rankedMethodsForService(serviceTag string) []ServiceBypassMethod {
 	if bt := serviceBlockType(serviceTag); bt == "vpn" || bt == "proxy" {
 		return nil
 	}
-	if m, ok := DefaultServiceBypassMethods()[serviceTag]; ok && len(m) > 0 {
-		return m
+	if methods, ok := DefaultServiceBypassMethods()[serviceTag]; ok && len(methods) > 0 {
+		return uniqueNativeMethods(methods)
 	}
 	// Non-DPI services with no configured methods don't fall back to the base
 	// desync ladder; only DPI services do.
 	if serviceBlockType(serviceTag) != "dpi" {
 		return nil
 	}
-	return baseRankedMethods()
+	return uniqueNativeMethods(baseRankedMethods())
+}
+
+// uniqueNativeMethods removes strategy aliases that compile to the exact same
+// native plan. Retrying two historical zapret labels backed by one native
+// strategy cannot change packet behavior and only delays fallback.
+func uniqueNativeMethods(methods []ServiceBypassMethod) []ServiceBypassMethod {
+	result := make([]ServiceBypassMethod, 0, len(methods))
+	seen := make(map[string]struct{}, len(methods))
+	for _, method := range methods {
+		if method.NativeStrategyID == "" {
+			continue
+		}
+		if _, duplicate := seen[method.NativeStrategyID]; duplicate {
+			continue
+		}
+		seen[method.NativeStrategyID] = struct{}{}
+		result = append(result, method)
+	}
+	return result
+}
+
+func nativeStrategyIDsForService(serviceTag string) []string {
+	methods := rankedMethodsForService(serviceTag)
+	result := make([]string, 0, len(methods))
+	for _, method := range methods {
+		result = append(result, method.NativeStrategyID)
+	}
+	return result
 }
 
 // serviceHasFreeBypass reports whether the service has any free desync method to

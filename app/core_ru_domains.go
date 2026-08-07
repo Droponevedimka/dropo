@@ -73,10 +73,23 @@ var RuDomainKeywords = []string{
 	"vkontakte", "mailru", "rambler", "wildberries", "ozon",
 }
 
+// DirectDomainSuffixes are latency-sensitive services that must stay outside
+// the broad bundled blocked catalog in blocked_only mode. Re-filter can contain
+// isolated Steam web domains even though Steam/CS2 itself is not a Dropo
+// blocked service; keeping the whole owned namespace direct prevents a catalog
+// update from applying a DPI strategy to the game or its control plane.
+var DirectDomainSuffixes = []string{
+	"steam.com", "steampowered.com", "steamcommunity.com", "steamstatic.com",
+	"steamcontent.com", "steamserver.net", "steamgames.com", "steam-chat.com",
+	"valvesoftware.com", "valvesoftware.net", "valvecdn.com", "counter-strike.net",
+}
+
 // DirectIPCIDRs are non-blocked service IP ranges that are commonly used
 // without a hostname visible to route rules. Keep this list conservative.
 var DirectIPCIDRs = []string{}
 
 // DirectProcessNames are native apps that should stay outside VPN/free-access
 // in blocked_only mode unless the user explicitly selects an all-traffic mode.
-var DirectProcessNames = []string{}
+var DirectProcessNames = []string{
+	"steam.exe", "steamservice.exe", "steamwebhelper.exe", "cs2.exe",
+}

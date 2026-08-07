@@ -15,7 +15,7 @@ const (
 	// exchange. Keep one stable native discovery/STUN profile and never mutate
 	// opaque RTP. Automatic mode starts direct and uses an ordered VPN-source
 	// fallback only after bidirectional realtime health fails.
-	discordRealtimeMaxTrials = 1
+	discordRealtimeProfileCount = 1
 )
 
 var discordDefaultMediaTCPPorts = []int{2048, 2053, 2083, 2087, 2096, 8443}
@@ -96,8 +96,8 @@ func discordRealtimeProfileAt(index int) (discordRealtimeProfile, bool) {
 
 func validateDiscordRealtimeProfiles() error {
 	profiles := discordRealtimeProfiles()
-	if len(profiles) != discordRealtimeMaxTrials {
-		return fmt.Errorf("Discord realtime profile count = %d, want %d", len(profiles), discordRealtimeMaxTrials)
+	if len(profiles) != discordRealtimeProfileCount {
+		return fmt.Errorf("Discord realtime profile count = %d, want %d", len(profiles), discordRealtimeProfileCount)
 	}
 	seen := make(map[string]struct{}, len(profiles))
 	for _, profile := range profiles {

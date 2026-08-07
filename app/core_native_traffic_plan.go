@@ -12,16 +12,20 @@ import (
 
 func (a *App) buildNativeTrafficPlan(selections map[string]serviceWinwsSelection) (traffic.TrafficPlan, error) {
 	strategies := traffic.BuiltinStrategies()
-	strategyIDs := make([]string, 0, len(strategies))
 	strategySet := make(map[string]struct{}, len(strategies))
 	for _, strategy := range strategies {
-		strategyIDs = append(strategyIDs, strategy.ID)
 		strategySet[strategy.ID] = struct{}{}
 	}
 	plan := traffic.TrafficPlan{
 		Revision:        1,
 		CatalogRevision: traffic.BuiltinCatalogRevision,
 		Strategies:      strategies,
+		DirectRules: []traffic.DirectRule{{
+			ID:             "latency-sensitive-direct",
+			DomainSuffixes: append([]string(nil), DirectDomainSuffixes...),
+			IPCIDRs:        append([]string(nil), DirectIPCIDRs...),
+			ProcessNames:   append([]string(nil), DirectProcessNames...),
+		}},
 	}
 	if a != nil && a.trafficEngine != nil {
 		plan.Revision = a.trafficEngine.CurrentPlan().Revision + 1
@@ -31,7 +35,11 @@ func (a *App) buildNativeTrafficPlan(selections map[string]serviceWinwsSelection
 		if !selected {
 			continue
 		}
-		rule := nativeServiceRule(service, strategyIDs)
+		candidateIDs := nativeStrategyIDsForService(service.Tag)
+		if len(candidateIDs) == 0 {
+			return traffic.TrafficPlan{}, fmt.Errorf("service %s has no native strategy candidates", service.Tag)
+		}
+		rule := nativeServiceRule(service, candidateIDs)
 		if service.Tag == "discord" && a != nil && a.discordRealtime != nil {
 			_, tcpPorts, udpPorts, udpIPs := a.discordRealtime.snapshot()
 			rule.TCPPorts = append(rule.TCPPorts, tcpPorts...)
@@ -60,13 +68,16 @@ func (a *App) buildNativeTrafficPlan(selections map[string]serviceWinwsSelection
 		}
 		strategyID := selection.Method.NativeStrategyID
 		if _, ok := strategySet[strategyID]; !ok {
-			strategyID = strategies[0].ID
+			return traffic.TrafficPlan{}, fmt.Errorf("service %s selected unknown native strategy %q", service.Tag, strategyID)
+		}
+		if !containsStringValue(candidateIDs, strategyID) {
+			return traffic.TrafficPlan{}, fmt.Errorf("service %s selected non-candidate native strategy %q", service.Tag, strategyID)
 		}
 		plan.Services = append(plan.Services, rule)
 		plan.Selections = append(plan.Selections, traffic.ServiceSelection{ServiceID: service.Tag, StrategyID: strategyID})
 	}
 	if selection, selected := selections[commonBlockedServiceTag]; selected {
-		catalog, err := loadBlockedCatalog(a.runtimeBasePath())
+		catalog, err := a.loadBlockedCatalogCached()
 		if err != nil {
 			return traffic.TrafficPlan{}, fmt.Errorf("load common blocked catalog: %w", err)
 		}
@@ -74,18 +85,23 @@ func (a *App) buildNativeTrafficPlan(selections map[string]serviceWinwsSelection
 		if _, ok := strategySet[strategyID]; !ok {
 			return traffic.TrafficPlan{}, fmt.Errorf("unknown common blocked strategy %q", strategyID)
 		}
+		commonMethods := commonBlockedMethods()
+		commonCandidateIDs := make([]string, 0, len(commonMethods))
+		for _, method := range commonMethods {
+			commonCandidateIDs = append(commonCandidateIDs, method.NativeStrategyID)
+		}
 		plan.Services = append(plan.Services, traffic.ServiceRule{
 			ID: commonBlockedServiceTag, DisplayName: "Bundled blocked catalog",
 			DomainSuffixes: catalog.Domains, IPCIDRs: catalog.IPCIDRs,
 			TCPPorts: []int{80, 443}, UDPPorts: []int{443},
-			CandidateStrategyIDs: append([]string(nil), strategyIDs...),
+			CandidateStrategyIDs: commonCandidateIDs,
 			AllowVPNFallback:     true, AllowDirectFallback: true,
 		})
 		plan.Selections = append(plan.Selections, traffic.ServiceSelection{
 			ServiceID: commonBlockedServiceTag, StrategyID: strategyID,
 		})
 	}
-	a.addNativeWireGuardRules(&plan, strategyIDs)
+	a.addNativeWireGuardRules(&plan)
 	if err := traffic.ValidatePlan(plan); err != nil {
 		return traffic.TrafficPlan{}, err
 	}
@@ -125,7 +141,7 @@ func nativeServiceRule(service FreeAccessService, strategyIDs []string) traffic.
 	return rule
 }
 
-func (a *App) addNativeWireGuardRules(plan *traffic.TrafficPlan, strategyIDs []string) {
+func (a *App) addNativeWireGuardRules(plan *traffic.TrafficPlan) {
 	if a == nil || a.storage == nil || plan == nil {
 		return
 	}
@@ -172,7 +188,7 @@ func (a *App) addNativeWireGuardRules(plan *traffic.TrafficPlan, strategyIDs []s
 			ID: id, DisplayName: "WireGuard handshake " + endpoint.Tag,
 			IPCIDRs: cidrs, UDPPorts: []int{endpoint.Port},
 			Fingerprints:         []string{"wireguard-initiation", "wireguard-cookie"},
-			CandidateStrategyIDs: append([]string(nil), strategyIDs...),
+			CandidateStrategyIDs: []string{"native-decoy-split"},
 			AllowDirectFallback:  true,
 		})
 		plan.Selections = append(plan.Selections, traffic.ServiceSelection{ServiceID: id, StrategyID: "native-decoy-split"})

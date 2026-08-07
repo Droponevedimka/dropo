@@ -12,8 +12,8 @@ func TestDiscordRealtimeProfilesAreBoundedAndUnique(t *testing.T) {
 		t.Fatal(err)
 	}
 	profiles := discordRealtimeProfiles()
-	if got := len(profiles); got != discordRealtimeMaxTrials {
-		t.Fatalf("profile count = %d, want %d", got, discordRealtimeMaxTrials)
+	if got := len(profiles); got != discordRealtimeProfileCount {
+		t.Fatalf("profile count = %d, want %d", got, discordRealtimeProfileCount)
 	}
 	if !strings.Contains(strings.Join(profiles[0].VoiceUDPArgs, " "), "repeats=2") {
 		t.Fatalf("first profile must be the upstream Discord UDP baseline: %#v", profiles[0])
@@ -190,6 +190,39 @@ func TestDiscordRealtimeDoesNotTreatDiscoveryResponseAsMedia(t *testing.T) {
 	}
 	if controller.initialReady {
 		t.Fatal("a single discovery response was accepted as healthy media")
+	}
+	if actions := controller.observeConnections([]clashConnection{connection}, started.Add(discordRealtimeProvenDeadline)); len(actions) != 1 || actions[0].failure == "" {
+		t.Fatalf("discovery-only flow was not rejected after the proof deadline: %#v", actions)
+	}
+}
+
+func TestDiscordRealtimeControlDeltasDoNotSuppressVoiceFailure(t *testing.T) {
+	controller := newDiscordRealtimeController()
+	controller.running = true
+	started := time.Unix(2060, 0)
+	failed := clashConnection{
+		ID:       "voice-no-reply",
+		Metadata: clashConnectionMetadata{Network: "udp", DestinationIP: "203.0.113.20", DestinationPort: "19310", Process: "Discord.exe"},
+		Upload:   74,
+	}
+	control := clashConnection{
+		ID:       "voice-control-only",
+		Metadata: clashConnectionMetadata{Network: "udp", DestinationIP: "203.0.113.21", DestinationPort: "19311", Process: "Discord.exe"},
+		Upload:   74, Download: 74,
+	}
+	controller.observeConnections([]clashConnection{failed, control}, started)
+	for i := 1; i < 5; i++ {
+		control.Upload += 50
+		control.Download += 50
+		if actions := controller.observeConnections([]clashConnection{failed, control}, started.Add(time.Duration(i)*2*time.Second)); len(actions) != 0 {
+			t.Fatalf("unexpected early action at poll %d: %#v", i, actions)
+		}
+	}
+	control.Upload += 50
+	control.Download += 50
+	actions := controller.observeConnections([]clashConnection{failed, control}, started.Add(discordRealtimeDialDeadline))
+	if len(actions) != 1 || actions[0].failure == "" || actions[0].suppressed != "" {
+		t.Fatalf("control-only inbound traffic suppressed a real failure: %#v", actions)
 	}
 }
 

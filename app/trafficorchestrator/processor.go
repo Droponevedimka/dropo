@@ -92,7 +92,8 @@ func sameClassificationPlan(previous, next TrafficPlan) bool {
 	return previous.CatalogRevision == next.CatalogRevision &&
 		reflect.DeepEqual(previous.Strategies, next.Strategies) &&
 		reflect.DeepEqual(previous.Services, next.Services) &&
-		reflect.DeepEqual(previous.WorkNetworks, next.WorkNetworks)
+		reflect.DeepEqual(previous.WorkNetworks, next.WorkNetworks) &&
+		reflect.DeepEqual(previous.DirectRules, next.DirectRules)
 }
 
 func validateSelectionRevision(plan TrafficPlan, current *processorSnapshot) error {
@@ -102,14 +103,24 @@ func validateSelectionRevision(plan TrafficPlan, current *processorSnapshot) err
 			return fmt.Errorf("selection for %q references unknown strategy %q", selection.ServiceID, selection.StrategyID)
 		}
 		serviceExists := false
+		strategyAllowed := false
 		for _, service := range plan.Services {
 			if service.ID == selection.ServiceID {
 				serviceExists = true
+				for _, candidate := range service.CandidateStrategyIDs {
+					if candidate == selection.StrategyID {
+						strategyAllowed = true
+						break
+					}
+				}
 				break
 			}
 		}
 		if !serviceExists {
 			return fmt.Errorf("selection references unknown service %q", selection.ServiceID)
+		}
+		if !strategyAllowed {
+			return fmt.Errorf("selection for %q uses non-candidate strategy %q", selection.ServiceID, selection.StrategyID)
 		}
 		if _, duplicate := seen[selection.ServiceID]; duplicate {
 			return fmt.Errorf("duplicate selection for service %q", selection.ServiceID)
@@ -138,6 +149,9 @@ func (p *Processor) Process(packet []byte) PacketDecision {
 	classification := snapshot.classifier.Classify(parsed.flowEvidence())
 	if classification.WorkNetwork {
 		return passDecision(snapshot.plan.Revision, packet, "reserved for work network "+classification.WorkNetworkID)
+	}
+	if classification.Direct {
+		return passDecision(snapshot.plan.Revision, packet, "reserved for direct rule "+classification.DirectRuleID)
 	}
 	if !classification.Matched {
 		return passDecision(snapshot.plan.Revision, packet, "service not classified")
@@ -317,6 +331,8 @@ func makeFakePacket(parsed parsedPacket, action PacketAction, ttl int) ([]byte, 
 		payload = fakeQUICInitial(parsed.payload())
 	case "original":
 		payload = append([]byte(nil), parsed.payload()...)
+	case "protocol_decoy":
+		payload = protocolDecoyPayload(parsed)
 	default:
 		return nil, fmt.Errorf("unknown fake payload %q", action.Payload)
 	}
@@ -336,6 +352,36 @@ func makeFakePacket(parsed parsedPacket, action PacketAction, ttl int) ([]byte, 
 		corruptTransportChecksum(packet, updated)
 	}
 	return packet, nil
+}
+
+func protocolDecoyPayload(parsed parsedPacket) []byte {
+	original := parsed.payload()
+	evidence := parsed.flowEvidence()
+	for _, fingerprint := range evidence.Fingerprints {
+		switch fingerprint {
+		case "discord-media":
+			decoy := append([]byte(nil), original...)
+			if len(decoy) >= 8 {
+				// Discord bytes 4..7 are the request SSRC. A deterministic
+				// alternate value makes the decoy distinct while any response is
+				// safely ignored by the client waiting for the real request SSRC.
+				decoy[4] ^= 0xd3
+				decoy[5] ^= 0x15
+				decoy[6] ^= 0xc0
+				decoy[7] ^= 0xde
+			}
+			return decoy
+		case "stun":
+			decoy := append([]byte(nil), original...)
+			for index := 8; index < len(decoy) && index < 20; index++ {
+				decoy[index] ^= byte(0xa5 + index)
+			}
+			return decoy
+		case "quic-initial":
+			return fakeQUICInitial(original)
+		}
+	}
+	return append([]byte(nil), original...)
 }
 
 func splitTCPPacket(parsed parsedPacket, position int) ([][]byte, error) {
