@@ -901,7 +901,7 @@ func discordProcessLabel(metadata clashConnectionMetadata) string {
 	if process := strings.TrimSpace(metadata.Process); process != "" {
 		return process
 	}
-	return filepath.Base(strings.TrimSpace(metadata.ProcessPath))
+	return discordProcessBase(metadata.ProcessPath)
 }
 
 func isDiscordConnection(connection clashConnection) bool {
@@ -913,13 +913,21 @@ func isDiscordConnection(connection clashConnection) bool {
 }
 
 func isDiscordProcess(process, processPath string) bool {
-	for _, value := range []string{process, filepath.Base(processPath)} {
+	for _, value := range []string{process, discordProcessBase(processPath)} {
 		switch strings.ToLower(strings.TrimSpace(value)) {
 		case "discord.exe", "discordcanary.exe", "discordptb.exe":
 			return true
 		}
 	}
 	return false
+}
+
+func discordProcessBase(processPath string) string {
+	// Clash reports the client OS path, while CI and diagnostic parsers may run
+	// on another OS. Normalize Windows separators before filepath.Base so
+	// C:\...\Discord.exe remains recognizable on Linux too.
+	normalized := strings.ReplaceAll(strings.TrimSpace(processPath), `\`, "/")
+	return filepath.Base(normalized)
 }
 
 func isPublicDiscordAppConnection(connection clashConnection, network string, port int) bool {

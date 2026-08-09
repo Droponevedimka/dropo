@@ -251,6 +251,16 @@ func TestDiscordRealtimeIgnoresDiscordWebQUIC(t *testing.T) {
 	}
 }
 
+func TestDiscordProcessRecognizesWindowsPathOnEveryHost(t *testing.T) {
+	path := `C:\Users\client\AppData\Local\Discord\Discord.exe`
+	if !isDiscordProcess("", path) {
+		t.Fatalf("Windows Discord process path %q was not recognized", path)
+	}
+	if got := discordProcessLabel(clashConnectionMetadata{ProcessPath: path}); got != "Discord.exe" {
+		t.Fatalf("Discord process label = %q, want Discord.exe", got)
+	}
+}
+
 func TestDiscordRealtimeMissingVoiceFlowAdvancesAutomaticStrategy(t *testing.T) {
 	controller := newDiscordRealtimeController()
 	controller.running = true
