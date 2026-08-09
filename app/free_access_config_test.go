@@ -165,6 +165,85 @@ func TestBuildConfigWithoutSubscriptionUsesFreeAccess(t *testing.T) {
 	}
 }
 
+func TestDefaultBlockedOnlyWithSubscriptionRoutesOnlyBlockedTraffic(t *testing.T) {
+	basePath := t.TempDir()
+	storage := NewStorage(basePath)
+	if err := storage.Init(); err != nil {
+		t.Fatalf("storage init failed: %v", err)
+	}
+	settings := storage.GetAppSettings()
+	if settings.RoutingMode != RoutingModeBlockedOnly || !FreeMethodsAllowed(settings) {
+		t.Fatalf("default settings = %+v, want blocked_only with free methods enabled", settings)
+	}
+
+	filtersPath := filepath.Join(basePath, "bin", FiltersFolder)
+	if err := os.MkdirAll(filtersPath, 0755); err != nil {
+		t.Fatalf("create filters dir failed: %v", err)
+	}
+	for _, filter := range FilterFiles {
+		if err := os.WriteFile(filepath.Join(filtersPath, filter.Name), []byte("test"), 0644); err != nil {
+			t.Fatalf("write filter %s failed: %v", filter.Name, err)
+		}
+	}
+
+	builder := NewConfigBuilderForStorage(storage)
+	link := "vless://11111111-1111-1111-1111-111111111111@198.51.100.10:443?security=tls&type=ws&path=%2Fws&host=example.com&sni=example.com&fp=chrome#default-contract"
+	if err := builder.BuildConfig(link); err != nil {
+		t.Fatalf("BuildConfig with subscription failed: %v", err)
+	}
+	profile, err := storage.GetActiveProfile()
+	if err != nil {
+		t.Fatalf("get active profile failed: %v", err)
+	}
+	config, err := storage.GetProfileConfig(profile.ID)
+	if err != nil {
+		t.Fatalf("get profile config failed: %v", err)
+	}
+
+	if final := getRouteFinal(config); final != "direct" {
+		t.Fatalf("blocked_only route final = %q, want direct", final)
+	}
+	if final := getDNSFinal(config); final != "dns-direct" {
+		t.Fatalf("blocked_only DNS final = %q, want dns-direct", final)
+	}
+	if outbound := routeRuleSetOutbound(config, "refilter-domains"); outbound != SmartBypassGroupTag {
+		t.Fatalf("blocked catalog outbound = %q, want %q", outbound, SmartBypassGroupTag)
+	}
+
+	smartCandidates := getOutboundCandidates(config, SmartBypassGroupTag)
+	youtubeCandidates := getOutboundCandidates(config, ServiceBypassGroupTag("youtube"))
+	if runtime.GOOS == "windows" {
+		want := []string{"direct", "auto-select"}
+		if !sameStringSet(smartCandidates, want) || len(smartCandidates) != len(want) || smartCandidates[0] != "direct" {
+			t.Fatalf("blocked catalog candidates = %v, want free strategy then VPN fallback", smartCandidates)
+		}
+		if !sameStringSet(youtubeCandidates, want) || len(youtubeCandidates) != len(want) || youtubeCandidates[0] != "direct" {
+			t.Fatalf("YouTube candidates = %v, want free strategy then VPN fallback", youtubeCandidates)
+		}
+	} else if len(smartCandidates) == 0 || smartCandidates[len(smartCandidates)-1] != "auto-select" {
+		t.Fatalf("blocked catalog candidates = %v, want free methods then VPN fallback", smartCandidates)
+	}
+	if openAICandidates := getOutboundCandidates(config, ServiceBypassGroupTag("openai")); len(openAICandidates) != 1 || openAICandidates[0] != "auto-select" {
+		t.Fatalf("OpenAI candidates = %v, want subscription because no free strategy exists", openAICandidates)
+	}
+
+	blockedOutbounds := []string{SmartBypassGroupTag, "auto-select", "proxy"}
+	for _, service := range DefaultFreeAccessServices {
+		blockedOutbounds = append(blockedOutbounds, ServiceBypassGroupTag(service.Tag))
+	}
+	for _, outbound := range blockedOutbounds {
+		if containsDomainSuffixRouteRule(config, "2ip.io", outbound) {
+			t.Fatalf("ordinary unblocked domain unexpectedly routed through %s", outbound)
+		}
+	}
+	if !containsDomainSuffixRouteRule(config, "steam.com", "direct") || !containsProcessDirectRule(config, "cs2.exe") {
+		t.Fatal("Steam/CS2 must remain direct under the default blocked_only policy")
+	}
+	if !routeRuleBeforeRuleSet(config, "domain_suffix", "steam.com", "refilter-domains") {
+		t.Fatal("Steam direct rule must precede the blocked-catalog catch-all")
+	}
+}
+
 func TestDiscordRealtimeAlwaysUsesRuntimeSelector(t *testing.T) {
 	rules := (&ConfigBuilderForStorage{}).buildFreeAccessRules(GlobalAppSettings{}, true)
 	rule := findProcessNetworkRule(rules, "Discord.exe", "udp")
@@ -1917,6 +1996,15 @@ func TestExceptRussiaUsesBypassForForeignTraffic(t *testing.T) {
 	if !containsDomainSuffixRouteRule(config, "yandex.ru", "direct") {
 		t.Fatal("except_russia must keep yandex.ru direct")
 	}
+	if !containsDomainSuffixRouteRule(config, "steam.com", "direct") {
+		t.Fatal("except_russia must keep Steam domains outside the foreign-traffic VPN catch-all")
+	}
+	if !containsProcessDirectRule(config, "cs2.exe") || !containsProcessDirectRule(config, "steam.exe") {
+		t.Fatal("except_russia must keep Steam and CS2 process traffic direct")
+	}
+	if !containsDNSDomainSuffixServer(config, "steam.com", "dns-direct") {
+		t.Fatal("except_russia must resolve Steam domains directly")
+	}
 	if containsDomainSuffixRouteRule(config, "telegram.org", "direct") {
 		t.Fatal("telegram.org must not be routed direct in except_russia")
 	}
@@ -2453,6 +2541,20 @@ func containsRouteRuleSet(config map[string]interface{}, ruleSetTag string) bool
 		}
 	}
 	return false
+}
+
+func routeRuleSetOutbound(config map[string]interface{}, ruleSetTag string) string {
+	route, _ := config["route"].(map[string]interface{})
+	rules, _ := route["rules"].([]interface{})
+	for _, raw := range rules {
+		rule, ok := raw.(map[string]interface{})
+		if !ok || !containsStringValue(interfaceStringSlice(rule["rule_set"]), ruleSetTag) {
+			continue
+		}
+		outbound, _ := rule["outbound"].(string)
+		return outbound
+	}
+	return ""
 }
 
 func getDNSFinal(config map[string]interface{}) string {

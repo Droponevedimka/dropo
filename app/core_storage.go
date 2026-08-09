@@ -2282,6 +2282,13 @@ func (b *ConfigBuilderForStorage) applyDNSRouting(template map[string]interface{
 		"action":        "route",
 		"server":        "dns-local",
 	})
+	if b.routingMode != RoutingModeAllTraffic && len(DirectDomainSuffixes) > 0 {
+		rules = append(rules, map[string]interface{}{
+			"domain_suffix": DirectDomainSuffixes,
+			"action":        "route",
+			"server":        "dns-direct",
+		})
+	}
 
 	ruDNSServer := b.ruDNSServer(settings)
 	if len(RuDomainSuffixes) > 0 {
@@ -2648,7 +2655,13 @@ func (b *ConfigBuilderForStorage) applyExceptRussiaMode(route map[string]interfa
 	}
 	newRules = insertAfterFirstRouteRule(newRules, buildFreeAccessProcessRules(settings))
 
-	// 7. Named free-access services get their own latency-tested bypass route
+	// 7. Steam and other latency-sensitive direct services must stay outside the
+	// foreign-traffic VPN catch-all. The previous implementation installed
+	// these rules only in blocked_only mode, so except_russia sent even a
+	// positively identified cs2.exe UDP flow through VLESS.
+	newRules = append(newRules, buildDirectServiceRules()...)
+
+	// 8. Named free-access services get their own latency-tested bypass route
 	// before falling through to the shared foreign-traffic bypass/VPN group.
 	newRules = append(newRules, buildBlockedServiceProtocolFallbackRules()...)
 	newRules = append(newRules, b.buildFreeAccessRules(settings, hasVPNProxy)...)

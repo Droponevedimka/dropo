@@ -213,6 +213,30 @@ func TestAndroidRoutePolicyCanForceBlockedServiceDirect(t *testing.T) {
 	}
 }
 
+func TestAndroidExceptRussiaKeepsSteamOutsideVPN(t *testing.T) {
+	mu.Lock()
+	current = defaultState()
+	current.BasePath = t.TempDir()
+	current.Subscription = "vless://00000000-0000-0000-0000-000000000000@example.com:443?security=tls&type=ws&path=%2Fws&host=example.com&sni=example.com&fp=chrome#demo"
+	current.Config.RoutingMode = "except_russia"
+	mu.Unlock()
+
+	config := buildConfigForTest(t)
+	route := config["route"].(map[string]interface{})
+	if route["final"] != "proxy" {
+		t.Fatalf("except_russia final = %v, want proxy", route["final"])
+	}
+	if !androidContainsDomainRoute(config, "steam.com", "direct") {
+		t.Fatal("except_russia must keep Steam domains direct on Android")
+	}
+	if !androidContainsPackageRoute(config, "com.valvesoftware.android.steam.community", "direct") {
+		t.Fatal("except_russia must keep the Steam package direct on Android")
+	}
+	if !androidContainsDNSServer(config, "steam.com", "dns-direct") {
+		t.Fatal("except_russia must resolve Steam domains directly on Android")
+	}
+}
+
 func TestAndroidDiscordRoutePolicyAlsoControlsIPOnlyVoiceTraffic(t *testing.T) {
 	mu.Lock()
 	current = defaultState()
@@ -374,6 +398,11 @@ func TestAndroidRuntimeSettingsValidateAndInvalidateCache(t *testing.T) {
 	dns := config["dns"].(map[string]interface{})
 	if dns["final"] != "dns-remote" {
 		t.Fatalf("all_traffic dns final = %v, want dns-remote", dns["final"])
+	}
+	if androidContainsDomainRoute(config, "steam.com", "direct") ||
+		androidContainsPackageRoute(config, "com.valvesoftware.android.steam.community", "direct") ||
+		androidContainsDNSServer(config, "steam.com", "dns-direct") {
+		t.Fatal("all_traffic must not carve Steam out of the explicit full-VPN policy")
 	}
 }
 

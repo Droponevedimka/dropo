@@ -29,6 +29,7 @@ const (
 	serviceHostlistDirName         = "service-hostlists"
 	serviceStrategyFallbackTTL     = 30 * time.Minute
 	serviceStrategyProbeRetryDelay = 300 * time.Millisecond
+	maxAutomaticServiceStrategies  = 3
 )
 
 type serviceStrategyCacheFile struct {
@@ -929,7 +930,7 @@ func (a *App) firstRunServiceSearch(busyID string, selections map[string]service
 // advances through the remaining ranked methods.
 func startupServiceSearchLadder(serviceTag string, current ServiceBypassMethod) []ServiceBypassMethod {
 	ranked := rankedMethodsForService(serviceTag)
-	ladder := make([]ServiceBypassMethod, 0, len(ranked))
+	ladder := make([]ServiceBypassMethod, 0, min(len(ranked), maxAutomaticServiceStrategies))
 	if strings.TrimSpace(current.Tag) != "" {
 		ladder = append(ladder, current)
 	}
@@ -938,6 +939,30 @@ func startupServiceSearchLadder(serviceTag string, current ServiceBypassMethod) 
 			continue
 		}
 		ladder = append(ladder, method)
+		if len(ladder) == maxAutomaticServiceStrategies {
+			break
+		}
+	}
+	return ladder
+}
+
+func recoveryServiceSearchLadder(serviceTag, currentTag string) []ServiceBypassMethod {
+	ranked := rankedMethodsForService(serviceTag)
+	limit := maxAutomaticServiceStrategies
+	if strings.TrimSpace(currentTag) != "" {
+		// The current strategy is confirmed immediately before recovery search,
+		// so it consumes one of the bounded automatic attempts.
+		limit--
+	}
+	ladder := make([]ServiceBypassMethod, 0, min(len(ranked), limit))
+	for _, method := range ranked {
+		if method.Tag == currentTag {
+			continue
+		}
+		ladder = append(ladder, method)
+		if len(ladder) == limit {
+			break
+		}
 	}
 	return ladder
 }
@@ -967,10 +992,7 @@ func (a *App) logServiceStrategySummary(context string) {
 // Other services keep their current method, so they are only briefly disrupted.
 func (a *App) searchServiceStrategy(serviceTag string, selections map[string]serviceWinwsSelection) (ServiceBypassMethod, bool) {
 	current := selections[serviceTag]
-	for _, method := range rankedMethodsForService(serviceTag) {
-		if method.Tag == current.Method.Tag {
-			continue
-		}
+	for _, method := range recoveryServiceSearchLadder(serviceTag, current.Method.Tag) {
 		if !a.routeStrategyWorkAllowed() {
 			break
 		}

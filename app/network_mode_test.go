@@ -345,9 +345,12 @@ func TestDeepWindowsStartFallsBackToTunWhenProxyRedirectorRequired(t *testing.T)
 			map[string]interface{}{"type": "selector", "tag": discordVPNGroupTag, "outbounds": []interface{}{"vless-fast"}, "default": "vless-fast"},
 			map[string]interface{}{"type": "selector", "tag": discordRealtimeGroupTag, "outbounds": []interface{}{"direct", discordVPNGroupTag}, "default": "direct"},
 		},
-		"route": map[string]interface{}{"rules": []interface{}{
+		"route": map[string]interface{}{"rules": append(buildDirectServiceRules(),
 			map[string]interface{}{"process_name": []interface{}{"Discord.exe"}, "network": "udp", "outbound": discordRealtimeGroupTag},
 			map[string]interface{}{"domain_suffix": []interface{}{"discord.media"}, "network": "tcp", "outbound": discordRealtimeGroupTag},
+		)},
+		"dns": map[string]interface{}{"rules": []interface{}{
+			map[string]interface{}{"domain_suffix": DirectDomainSuffixes, "server": "dns-direct"},
 		}},
 	}
 	app, _ := newDeepWindowsTestApp(t, config)

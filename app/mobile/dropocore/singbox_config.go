@@ -424,6 +424,13 @@ func buildAndroidDNSRules(routingMode string, hideRuTraffic bool, routePolicies 
 			"server":        "dns-local",
 		},
 	}
+	if routingMode != "all_traffic" {
+		rules = append(rules, map[string]interface{}{
+			"domain_suffix": androidLatencySensitiveDirectDomainSuffixes(),
+			"action":        "route",
+			"server":        "dns-direct",
+		})
+	}
 	if directDomains := androidServiceDomainSuffixesByPolicy(routePolicies, androidRoutePolicyDirect); len(directDomains) > 0 {
 		rules = append(rules, map[string]interface{}{
 			"domain_suffix": directDomains,
@@ -461,6 +468,20 @@ func buildAndroidRouteRules(routingMode string, hideRuTraffic bool, ruOutbound s
 			"action":        "route",
 			"outbound":      "direct",
 		},
+	}
+	if routingMode != "all_traffic" {
+		rules = append(rules,
+			map[string]interface{}{
+				"domain_suffix": androidLatencySensitiveDirectDomainSuffixes(),
+				"action":        "route",
+				"outbound":      "direct",
+			},
+			map[string]interface{}{
+				"package_name": androidLatencySensitiveDirectPackageNames(),
+				"action":       "route",
+				"outbound":     "direct",
+			},
+		)
 	}
 	if directDomains := androidServiceDomainSuffixesByPolicy(routePolicies, androidRoutePolicyDirect); len(directDomains) > 0 {
 		rules = append(rules, map[string]interface{}{
@@ -554,10 +575,25 @@ func androidDirectDomainKeywords() []string {
 	return []string{"yandex", "sber", "tinkoff", "gosuslugi", "rutube", "vkontakte", "mailru", "rambler", "wildberries", "ozon"}
 }
 
+func androidLatencySensitiveDirectDomainSuffixes() []string {
+	return []string{
+		"steam.com", "steampowered.com", "steamcommunity.com", "steamstatic.com",
+		"steamcontent.com", "steamserver.net", "steamgames.com", "steam-chat.com",
+		"valvesoftware.com", "valvesoftware.net", "valvecdn.com", "counter-strike.net",
+	}
+}
+
+func androidLatencySensitiveDirectPackageNames() []string {
+	return []string{
+		"com.valvesoftware.android.steam.community",
+		"com.valvesoftware.steamlink",
+	}
+}
+
 func androidConfigSignature(subscription string, enableLogging bool, logLevel, routingMode string, hideRuTraffic bool, ruProxyAddress string, routePolicies map[string]string) string {
 	parts := []string{
 		"singbox=" + androidSingBoxVersion,
-		"schema=android-package-routing-v4",
+		"schema=android-package-routing-v5",
 		"subscription=" + strings.TrimSpace(subscription),
 		"log=" + effectiveAndroidLogLevel(enableLogging, logLevel),
 		"routing=" + normalizeAndroidRoutingMode(routingMode),

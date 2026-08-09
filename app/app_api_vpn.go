@@ -843,6 +843,7 @@ func (a *App) ensureActiveConfigForStart() error {
 	if err != nil || profile == nil {
 		return fmt.Errorf("active profile not found")
 	}
+	appSettings := a.storage.GetAppSettings()
 
 	// The subscription URL can live on the profile OR in global settings
 	// (SetVPNSubscription / GenerateAndSaveConfig write settings.SubscriptionURL).
@@ -865,6 +866,10 @@ func (a *App) ensureActiveConfigForStart() error {
 		needsRebuild := subscriptionURL != "" && !profile.XrayConfigReady
 		if !needsRebuild && !configSupportsDiscordRealtimeRouting(config) {
 			a.writeLog("Active config predates Discord realtime routing; rebuilding before start")
+			needsRebuild = true
+		}
+		if !needsRebuild && configNeedsLatencySensitiveDirectMigration(config, appSettings.RoutingMode) {
+			a.writeLog("Active config predates latency-sensitive Steam/CS2 direct routing; rebuilding before start")
 			needsRebuild = true
 		}
 		if !needsRebuild && subscriptionURL != "" {
@@ -936,6 +941,55 @@ func configSupportsDiscordRealtimeRouting(config map[string]interface{}) bool {
 		}
 	}
 	return hasUDPProcessRule && hasVoiceGatewayRule
+}
+
+func configNeedsLatencySensitiveDirectMigration(config map[string]interface{}, routingMode RoutingMode) bool {
+	if routingMode == RoutingModeAllTraffic {
+		return false
+	}
+
+	route, ok := config["route"].(map[string]interface{})
+	if !ok {
+		return true
+	}
+	rules, ok := route["rules"].([]interface{})
+	if !ok {
+		return true
+	}
+	hasDirectDomains := false
+	hasDirectProcesses := false
+	for _, raw := range rules {
+		rule, ok := raw.(map[string]interface{})
+		if !ok || rule["outbound"] != "direct" {
+			continue
+		}
+		if stringSliceContainsAll(interfaceStringSlice(rule["domain_suffix"]), DirectDomainSuffixes) {
+			hasDirectDomains = true
+		}
+		if stringSliceContainsAll(interfaceStringSlice(rule["process_name"]), DirectProcessNames) {
+			hasDirectProcesses = true
+		}
+	}
+
+	dns, ok := config["dns"].(map[string]interface{})
+	if !ok {
+		return true
+	}
+	dnsRules, ok := dns["rules"].([]interface{})
+	if !ok {
+		return true
+	}
+	hasDirectDNS := false
+	for _, raw := range dnsRules {
+		rule, ok := raw.(map[string]interface{})
+		if ok && rule["server"] == "dns-direct" &&
+			stringSliceContainsAll(interfaceStringSlice(rule["domain_suffix"]), DirectDomainSuffixes) {
+			hasDirectDNS = true
+			break
+		}
+	}
+
+	return !hasDirectDomains || !hasDirectProcesses || !hasDirectDNS
 }
 
 func configOutboundByTag(outbounds []interface{}, tag string) map[string]interface{} {
@@ -1348,6 +1402,15 @@ func stringSliceContains(items []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+func stringSliceContainsAll(items, required []string) bool {
+	for _, needle := range required {
+		if !stringSliceContains(items, needle) {
+			return false
+		}
+	}
+	return true
 }
 
 func (a *App) logActiveConfigDiagnostics(configPath string) {

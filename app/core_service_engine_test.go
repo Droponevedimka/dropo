@@ -222,6 +222,27 @@ func TestStartupServiceSearchLadderKeepsWorkingCachedMethodFirst(t *testing.T) {
 	}
 }
 
+func TestAutomaticServiceStrategySearchIsBoundedBeforeVPNFallback(t *testing.T) {
+	ranked := rankedMethodsForService("youtube")
+	if len(ranked) != maxAutomaticServiceStrategies {
+		t.Fatalf("YouTube native ladder = %d strategies, want %d after deduplication", len(ranked), maxAutomaticServiceStrategies)
+	}
+	cached := ServiceBypassMethod{Tag: "cached-legacy-method", Label: "Cached legacy method"}
+	startup := startupServiceSearchLadder("youtube", cached)
+	if len(startup) != maxAutomaticServiceStrategies || startup[0].Tag != cached.Tag {
+		t.Fatalf("startup ladder = %#v, want cached first and %d total strategies", startup, maxAutomaticServiceStrategies)
+	}
+	recovery := recoveryServiceSearchLadder("youtube", cached.Tag)
+	if len(recovery) != maxAutomaticServiceStrategies-1 {
+		t.Fatalf("recovery ladder = %#v, want %d alternatives after failed current strategy", recovery, maxAutomaticServiceStrategies-1)
+	}
+	for _, method := range recovery {
+		if method.Tag == cached.Tag {
+			t.Fatalf("recovery ladder repeats failed current strategy %q", cached.Tag)
+		}
+	}
+}
+
 func TestConfigSupportsDiscordRealtimeRoutingMigrationGate(t *testing.T) {
 	stale := map[string]interface{}{
 		"outbounds": []interface{}{
@@ -277,6 +298,33 @@ func TestGeneratedFreeAccessConfigPassesDiscordRealtimeMigrationGate(t *testing.
 	}
 	if !configSupportsDiscordRealtimeRouting(template) {
 		t.Fatal("config produced by the current builder did not pass the Discord realtime migration gate")
+	}
+}
+
+func TestLatencySensitiveDirectRoutingMigrationGate(t *testing.T) {
+	stale := map[string]interface{}{
+		"route": map[string]interface{}{"rules": []interface{}{}},
+		"dns":   map[string]interface{}{"rules": []interface{}{}},
+	}
+	if !configNeedsLatencySensitiveDirectMigration(stale, RoutingModeExceptRussia) {
+		t.Fatal("except_russia config without Steam/CS2 direct rules did not request migration")
+	}
+	if configNeedsLatencySensitiveDirectMigration(stale, RoutingModeAllTraffic) {
+		t.Fatal("all_traffic must not require a Steam/CS2 direct carve-out")
+	}
+
+	current := map[string]interface{}{
+		"route": map[string]interface{}{"rules": buildDirectServiceRules()},
+		"dns": map[string]interface{}{"rules": []interface{}{
+			map[string]interface{}{
+				"domain_suffix": DirectDomainSuffixes,
+				"action":        "route",
+				"server":        "dns-direct",
+			},
+		}},
+	}
+	if configNeedsLatencySensitiveDirectMigration(current, RoutingModeExceptRussia) {
+		t.Fatal("current Steam/CS2 direct rules unexpectedly requested migration")
 	}
 }
 
