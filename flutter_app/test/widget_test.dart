@@ -308,14 +308,18 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
 
-    await tester.pumpWidget(
-      MaterialApp(home: DropoHomePage(bridge: _UpdateAvailableBridge())),
-    );
+    final bridge = _UpdateAvailableBridge();
+    await tester.pumpWidget(MaterialApp(home: DropoHomePage(bridge: bridge)));
     await tester.pump();
     await tester.pump(const Duration(seconds: 2));
 
     expect(find.text('Доступна версия 3.0.4'), findsWidgets);
     expect(find.text('Обновить и перезапустить'), findsOneWidget);
+    expect(
+      bridge.updateCheckCalls,
+      1,
+      reason: 'each successful Windows initialization must check once',
+    );
 
     await tester.pump(const Duration(seconds: 12));
   });
@@ -542,8 +546,11 @@ void main() {
 }
 
 class _UpdateAvailableBridge extends MockCoreBridge {
+  int updateCheckCalls = 0;
+
   @override
   Future<UpdateInfo> checkUpdates() async {
+    updateCheckCalls += 1;
     return UpdateInfo.fromJson(const {
       'success': true,
       'hasUpdate': true,
@@ -552,8 +559,8 @@ class _UpdateAvailableBridge extends MockCoreBridge {
       'releaseURL':
           'https://github.com/Droponevedimka/dropo/releases/tag/v3.0.4',
       'downloadURL':
-          'https://downloads.droponevedimka.ru/releases/download/v3.0.4/dropo-Windows-x64.exe',
-      'assetName': 'dropo-Windows-x64.exe',
+          'https://github.com/Droponevedimka/dropo/releases/download/v3.0.4/dropo-Windows-Setup-x64.exe',
+      'assetName': 'dropo-Windows-Setup-x64.exe',
       'fileSize': 123456,
       'platform': 'windows',
       'selfUpdate': true,

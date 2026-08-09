@@ -39,6 +39,10 @@ const (
 	GitHubRepo = "Droponevedimka/dropo"
 	// ReleaseMirrorBaseURL is the Russian release gateway used for update metadata and assets.
 	ReleaseMirrorBaseURL = "https://downloads.droponevedimka.ru"
+	// GitHubAPIBaseURL is the canonical metadata fallback. The Russian gateway
+	// can intentionally expose only mirrored assets, so Windows must consult
+	// GitHub when Setup/Portable files are absent there.
+	GitHubAPIBaseURL = "https://api.github.com"
 	// GitHubURL is the full GitHub URL.
 	GitHubURL = "https://github.com/" + GitHubRepo
 	// TelegramUpdatesURL is the public channel/group for release news.

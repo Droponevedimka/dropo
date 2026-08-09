@@ -54,60 +54,90 @@ type UpdateInfo struct {
 	DistributionMode string `json:"distribution_mode"`
 }
 
-// CheckForUpdates checks the trusted Russian release mirror for updates.
+// CheckForUpdates checks the trusted Russian release gateway and the canonical
+// GitHub metadata. The gateway can expose only assets that it mirrors (Android
+// today), while Windows Setup/Portable remain available on GitHub.
 func CheckForUpdates() (*UpdateInfo, error) {
+	return checkForUpdatesWithClient(
+		HTTPClient,
+		[]string{ReleaseMirrorBaseURL, GitHubAPIBaseURL},
+		GitHubRepo,
+		Version,
+		runtime.GOOS,
+		runtime.GOARCH,
+		currentDistributionMode(),
+	)
+}
+
+func checkForUpdatesWithClient(client *http.Client, metadataBaseURLs []string, repo, appVersion, goos, goarch, distributionMode string) (*UpdateInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), DefaultHTTPTimeout)
 	defer cancel()
 
-	// Releases may be platform-specific. The repository-wide /latest endpoint
-	// can point to an Android-only release and must not make Windows offer an
-	// update without a Windows asset, so inspect recent releases instead.
-	url := fmt.Sprintf("%s/repos/%s/releases?per_page=100", ReleaseMirrorBaseURL, GitHubRepo)
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Accept", "application/vnd.github.v3+json")
-	req.Header.Set("User-Agent", AppName+"/"+Version)
-
-	resp, err := HTTPClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to check for updates: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == 404 {
-		// No releases
-		return &UpdateInfo{
-			Available:      false,
-			CurrentVersion: Version,
-		}, nil
-	}
-
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("release mirror returned status %d", resp.StatusCode)
-	}
-
-	body, err := readHTTPBodyLimited(resp.Body, maxReleaseMetadataBytes)
-	if err != nil {
-		return nil, err
-	}
-
-	var releases []GitHubRelease
-	if err := json.Unmarshal(body, &releases); err != nil {
-		return nil, fmt.Errorf("failed to parse release mirror response: %w", err)
-	}
-	currentVersion := strings.TrimPrefix(strings.TrimSpace(Version), "v")
+	currentVersion := strings.TrimPrefix(strings.TrimSpace(appVersion), "v")
 	if !isReleaseVersion(currentVersion) {
 		return nil, fmt.Errorf("current application version is unavailable")
 	}
-	distributionMode := currentDistributionMode()
-	release, asset, found := selectLatestInstallableReleaseForMode(releases, runtime.GOOS, runtime.GOARCH, distributionMode)
+
+	// Releases may be platform-specific. Do not use /latest: it can point to an
+	// Android-only release. Merge recent releases from every successful source
+	// and choose the newest installable asset for this exact distribution mode.
+	type sourceResult struct {
+		releases []GitHubRelease
+		err      error
+	}
+	results := make(chan sourceResult, len(metadataBaseURLs))
+	for _, baseURL := range metadataBaseURLs {
+		baseURL := baseURL
+		go func() {
+			sourceReleases, err := fetchUpdateReleases(ctx, client, baseURL, repo, appVersion)
+			results <- sourceResult{releases: sourceReleases, err: err}
+		}()
+	}
+
+	var releases []GitHubRelease
+	var sourceErrors []string
+	successfulSources := 0
+	remaining := len(metadataBaseURLs)
+collectResults:
+	for remaining > 0 {
+		select {
+		case result := <-results:
+			remaining--
+			if result.err != nil {
+				sourceErrors = append(sourceErrors, result.err.Error())
+				continue
+			}
+			successfulSources++
+			releases = append(releases, result.releases...)
+			if candidate, _, found := selectLatestInstallableReleaseForMode(releases, goos, goarch, distributionMode); found {
+				candidateVersion := strings.TrimPrefix(strings.TrimSpace(candidate.TagName), "v")
+				if compareVersions(candidateVersion, currentVersion) > 0 {
+					// A confirmed compatible update is enough to notify the user.
+					// Do not make startup wait for a blocked secondary endpoint.
+					cancel()
+					break collectResults
+				}
+			}
+		case <-ctx.Done():
+			sourceErrors = append(sourceErrors, ctx.Err().Error())
+			break collectResults
+		}
+	}
+	if successfulSources == 0 {
+		return nil, fmt.Errorf("failed to check for updates: %s", strings.Join(sourceErrors, "; "))
+	}
+
+	release, asset, found := selectLatestInstallableReleaseForMode(releases, goos, goarch, distributionMode)
 	if !found {
+		// A partial gateway response (for example Android-only) is not proof that
+		// Windows is current when the canonical source failed. Return an error so
+		// startup performs its bounded retry instead of caching a false negative.
+		if len(sourceErrors) > 0 {
+			return nil, fmt.Errorf("no compatible update metadata: %s", strings.Join(sourceErrors, "; "))
+		}
 		return &UpdateInfo{
 			Available:      false,
-			CurrentVersion: strings.TrimPrefix(Version, "v"),
+			CurrentVersion: currentVersion,
 		}, nil
 	}
 
@@ -115,6 +145,9 @@ func CheckForUpdates() (*UpdateInfo, error) {
 	latestVersion := strings.TrimPrefix(release.TagName, "v")
 	// Compare versions
 	available := compareVersions(latestVersion, currentVersion) > 0
+	if !available && len(sourceErrors) > 0 {
+		return nil, fmt.Errorf("canonical update metadata is incomplete: %s", strings.Join(sourceErrors, "; "))
+	}
 
 	return &UpdateInfo{
 		Available:        available,
@@ -129,6 +162,37 @@ func CheckForUpdates() (*UpdateInfo, error) {
 		SHA256:           normalizeGitHubSHA256(asset.Digest),
 		DistributionMode: distributionMode,
 	}, nil
+}
+
+func fetchUpdateReleases(ctx context.Context, client *http.Client, baseURL, repo, appVersion string) ([]GitHubRelease, error) {
+	endpoint := fmt.Sprintf("%s/repos/%s/releases?per_page=100", strings.TrimRight(baseURL, "/"), repo)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", baseURL, err)
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("User-Agent", AppName+"/"+appVersion)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", baseURL, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("%s returned status %d", baseURL, resp.StatusCode)
+	}
+	body, err := readHTTPBodyLimited(resp.Body, maxReleaseMetadataBytes)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", baseURL, err)
+	}
+	var releases []GitHubRelease
+	if err := json.Unmarshal(body, &releases); err != nil {
+		return nil, fmt.Errorf("%s returned invalid release metadata: %w", baseURL, err)
+	}
+	return releases, nil
 }
 
 func selectLatestInstallableRelease(releases []GitHubRelease, goos, goarch string) (GitHubRelease, GitHubReleaseAsset, bool) {
@@ -292,7 +356,7 @@ func containsAll(value string, parts ...string) bool {
 }
 
 func validateTrustedUpdateURL(rawURL string) error {
-	if err := validateTrustedUpdateHost(rawURL); err != nil {
+	if err := validateTrustedAppUpdateSourceURL(rawURL); err != nil {
 		return err
 	}
 	if ext := updateFileExtension(rawURL); ext != ".exe" && ext != ".zip" {
@@ -313,6 +377,37 @@ func validateTrustedUpdateHost(rawURL string) error {
 	if host != "downloads.droponevedimka.ru" {
 		return fmt.Errorf("untrusted update host: %s", host)
 	}
+	return nil
+}
+
+func validateTrustedAppUpdateSourceURL(rawURL string) error {
+	if err := validateTrustedUpdateHost(rawURL); err == nil {
+		return nil
+	}
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || parsed.Scheme != "https" || strings.ToLower(parsed.Hostname()) != "github.com" {
+		return fmt.Errorf("untrusted application update URL")
+	}
+	expectedPrefix := "/" + strings.ToLower(GitHubRepo) + "/releases/download/"
+	if !strings.HasPrefix(strings.ToLower(parsed.EscapedPath()), expectedPrefix) {
+		return fmt.Errorf("untrusted GitHub update repository")
+	}
+	return nil
+}
+
+func validateTrustedUpdateRedirect(initialURL, finalURL string) error {
+	if err := validateTrustedAppUpdateSourceURL(initialURL); err != nil {
+		return err
+	}
+	if err := validateTrustedAppUpdateSourceURL(finalURL); err == nil {
+		return nil
+	}
+	parsed, err := url.Parse(strings.TrimSpace(finalURL))
+	if err != nil || parsed.Scheme != "https" || strings.ToLower(parsed.Hostname()) != "release-assets.githubusercontent.com" {
+		return fmt.Errorf("untrusted update redirect")
+	}
+	// GitHub release asset URLs redirect to this signed CDN. The downloaded
+	// bytes remain pinned by both the API-reported size and SHA-256 digest.
 	return nil
 }
 
@@ -346,7 +441,7 @@ func DownloadUpdate(downloadURL string, expectedSize int64, expectedSHA256 strin
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("download returned status %d", resp.StatusCode)
 	}
-	if err := validateTrustedUpdateHost(resp.Request.URL.String()); err != nil {
+	if err := validateTrustedUpdateRedirect(downloadURL, resp.Request.URL.String()); err != nil {
 		return "", fmt.Errorf("update redirect rejected: %w", err)
 	}
 	if resp.ContentLength > 0 && resp.ContentLength != expectedSize {
