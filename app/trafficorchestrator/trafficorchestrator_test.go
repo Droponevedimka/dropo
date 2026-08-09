@@ -428,6 +428,39 @@ func TestDiscordActiveStrategySendsBoundedDiscoveryDecoysBeforeOriginal(t *testi
 	}
 }
 
+func TestDiscordNewOfficialMediaRangeUsesSignatureClassification(t *testing.T) {
+	var active TrafficStrategy
+	for _, strategy := range BuiltinStrategies() {
+		if strategy.ID == "native-discord-active" {
+			active = strategy
+			break
+		}
+	}
+	if active.ID == "" {
+		t.Fatal("Discord active strategy is missing")
+	}
+	plan := TrafficPlan{
+		Revision: 1, CatalogRevision: "discord-19294-regression", Strategies: []TrafficStrategy{active},
+		Services: []ServiceRule{{
+			ID: "discord", DisplayName: "Discord", ProcessNames: []string{"Discord.exe"},
+			Fingerprints: []string{"discord-media", "stun"}, CandidateStrategyIDs: []string{active.ID},
+		}},
+		Selections: []ServiceSelection{{ServiceID: "discord", StrategyID: active.ID}},
+	}
+	processor, err := NewProcessor(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	discovery := make([]byte, 74)
+	binary.BigEndian.PutUint16(discovery[0:2], 1)
+	binary.BigEndian.PutUint16(discovery[2:4], 70)
+	packet := testIPv4UDPPacket("66.22.200.1", 19294, discovery)
+	decision := processor.Process(packet)
+	if !decision.Transformed || decision.ServiceID != "discord" || len(decision.Packets) != 4 {
+		t.Fatalf("new official Discord range decision = %+v", decision)
+	}
+}
+
 func TestProcessorRejectsNonMonotonicPlanRevision(t *testing.T) {
 	processor, err := NewProcessor(testPlan())
 	if err != nil {

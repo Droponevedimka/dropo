@@ -19,17 +19,25 @@ const (
 	discordRealtimePollInterval   = 2 * time.Second
 	discordRealtimeDialDeadline   = 10 * time.Second
 	discordRealtimeStallDeadline  = 30 * time.Second
-	discordRealtimeProvenDeadline = 45 * time.Second
-	discordRealtimeInboundGrace   = 20 * time.Second
+	discordRealtimeProvenDeadline = 18 * time.Second
+	discordRealtimeInboundGrace   = 10 * time.Second
 	discordRealtimeMediaWarmup    = 6 * time.Second
 	discordRealtimeSwitchCooldown = 5 * time.Second
 	discordRealtimeFlowRetention  = 30 * time.Second
 	discordRealtimeLearnedTTL     = 15 * time.Minute
 	discordRealtimeDiagInterval   = 10 * time.Second
 	discordRealtimeErrorInterval  = 30 * time.Second
-	discordRealtimeMinMediaBytes  = 512
-	discordRealtimeMinMediaPolls  = 3
-	discordRealtimeMinUploadBytes = 64
+	// A blocked Discord control path can prevent the voice WebSocket and UDP
+	// discovery flow from appearing at all. Treating that as idle left automatic
+	// mode on attempt 1 forever. Once the Discord process emits public traffic,
+	// give every bounded local candidate one short observation window, then use
+	// the configured subscription (or direct when no subscription exists).
+	discordRealtimeNoFlowDeadline    = 10 * time.Second
+	discordRealtimeActivityRetention = 45 * time.Second
+	discordRealtimeMaxLocalAttempts  = 3
+	discordRealtimeMinMediaBytes     = 512
+	discordRealtimeMinMediaPolls     = 3
+	discordRealtimeMinUploadBytes    = 64
 	// Discord's discovery reply is 74 bytes. Only a larger per-poll inbound
 	// delta is media evidence; discovery/control traffic must not keep a broken
 	// voice route alive or suppress another flow's failure.
@@ -54,6 +62,8 @@ type discordRealtimeController struct {
 	lastSwitch       time.Time
 	lastMediaInbound time.Time
 	routeHealthyAt   time.Time
+	lastAppActivity  time.Time
+	noFlowStarted    time.Time
 	lastDiagnostics  time.Time
 	learnedPorts     map[int]time.Time
 	learnedUDPPorts  map[int]time.Time
@@ -186,6 +196,8 @@ func (c *discordRealtimeController) resetLocked() {
 	c.lastSwitch = time.Time{}
 	c.lastMediaInbound = time.Time{}
 	c.routeHealthyAt = time.Time{}
+	c.lastAppActivity = time.Time{}
+	c.noFlowStarted = time.Time{}
 	c.lastDiagnostics = time.Time{}
 	c.learnedPorts = make(map[int]time.Time)
 	c.learnedUDPPorts = make(map[int]time.Time)
@@ -203,6 +215,11 @@ func (c *discordRealtimeController) resetRouteObservationLocked() {
 	c.lastMediaInbound = time.Time{}
 	c.routeHealthyAt = time.Time{}
 	c.flows = make(map[string]*discordRealtimeFlow)
+	c.noFlowStarted = time.Time{}
+	now := time.Now()
+	if c.automatic && !c.fallbackVPN && !c.lastAppActivity.IsZero() && now.Sub(c.lastAppActivity) <= discordRealtimeActivityRetention {
+		c.noFlowStarted = now
+	}
 }
 
 func (c *discordRealtimeController) snapshot() (discordRealtimeProfile, []int, []int, []string) {
@@ -609,6 +626,8 @@ func (c *discordRealtimeController) observeConnections(connections []clashConnec
 	pendingFailures := make([]discordRealtimeAction, 0, 2)
 	seen := make(map[string]struct{}, len(connections))
 	activeDiscordUDP := false
+	activeDiscordRealtime := false
+	discordAppActivity := false
 	for _, connection := range connections {
 		if connection.ID == "" || !isDiscordConnection(connection) {
 			continue
@@ -616,7 +635,13 @@ func (c *discordRealtimeController) observeConnections(connections []clashConnec
 		network := strings.ToLower(strings.TrimSpace(connection.Metadata.Network))
 		port := clashPort(connection.Metadata.DestinationPort)
 		host := normalizeDiscordHost(connection.Metadata.Host)
+		if isPublicDiscordAppConnection(connection, network, port) {
+			discordAppActivity = true
+			c.lastAppActivity = now
+		}
 		if network == "tcp" && isDiscordVoiceGateway(connection, host, port) {
+			activeDiscordRealtime = true
+			c.noFlowStarted = time.Time{}
 			if port > 0 && port != 80 && port != 443 && !isDefaultDiscordTCPPort(port) {
 				if _, exists := c.learnedPorts[port]; !exists {
 					c.learnedPorts[port] = now
@@ -635,6 +660,8 @@ func (c *discordRealtimeController) observeConnections(connections []clashConnec
 			continue
 		}
 		activeDiscordUDP = true
+		activeDiscordRealtime = true
+		c.noFlowStarted = time.Time{}
 		c.initialIdle = time.Time{}
 		if port > 0 {
 			if _, exists := c.learnedUDPPorts[port]; !exists {
@@ -679,6 +706,28 @@ func (c *discordRealtimeController) observeConnections(connections []clashConnec
 				action.inboundPolls = flow.InboundPolls
 			}
 			actions = append(actions, action)
+		}
+	}
+	// A missing voice flow is itself a failure signal only after the Discord app
+	// has emitted public traffic. This avoids strategy churn while Discord is not
+	// running, but closes the gap where DPI blocks setup before Clash can expose a
+	// voice connection. Subsequent local candidates inherit the recent activity
+	// window so all N attempts finish promptly instead of waiting for N new app
+	// connections.
+	if c.automatic && !c.fallbackVPN && !c.initialReady && !activeDiscordRealtime {
+		activityRecent := !c.lastAppActivity.IsZero() && now.Sub(c.lastAppActivity) <= discordRealtimeActivityRetention
+		if discordAppActivity && c.noFlowStarted.IsZero() {
+			c.noFlowStarted = now
+			if !c.initialBusy {
+				c.initialBusy = true
+				actions = append(actions, discordRealtimeAction{started: true})
+			}
+		}
+		if !activityRecent {
+			c.noFlowStarted = time.Time{}
+		} else if !c.noFlowStarted.IsZero() && now.Sub(c.noFlowStarted) >= discordRealtimeNoFlowDeadline {
+			c.noFlowStarted = time.Time{}
+			actions = append(actions, discordRealtimeAction{failure: fmt.Sprintf("Discord app traffic was observed but no voice flow appeared within %s", discordRealtimeNoFlowDeadline)})
 		}
 	}
 	if len(pendingFailures) > 0 {
@@ -873,6 +922,23 @@ func isDiscordProcess(process, processPath string) bool {
 	return false
 }
 
+func isPublicDiscordAppConnection(connection clashConnection, network string, port int) bool {
+	if !isDiscordProcess(connection.Metadata.Process, connection.Metadata.ProcessPath) || port <= 0 || port > 65535 {
+		return false
+	}
+	if network != "tcp" && network != "udp" {
+		return false
+	}
+	if network == "udp" {
+		switch port {
+		case 53, 67, 68, 123:
+			return false
+		}
+	}
+	ip := net.ParseIP(strings.TrimSpace(connection.Metadata.DestinationIP))
+	return ip != nil && !ip.IsPrivate() && !ip.IsLoopback() && !ip.IsUnspecified() && !ip.IsMulticast()
+}
+
 func isDiscordMediaUDPConnection(connection clashConnection, port int) bool {
 	if !isDiscordProcess(connection.Metadata.Process, connection.Metadata.ProcessPath) || port <= 0 || port > 65535 {
 		return false
@@ -1004,6 +1070,9 @@ func (a *App) handleDiscordRealtimeFailure(reason string) {
 
 func discordLocalStrategyCount() int {
 	if count := len(nativeStrategyIDsForService("discord")); count > 0 {
+		if count > discordRealtimeMaxLocalAttempts {
+			return discordRealtimeMaxLocalAttempts
+		}
 		return count
 	}
 	return 1
@@ -1031,6 +1100,9 @@ func (a *App) rotateDiscordLocalStrategy(reason string) bool {
 		}
 		if current == "" || len(candidates) == 0 {
 			return false
+		}
+		if len(candidates) > discordRealtimeMaxLocalAttempts {
+			candidates = candidates[:discordRealtimeMaxLocalAttempts]
 		}
 
 		controller := a.discordRealtime
@@ -1132,8 +1204,12 @@ func (a *App) activateDiscordRealtimeFallback(reason string) {
 		serviceSwitched := a.switchServiceRoute("discord", "auto-select")
 		realtimeSwitched := a.switchOutboundSelector(discordRealtimeGroupTag, discordVPNGroupTag)
 		if serviceSwitched && realtimeSwitched {
+			controller.mu.Lock()
+			controller.initialBusy = false
+			controller.mu.Unlock()
+			a.endBusy(discordRealtimeBusyID)
 			if initialBusy {
-				a.updateBusy(discordRealtimeBusyID, "Локальные методы не подошли, проверяем Discord voice через VPN...")
+				a.writeLog("[DiscordRealtime] local verification window completed; Discord will reconnect through the VPN subscription")
 			}
 			a.writeLog(fmt.Sprintf("[DiscordRealtime] all %d local attempts failed; switched the complete Discord policy to VPN: %s", discordLocalStrategyCount(), reason))
 			a.closeDiscordRealtimeConnections()

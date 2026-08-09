@@ -185,7 +185,7 @@ func TestDiscordRealtimeDoesNotTreatDiscoveryResponseAsMedia(t *testing.T) {
 		Download: 74,
 	}
 	controller.observeConnections([]clashConnection{connection}, started)
-	if actions := controller.observeConnections([]clashConnection{connection}, started.Add(2*discordRealtimeDialDeadline)); len(actions) != 0 {
+	if actions := controller.observeConnections([]clashConnection{connection}, started.Add(discordRealtimeProvenDeadline-time.Second)); len(actions) != 0 {
 		t.Fatalf("discovery-only flow produced a terminal action: %#v", actions)
 	}
 	if controller.initialReady {
@@ -248,6 +248,53 @@ func TestDiscordRealtimeIgnoresDiscordWebQUIC(t *testing.T) {
 	}
 	if len(controller.learnedUDPIPs) != 0 {
 		t.Fatalf("Discord web QUIC IP was learned as media: %#v", controller.learnedUDPIPs)
+	}
+}
+
+func TestDiscordRealtimeMissingVoiceFlowAdvancesAutomaticStrategy(t *testing.T) {
+	controller := newDiscordRealtimeController()
+	controller.running = true
+	controller.automatic = true
+	started := time.Unix(2080, 0)
+	connection := clashConnection{
+		ID: "discord-public-control",
+		Metadata: clashConnectionMetadata{
+			Network:         "tcp",
+			DestinationIP:   "203.0.113.40",
+			DestinationPort: "443",
+			ProcessPath:     `C:\Users\client\AppData\Local\Discord\Discord.exe`,
+		},
+		Upload: 256,
+	}
+	actions := controller.observeConnections([]clashConnection{connection}, started)
+	if len(actions) != 1 || !actions[0].started {
+		t.Fatalf("initial app activity actions = %#v, want bounded verification start", actions)
+	}
+	if actions := controller.observeConnections([]clashConnection{connection}, started.Add(discordRealtimeNoFlowDeadline-time.Second)); len(actions) != 0 {
+		t.Fatalf("missing-flow watchdog fired early: %#v", actions)
+	}
+	actions = controller.observeConnections([]clashConnection{connection}, started.Add(discordRealtimeNoFlowDeadline))
+	if len(actions) != 1 || !strings.Contains(actions[0].failure, "no voice flow") {
+		t.Fatalf("missing-flow deadline actions = %#v, want strategy failure", actions)
+	}
+}
+
+func TestDiscordRealtimeMissingVoiceFlowDoesNotRunWithoutAppActivity(t *testing.T) {
+	controller := newDiscordRealtimeController()
+	controller.running = true
+	controller.automatic = true
+	started := time.Unix(2090, 0)
+	if actions := controller.observeConnections(nil, started); len(actions) != 0 {
+		t.Fatalf("idle monitor started strategy churn: %#v", actions)
+	}
+	if actions := controller.observeConnections(nil, started.Add(10*discordRealtimeNoFlowDeadline)); len(actions) != 0 {
+		t.Fatalf("idle monitor failed a strategy without Discord activity: %#v", actions)
+	}
+}
+
+func TestDiscordRealtimeLocalAttemptsStayBounded(t *testing.T) {
+	if got := discordLocalStrategyCount(); got < 1 || got > discordRealtimeMaxLocalAttempts {
+		t.Fatalf("local Discord strategy count = %d, want 1..%d", got, discordRealtimeMaxLocalAttempts)
 	}
 }
 
@@ -326,12 +373,18 @@ func TestDiscordRealtimeDetectsPreviouslyHealthyFlowThatStalls(t *testing.T) {
 		Download: 200,
 	}
 	controller.observeConnections([]clashConnection{connection}, started)
+	for i := 1; i <= 4; i++ {
+		connection.Upload += 200
+		connection.Download += 300
+		controller.observeConnections([]clashConnection{connection}, started.Add(time.Duration(i)*2*time.Second))
+	}
 
-	connection.Upload = 1500
-	if actions := controller.observeConnections([]clashConnection{connection}, started.Add(discordRealtimeStallDeadline-time.Second)); len(actions) != 0 {
+	lastProgress := started.Add(8 * time.Second)
+	connection.Upload += 1500
+	if actions := controller.observeConnections([]clashConnection{connection}, lastProgress.Add(discordRealtimeProvenDeadline-time.Second)); len(actions) != 0 {
 		t.Fatalf("healthy flow failed before the deadline: %#v", actions)
 	}
-	if actions := controller.observeConnections([]clashConnection{connection}, started.Add(discordRealtimeStallDeadline)); len(actions) != 1 || actions[0].failure == "" {
+	if actions := controller.observeConnections([]clashConnection{connection}, lastProgress.Add(discordRealtimeProvenDeadline)); len(actions) != 1 || actions[0].failure == "" {
 		t.Fatalf("stalled healthy flow actions = %#v, want failure", actions)
 	}
 }
@@ -410,7 +463,7 @@ func TestDiscordRealtimeDoesNotFailSilentFlow(t *testing.T) {
 		Download: 200,
 	}
 	controller.observeConnections([]clashConnection{connection}, started)
-	if actions := controller.observeConnections([]clashConnection{connection}, started.Add(2*discordRealtimeDialDeadline)); len(actions) != 0 {
+	if actions := controller.observeConnections([]clashConnection{connection}, started.Add(discordRealtimeProvenDeadline-time.Second)); len(actions) != 0 {
 		t.Fatalf("silent flow was treated as failed: %#v", actions)
 	}
 }

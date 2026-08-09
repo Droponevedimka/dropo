@@ -14,7 +14,8 @@ const (
 	// Encrypted Discord RTP cannot be identified by payload after the discovery
 	// exchange. Keep one stable native discovery/STUN profile and never mutate
 	// opaque RTP. Automatic mode starts direct and uses an ordered VPN-source
-	// fallback only after bidirectional realtime health fails.
+	// fallback after bidirectional realtime health fails or the running Discord
+	// app cannot establish a voice flow within the bounded verification ladder.
 	discordRealtimeProfileCount = 1
 )
 

@@ -9,10 +9,11 @@ import (
 const vpnSourceHealthInterval = 30 * time.Second
 
 const (
-	vpnSourceFailureThreshold  = 2
-	vpnSourceRecoveryThreshold = 3
-	vpnSourceCircuitOpen       = 2 * time.Minute
-	vpnSourceSwitchCooldown    = 20 * time.Second
+	vpnSourceStartupReadyTimeout = 5 * time.Second
+	vpnSourceFailureThreshold    = 2
+	vpnSourceRecoveryThreshold   = 3
+	vpnSourceCircuitOpen         = 2 * time.Minute
+	vpnSourceSwitchCooldown      = 20 * time.Second
 )
 
 type vpnSourceHealthState struct {
@@ -107,6 +108,19 @@ func (a *App) startVPNSourceMonitor() {
 	a.vpnSourceManual = ""
 	a.vpnSourceLastSwitch = time.Time{}
 	a.vpnSourceMonitorMu.Unlock()
+	// The process is marked running before sing-box finishes opening its Clash
+	// API. Probing sooner produces a false negative even though the VLESS
+	// outbound becomes usable milliseconds later. Wait for the local control
+	// plane, bounded by the ordinary selector startup deadline.
+	if len(a.configuredVPNSourceTags()) > 0 {
+		readyDeadline := time.Now().Add(vpnSourceStartupReadyTimeout)
+		for !a.clashAPIPortReady(250*time.Millisecond) && time.Now().Before(readyDeadline) {
+			time.Sleep(100 * time.Millisecond)
+		}
+		if !a.clashAPIPortReady(250 * time.Millisecond) {
+			a.writeLog("[VPNSources] Clash API was not ready for the startup health check; background monitoring will retry")
+		}
+	}
 	a.selectFirstHealthyVPNSource()
 	go func() {
 		ticker := time.NewTicker(vpnSourceHealthInterval)
