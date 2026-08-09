@@ -58,8 +58,11 @@ try {
     $bumpPath = Join-Path $RepoRoot "scripts\release\bump-version.ps1"
     $bumpText = $strictUtf8.GetString([IO.File]::ReadAllBytes($bumpPath))
     if ($bumpText -notmatch 'ReadAllText\(\$versionFile, \$strictUtf8\)' -or
-        $bumpText -notmatch 'Update only the version token') {
-        $failures.Add("scripts/release/bump-version.ps1: version.json must be read as strict UTF-8 and updated without reserialization")
+        $bumpText -notmatch 'Update only the version token' -or
+        $bumpText -notmatch '\$topLevelVersionPattern' -or
+        $bumpText -notmatch '\$versionMatches\.Count -ne 1' -or
+        $bumpText -notmatch '\$pubspecVersionMatches\.Count -ne 1') {
+        $failures.Add("scripts/release/bump-version.ps1: version fields must be unique, strict UTF-8 and updated without reserialization")
     }
 } finally {
     Pop-Location

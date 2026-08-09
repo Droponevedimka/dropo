@@ -60,11 +60,15 @@ if (-not [version]::TryParse($newVersion, [ref]$parsedVersion) -or
 
 # Update only the version token so formatting and unrelated metadata remain
 # byte-for-byte stable.
+$topLevelVersionPattern = '(?m)^(  "version"\s*:\s*")[^"]+("\s*,\s*)$'
+$versionMatches = [regex]::Matches($versionJson, $topLevelVersionPattern)
+if ($versionMatches.Count -ne 1) {
+    throw "version.json must contain exactly one top-level version field."
+}
 $updatedVersionJson = [regex]::Replace(
     $versionJson,
-    '(?m)("version"\s*:\s*")[^"]+("\s*,)',
-    ('${1}' + $newVersion + '${2}'),
-    1
+    $topLevelVersionPattern,
+    ('${1}' + $newVersion + '${2}')
 )
 if ($updatedVersionJson -eq $versionJson) {
     throw "Could not update the version field in version.json."
@@ -81,7 +85,12 @@ $pubspecPath = Join-Path $ScriptRoot "flutter_app\pubspec.yaml"
 $pubspec = [IO.File]::ReadAllText($pubspecPath, [Text.UTF8Encoding]::new($false, $true))
 $buildNumber = ($parsedVersion.Major * 10000) + ($parsedVersion.Minor * 100) + $parsedVersion.Build
 $replacement = "version: $newVersion+$buildNumber"
-$updatedPubspec = [regex]::Replace($pubspec, '(?m)^version:\s*[^\r\n]+$', $replacement, 1)
+$pubspecVersionPattern = '(?m)^version:\s*[^\r\n]+$'
+$pubspecVersionMatches = [regex]::Matches($pubspec, $pubspecVersionPattern)
+if ($pubspecVersionMatches.Count -ne 1) {
+    throw "flutter_app/pubspec.yaml must contain exactly one version field."
+}
+$updatedPubspec = [regex]::Replace($pubspec, $pubspecVersionPattern, $replacement)
 if ($updatedPubspec -eq $pubspec) {
     throw "Could not update the version line in flutter_app/pubspec.yaml."
 }
@@ -89,6 +98,7 @@ if ($updatedPubspec -eq $pubspec) {
 Write-Host "Updated flutter_app/pubspec.yaml ($replacement)" -ForegroundColor Green
 Write-Host ""
 Write-Host "Next steps:" -ForegroundColor Yellow
-Write-Host "  1. Run: .\scripts\build\build.ps1" -ForegroundColor White
-Write-Host "  2. Commit: git add . && git commit -m 'Release v$newVersion'" -ForegroundColor White
-Write-Host "  3. Tag: git tag v$newVersion && git push --tags" -ForegroundColor White
+Write-Host "  1. Run the source checks and commit the synchronized version." -ForegroundColor White
+Write-Host "  2. Build and validate the clean release commit locally." -ForegroundColor White
+Write-Host "  3. Push main once; GitHub Actions creates the immutable v$newVersion tag after the Windows gate." -ForegroundColor White
+Write-Host "  4. Publish the verified Setup, Portable and Android assets with tools\publish-release-assets.ps1." -ForegroundColor White
