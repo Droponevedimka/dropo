@@ -164,19 +164,43 @@ func (a *App) routeStrategyWorkAllowed() bool {
 		return false
 	}
 	a.mu.Lock()
-	stopping := a.stoppedManually
+	active := (a.isRunning || a.isStarting) && !a.stoppedManually
 	a.mu.Unlock()
-	return !stopping
+	return active
 }
 
 // resetRouteStrategySession clears all background retry cooldowns for a new VPN
 // session.
 func (a *App) resetRouteStrategySession() {
+	a.routeStrategySession.Add(1)
 	a.routeStrategyMu.Lock()
 	a.routeStrategyLastAttempt = nil
 	a.routeStrategyQueued = nil
 	a.transparentReselectionDone = false
 	a.routeStrategyMu.Unlock()
+}
+
+func (a *App) invalidateRouteStrategySession() {
+	if a != nil {
+		a.routeStrategySession.Add(1)
+	}
+}
+
+func (a *App) currentRouteStrategySession() uint64 {
+	if a == nil {
+		return 0
+	}
+	return a.routeStrategySession.Load()
+}
+
+func (a *App) routeStrategySessionActive(session uint64) bool {
+	if a == nil || session == 0 || a.routeStrategySession.Load() != session || a.vpnStopping.Load() || a.isShuttingDown() {
+		return false
+	}
+	a.mu.Lock()
+	active := (a.isRunning || a.isStarting) && !a.stoppedManually
+	a.mu.Unlock()
+	return active
 }
 
 // beginTransparentReselectionOncePerSession returns true exactly once per VPN

@@ -28,6 +28,23 @@ func TestDiscordRealtimeProfilesAreBoundedAndUnique(t *testing.T) {
 	}
 }
 
+func TestDiscordRealtimeReusesBoundedVPNFallbackAfterLocalExhaustion(t *testing.T) {
+	cachedFallback := serviceStrategyCacheEntry{
+		MethodTag: FreeAccessMethodVPN,
+		Source:    "fallback-vpn",
+	}
+	if !discordRealtimeShouldPreferVPN(FreeAccessMethodAuto, true, true, cachedFallback, true) {
+		t.Fatal("automatic Discord ignored the cached VPN fallback after local strategies were exhausted")
+	}
+	transparent := serviceStrategyCacheEntry{MethodTag: rankedMethodsForService("discord")[0].Tag}
+	if discordRealtimeShouldPreferVPN(FreeAccessMethodAuto, true, true, transparent, true) {
+		t.Fatal("proven local Discord strategy unexpectedly started on VPN")
+	}
+	if discordRealtimeShouldPreferVPN(FreeAccessMethodVPN, true, false, cachedFallback, false) {
+		t.Fatal("Discord selected VPN without an available VPN source")
+	}
+}
+
 func TestDiscordSelectionKeepsStableUpstreamFiltersAfterLearningEndpoints(t *testing.T) {
 	controller := newDiscordRealtimeController()
 	controller.learnedPorts[32123] = time.Now()

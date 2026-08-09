@@ -246,7 +246,7 @@ func (a *App) retryDueServiceStrategies() {
 		return
 	}
 	a.writeLog(fmt.Sprintf("[FreeAccess] retrying service strategies after fallback TTL/network change: %s", strings.Join(due, ",")))
-	if err := a.startWindowsUnifiedServiceEngine(""); err != nil {
+	if err := a.validateWindowsUnifiedServiceStrategies("fallback TTL or network change", false, a.currentRouteStrategySession()); err != nil {
 		a.writeLog(fmt.Sprintf("[FreeAccess] scheduled service strategy retry failed: %v", err))
 	}
 }
@@ -513,11 +513,12 @@ func (a *App) prepareServiceWinwsDebugLog() (string, error) {
 	return a.trafficEngine.prepareDebugLog("per-service")
 }
 
-// startWindowsUnifiedServiceEngine composes and starts the native traffic engine
-// from the per-service selections (cache or top-ranked), then validates every
-// selected service before Start returns. A working cached method wins on the
-// first round and stays unchanged; only a confirmed failure advances its ladder.
-func (a *App) startWindowsUnifiedServiceEngine(busyID string) error {
+// startWindowsUnifiedServiceEngine performs only the bounded startup step: it
+// composes and starts the native traffic engine from a valid cache entry or the
+// top-ranked candidate. Network validation is deliberately deferred until the
+// VPN is already connected so a slow or filtered service cannot hold the power
+// button in the connecting state.
+func (a *App) startWindowsUnifiedServiceEngine(_ string) error {
 	if a == nil || a.trafficEngine == nil || a.storage == nil {
 		return nil
 	}
@@ -542,16 +543,24 @@ func (a *App) startWindowsUnifiedServiceEngine(busyID string) error {
 		commonFallback = a.preferredCommonBlockedFallback()
 	}
 	if len(selections) == 0 {
-		a.trafficEngine.Stop()
+		if len(a.wireGuardCamouflageTargetsForSession()) > 0 {
+			if err := a.composeAndStartServiceEngine(selections); err != nil {
+				return fmt.Errorf("start WireGuard camouflage-only traffic plan: %w", err)
+			}
+		} else {
+			a.trafficEngine.Stop()
+		}
 		a.logServiceStrategySummary("all services use a temporary fallback")
-		a.applyCommonBlockedFallback(commonFallback)
+		if commonFallback != "" {
+			a.applyCommonBlockedFallback(commonFallback)
+		}
 		return nil
 	}
 
 	if err := a.composeAndStartServiceEngine(selections); err != nil {
 		return fmt.Errorf("start per-service engine: %w", err)
 	}
-	a.writeLog(fmt.Sprintf("[FreeAccess] per-service engine started for %d service(s); validating all, %d have no cached strategy",
+	a.writeLog(fmt.Sprintf("[FreeAccess] per-service engine started for %d service(s); background validation queued, %d have no cached strategy",
 		len(selections), len(needSearch)))
 	if !a.winwsDebugEnabled() {
 		if marker := a.winwsDebugMarkerPath(); marker != "" {
@@ -561,17 +570,74 @@ func (a *App) startWindowsUnifiedServiceEngine(busyID string) error {
 		}
 	}
 
+	if commonFallback != "" {
+		a.applyCommonBlockedFallback(commonFallback)
+	}
+	return nil
+}
+
+// validateWindowsUnifiedServiceStrategies runs the complete service gates after
+// the base VPN session has already been published as connected. It owns the
+// discovery lock for the whole operation, so maintenance cannot recompose the
+// immutable traffic plan at the same time. Cached candidates are rechecked too;
+// failures advance through the bounded ladder and end at VPN/direct fallback.
+func (a *App) validateWindowsUnifiedServiceStrategies(reason string, retryFallbacks bool, session uint64) error {
+	if a == nil || a.trafficEngine == nil || a.storage == nil {
+		return nil
+	}
+	if !FreeMethodsAllowed(a.storage.GetAppSettings()) {
+		return nil
+	}
+	if !a.routeStrategySessionActive(session) {
+		return fmt.Errorf("VPN session ended before strategy validation")
+	}
+	if !a.tryBeginRouteProbeDiscovery() {
+		return fmt.Errorf("strategy discovery is already running")
+	}
+	defer a.finishRouteProbeDiscovery()
+
+	dir := a.serviceHostlistDir()
+	cache := a.loadServiceStrategyCache()
+	if retryFallbacks {
+		if entry, ok := cache["discord"]; ok && isFreeAccessFallbackTag(entry.MethodTag) {
+			// Discord web/API success is intentionally not cached as proof of
+			// voice. Remove the old fallback before retrying so the realtime
+			// monitor observes the newly selected local policy instead of being
+			// pulled back to a stale VPN decision.
+			a.removeServiceStrategyCacheEntry("discord")
+		}
+		cache = serviceStrategyCacheForConnectedValidation(cache)
+	}
+	selections, needSearch := a.resolveServiceSelections(dir, cache)
+	commonFallback, commonErr := a.addCommonBlockedSelection(selections, cache)
+	if commonErr != nil {
+		a.writeLog(fmt.Sprintf("[FreeAccess] bundled blocked catalog unavailable during background validation; using VPN/direct fallback: %v", commonErr))
+		commonFallback = a.preferredCommonBlockedFallback()
+	}
+	if len(selections) == 0 {
+		if commonFallback != "" {
+			a.applyCommonBlockedFallback(commonFallback)
+		}
+		a.logServiceStrategySummary("background validation has no transparent services")
+		return nil
+	}
+
+	if err := a.composeAndStartServiceEngine(selections); err != nil {
+		return fmt.Errorf("prepare background service validation: %w", err)
+	}
 	validationTags := make([]string, 0, len(selections))
 	for _, service := range DefaultFreeAccessServices {
 		if _, ok := selections[service.Tag]; ok {
 			validationTags = append(validationTags, service.Tag)
 		}
 	}
-	if err := a.firstRunServiceSearch(busyID, selections, validationTags); err != nil {
-		return fmt.Errorf("startup service strategy validation: %w", err)
+	a.writeLog(fmt.Sprintf("[FreeAccess] background service validation started (%s): %d service(s), %d uncached",
+		firstNonEmpty(reason, "connected session"), len(validationTags), len(needSearch)))
+	if err := a.firstRunServiceSearch("", selections, validationTags, session); err != nil {
+		return fmt.Errorf("background service strategy validation: %w", err)
 	}
 	if _, selected := selections[commonBlockedServiceTag]; selected {
-		if err := a.selectCommonBlockedStrategy(busyID, selections); err != nil {
+		if err := a.selectCommonBlockedStrategy("", selections, session); err != nil {
 			a.writeLog(fmt.Sprintf("[FreeAccess] common blocked strategy selection failed: %v", err))
 			delete(selections, commonBlockedServiceTag)
 			if composeErr := a.composeAndStartServiceEngine(selections); composeErr != nil {
@@ -582,7 +648,208 @@ func (a *App) startWindowsUnifiedServiceEngine(busyID string) error {
 	} else if commonFallback != "" {
 		a.applyCommonBlockedFallback(commonFallback)
 	}
+	a.writeLog("[FreeAccess] background service validation completed")
 	return nil
+}
+
+// startWindowsUnifiedServiceValidationAsync keeps first connect responsive.
+// Discord automatic realtime monitoring starts after this one-time plan search,
+// avoiding concurrent plan revisions; manual Discord routes can monitor at once.
+func (a *App) startWindowsUnifiedServiceValidationAsync(startDiscordMonitorAfter bool) {
+	session := a.currentRouteStrategySession()
+	go func() {
+		if startDiscordMonitorAfter {
+			defer func() {
+				a.mu.Lock()
+				running := a.isRunning && !a.stoppedManually
+				a.mu.Unlock()
+				if running && a.routeStrategySessionActive(session) {
+					a.startDiscordRealtimeMonitor()
+				}
+			}()
+		}
+		var validationErr error
+		if !a.waitForRouteProbeDiscoverySession(session, 30*time.Second) {
+			validationErr = fmt.Errorf("another strategy discovery did not finish before the background validation deadline")
+		} else {
+			validationErr = a.validateWindowsUnifiedServiceStrategies("post-connect", true, session)
+		}
+		if validationErr != nil {
+			a.mu.Lock()
+			running := a.isRunning && !a.stoppedManually
+			a.mu.Unlock()
+			if running && a.routeStrategySessionActive(session) {
+				a.writeLog(fmt.Sprintf("[FreeAccess] background service validation failed: %v", validationErr))
+				switched := a.activateSubscriptionFallbackForTransparentRuntime()
+				if switched > 0 {
+					a.writeLog(fmt.Sprintf("[FreeAccess] background validation failure switched %d blocked-service group(s) to VPN fallback", switched))
+				}
+			}
+		}
+	}()
+}
+
+func (a *App) waitForRouteProbeDiscoverySession(session uint64, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for a.isRouteProbeDiscoveryRunning() {
+		if !a.routeStrategySessionActive(session) || time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return a.routeStrategySessionActive(session)
+}
+
+// serviceStrategyCacheForConnectedValidation retains proven transparent
+// methods but removes temporary VPN/direct fallback decisions. The fallback is
+// still used for the safe bootstrap; once connected, each new session gets a
+// bounded background chance to recover a free route immediately instead of
+// waiting up to the fallback TTL.
+func serviceStrategyCacheForConnectedValidation(cache map[string]serviceStrategyCacheEntry) map[string]serviceStrategyCacheEntry {
+	validation := make(map[string]serviceStrategyCacheEntry, len(cache))
+	for tag, entry := range cache {
+		if isFreeAccessFallbackTag(entry.MethodTag) {
+			continue
+		}
+		validation[tag] = entry
+	}
+	return validation
+}
+
+// applyWindowsUnifiedBootstrapRoutesToConfig chooses a safe, non-probing route
+// before sing-box starts. A proven transparent cache goes direct; an unproven
+// automatic service starts on the subscription when available and is promoted
+// to direct only by the post-connect validator. Manual direct/VPN policies are
+// authoritative and are never replaced by automatic discovery.
+func (a *App) applyWindowsUnifiedBootstrapRoutesToConfig(configPath string) (bool, error) {
+	if a == nil || a.storage == nil || strings.TrimSpace(configPath) == "" {
+		return false, nil
+	}
+	config, err := readJSONConfig(configPath)
+	if err != nil {
+		return false, err
+	}
+	outbounds, _ := config["outbounds"].([]interface{})
+	hasVPN, err := configHasVPNProbeCandidates(configPath)
+	if err != nil {
+		return false, err
+	}
+	settings := a.storage.GetAppSettings()
+	cache := a.loadServiceStrategyCache()
+	changed := false
+
+	for _, service := range DefaultFreeAccessServices {
+		target := windowsUnifiedBootstrapServiceRoute(settings, service, cache[service.Tag], hasVPN)
+		if target == "" {
+			continue
+		}
+		if selectBootstrapOutbound(configOutboundByTag(outbounds, ServiceBypassGroupTag(service.Tag)), target) {
+			changed = true
+		}
+	}
+
+	commonTarget := "direct"
+	if entry, ok := cache[commonBlockedServiceTag]; ok {
+		if entry.MethodTag == FreeAccessMethodVPN && hasVPN {
+			commonTarget = "auto-select"
+		} else if entry.MethodTag == FreeAccessMethodDirect || !isFreeAccessFallbackTag(entry.MethodTag) {
+			commonTarget = "direct"
+		}
+	} else if hasVPN {
+		commonTarget = "auto-select"
+	}
+	if selectBootstrapOutbound(configOutboundByTag(outbounds, SmartBypassGroupTag), commonTarget) {
+		changed = true
+	}
+
+	discordRealtimeTarget := windowsUnifiedBootstrapDiscordRealtimeRoute(settings, cache["discord"], hasVPN)
+	if selectBootstrapOutbound(configOutboundByTag(outbounds, discordRealtimeGroupTag), discordRealtimeTarget) {
+		changed = true
+	}
+
+	if !changed {
+		return false, nil
+	}
+	config["outbounds"] = outbounds
+	if err := writeJSONConfig(configPath, config); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func windowsUnifiedBootstrapServiceRoute(settings GlobalAppSettings, service FreeAccessService, cached serviceStrategyCacheEntry, hasVPN bool) string {
+	method := FreeAccessServiceMethod(settings, service.Tag)
+	switch method {
+	case FreeAccessMethodDirect:
+		return "direct"
+	case FreeAccessMethodVPN:
+		if hasVPN {
+			return "auto-select"
+		}
+		return ""
+	}
+	if !FreeAccessServiceEnabled(settings, service.Tag) || service.RequiresVPN || !serviceHasFreeBypass(service.Tag) || !FreeMethodsAllowed(settings) {
+		if hasVPN {
+			return "auto-select"
+		}
+		return ""
+	}
+	switch cached.MethodTag {
+	case FreeAccessMethodVPN:
+		if hasVPN {
+			return "auto-select"
+		}
+		return "direct"
+	case FreeAccessMethodDirect:
+		return "direct"
+	case "":
+		if hasVPN {
+			return "auto-select"
+		}
+		return "direct"
+	default:
+		// loadServiceStrategyCache already discarded stale or unknown methods.
+		return "direct"
+	}
+}
+
+func windowsUnifiedBootstrapDiscordRealtimeRoute(settings GlobalAppSettings, cached serviceStrategyCacheEntry, hasVPN bool) string {
+	method := FreeAccessServiceMethod(settings, "discord")
+	if method == FreeAccessMethodDirect || !hasVPN {
+		return "direct"
+	}
+	if method == FreeAccessMethodVPN || !FreeMethodsAllowed(settings) || !FreeAccessServiceEnabled(settings, "discord") {
+		return discordVPNGroupTag
+	}
+	if cached.MethodTag == FreeAccessMethodVPN {
+		return discordVPNGroupTag
+	}
+	if cached.MethodTag == "" {
+		return discordVPNGroupTag
+	}
+	return "direct"
+}
+
+func selectBootstrapOutbound(outbound map[string]interface{}, target string) bool {
+	if outbound == nil || strings.TrimSpace(target) == "" {
+		return false
+	}
+	candidates := interfaceStringSlice(outbound["outbounds"])
+	if !containsStringValue(candidates, target) {
+		return false
+	}
+	current, _ := outbound["default"].(string)
+	_, hasURL := outbound["url"]
+	_, hasInterval := outbound["interval"]
+	_, hasTolerance := outbound["tolerance"]
+	_, hasInterrupt := outbound["interrupt_exist_connections"]
+	alreadySelected := outbound["type"] == "selector" && current == target && len(candidates) > 0 && candidates[0] == target &&
+		!hasURL && !hasInterval && !hasTolerance && !hasInterrupt
+	preferOutboundGroupCandidate(outbound, target)
+	outbound["type"] = "selector"
+	outbound["default"] = target
+	deleteOutboundGroupHealthCheckFields(outbound)
+	return !alreadySelected
 }
 
 func (a *App) preferredCommonBlockedFallback() string {
@@ -637,7 +904,7 @@ func (a *App) persistCommonBlockedFallback(outboundTag string) bool {
 	return false
 }
 
-func (a *App) selectCommonBlockedStrategy(busyID string, selections map[string]serviceWinwsSelection) error {
+func (a *App) selectCommonBlockedStrategy(busyID string, selections map[string]serviceWinwsSelection, session uint64) error {
 	catalog, err := a.loadBlockedCatalogCached()
 	if err != nil {
 		return err
@@ -654,15 +921,7 @@ func (a *App) selectCommonBlockedStrategy(busyID string, selections map[string]s
 	}
 
 	current := selections[commonBlockedServiceTag].Method
-	methods := make([]ServiceBypassMethod, 0, len(commonBlockedMethods()))
-	if current.Tag != "" {
-		methods = append(methods, current)
-	}
-	for _, method := range commonBlockedMethods() {
-		if method.Tag != current.Tag {
-			methods = append(methods, method)
-		}
-	}
+	methods := commonBlockedSearchLadder(current)
 	runner := nativeProbeRunner{}
 	controller := nativeTrialController{manager: a.trafficEngine}
 	probeNames := make([]string, 0, len(targets))
@@ -672,7 +931,7 @@ func (a *App) selectCommonBlockedStrategy(busyID string, selections map[string]s
 	a.writeLog(fmt.Sprintf("[FreeAccess] common strategy random sample: %s", strings.Join(probeNames, ", ")))
 
 	for _, method := range methods {
-		if !a.routeStrategyWorkAllowed() {
+		if !a.routeStrategySessionActive(session) {
 			return fmt.Errorf("common strategy selection interrupted because VPN is stopping")
 		}
 		strategy, found := nativeStrategyByID(method.NativeStrategyID)
@@ -696,6 +955,9 @@ func (a *App) selectCommonBlockedStrategy(busyID string, selections map[string]s
 		}
 		probes.Wait()
 		cancel()
+		if !a.routeStrategySessionActive(session) {
+			return fmt.Errorf("common strategy selection interrupted after probes")
+		}
 		passed := true
 		for index, target := range targets {
 			if observation := observations[index]; !observation.Success {
@@ -720,6 +982,23 @@ func (a *App) selectCommonBlockedStrategy(busyID string, selections map[string]s
 		return nil
 	}
 	return fmt.Errorf("no native strategy passed all 4 random blocked domains")
+}
+
+func commonBlockedSearchLadder(current ServiceBypassMethod) []ServiceBypassMethod {
+	methods := make([]ServiceBypassMethod, 0, maxAutomaticServiceStrategies)
+	if current.Tag != "" {
+		methods = append(methods, current)
+	}
+	for _, method := range commonBlockedMethods() {
+		if method.Tag == current.Tag {
+			continue
+		}
+		methods = append(methods, method)
+		if len(methods) == maxAutomaticServiceStrategies {
+			break
+		}
+	}
+	return methods
 }
 
 func nativeStrategyByID(id string) (traffic.TrafficStrategy, bool) {
@@ -846,13 +1125,14 @@ func (a *App) activateSubscriptionFallbackForTransparentRuntime() int {
 	return switched
 }
 
-// firstRunServiceSearch validates each requested service and finds the first
-// ranked method that works. It is round-based: round R sets every still-failing
+// firstRunServiceSearch is the connected-session validator retained under its
+// historical name. It finds the first ranked method that works and is round-
+// based: round R sets every still-failing
 // service to its method[R] and recomposes the engine ONCE, then probes all of
 // them in parallel. So the whole search costs at most (ladder length) restarts
-// — not (services × methods) — keeping first enable bounded with many services.
+// — not (services × methods) — keeping background work bounded with many services.
 // Round 0 reuses the already-running top-method engine without a restart.
-func (a *App) firstRunServiceSearch(busyID string, selections map[string]serviceWinwsSelection, needSearch []string) error {
+func (a *App) firstRunServiceSearch(busyID string, selections map[string]serviceWinwsSelection, needSearch []string, session uint64) error {
 	ladders := make(map[string][]ServiceBypassMethod, len(needSearch))
 	maxRounds := 0
 	for _, tag := range needSearch {
@@ -865,8 +1145,8 @@ func (a *App) firstRunServiceSearch(busyID string, selections map[string]service
 
 	pending := append([]string{}, needSearch...)
 	for round := 0; round < maxRounds && len(pending) > 0; round++ {
-		if !a.routeStrategyWorkAllowed() {
-			return fmt.Errorf("first-run strategy search interrupted because VPN is stopping")
+		if !a.routeStrategySessionActive(session) {
+			return fmt.Errorf("service strategy search interrupted because VPN is stopping")
 		}
 		if busyID != "" {
 			a.updateBusy(busyID, fmt.Sprintf("Проверяем стратегии, попытка %d/%d: %s", round+1, maxRounds, serviceSearchStatusList(pending)))
@@ -879,12 +1159,15 @@ func (a *App) firstRunServiceSearch(busyID string, selections map[string]service
 				}
 			}
 			if err := a.composeAndStartServiceEngine(selections); err != nil {
-				a.writeLog(fmt.Sprintf("[FreeAccess] first-run round %d recompose failed: %v", round, err))
-				return fmt.Errorf("first-run round %d recompose: %w", round, err)
+				a.writeLog(fmt.Sprintf("[FreeAccess] background validation round %d recompose failed: %v", round, err))
+				return fmt.Errorf("background validation round %d recompose: %w", round, err)
 			}
 		}
 
 		failing := a.probeServicesThroughEngine(pending)
+		if !a.routeStrategySessionActive(session) {
+			return fmt.Errorf("service strategy search interrupted after probes")
+		}
 		next := make([]string, 0, len(pending))
 		for _, tag := range pending {
 			if !failing[tag] {
@@ -914,14 +1197,14 @@ func (a *App) firstRunServiceSearch(busyID string, selections map[string]service
 	}
 
 	// Lock in whatever each service ended on.
-	if !a.routeStrategyWorkAllowed() {
-		return fmt.Errorf("first-run strategy search interrupted before commit")
+	if !a.routeStrategySessionActive(session) {
+		return fmt.Errorf("service strategy search interrupted before commit")
 	}
 	if err := a.composeAndStartServiceEngine(selections); err != nil {
-		a.writeLog(fmt.Sprintf("[FreeAccess] failed to re-compose engine after first-run search: %v", err))
-		return fmt.Errorf("commit first-run service selections: %w", err)
+		a.writeLog(fmt.Sprintf("[FreeAccess] failed to re-compose engine after background validation: %v", err))
+		return fmt.Errorf("commit background service selections: %w", err)
 	}
-	a.logServiceStrategySummary("first-run search complete")
+	a.logServiceStrategySummary("background validation complete")
 	return nil
 }
 

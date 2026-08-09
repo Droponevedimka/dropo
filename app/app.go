@@ -60,6 +60,7 @@ type App struct {
 	routeProbeDone         chan struct{}
 	routeStrategyJobs      chan string
 	routeStrategyLoop      atomic.Bool
+	routeStrategySession   atomic.Uint64
 	// routeStrategy* keep per-service background searches unhurried and in order.
 	// Pending jobs are coalesced and completed searches use a cooldown, so a
 	// later confirmed failure can retune the same service again without churn.

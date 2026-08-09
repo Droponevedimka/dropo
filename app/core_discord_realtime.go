@@ -290,13 +290,11 @@ func (a *App) startDiscordRealtimeMonitor() {
 	controller.mu.Unlock()
 
 	hasVPN := a.discordHasVPNFallback()
-	// Automatic mode must prove the native strategy first. A subscription is
-	// fallback, not an unconditional VPN-first route for Discord media. A VPN
-	// route that already passed the live-media gate on this network may be reused
-	// until its bounded fallback TTL expires.
+	// Automatic mode normally proves the native strategy first. A cached VPN
+	// decision is authoritative for its bounded TTL whether it came from live
+	// media proof or from exhausting every local Discord web/API candidate.
 	cached := a.loadServiceStrategyCache()["discord"]
-	verifiedVPNCache := automatic && cached.MethodTag == FreeAccessMethodVPN && cached.Source == "discord-live-media"
-	preferVPN := hasVPN && (method == FreeAccessMethodVPN || !FreeMethodsAllowed(settings) || verifiedVPNCache)
+	preferVPN := discordRealtimeShouldPreferVPN(method, FreeMethodsAllowed(settings), automatic, cached, hasVPN)
 	target := "direct"
 	if preferVPN {
 		target = discordVPNGroupTag
@@ -316,6 +314,16 @@ func (a *App) startDiscordRealtimeMonitor() {
 	a.writeLog(fmt.Sprintf("[DiscordRealtime] monitor started: method=%s automatic=%v preferred=%s selected=%s switch_ok=%v profile=%s", method, automatic, map[bool]string{true: "vpn-first", false: "direct"}[preferVPN], realtimeCurrent, selected, profile.Tag))
 	a.writeLog(fmt.Sprintf("[DiscordRealtime][Route] realtime candidates=%v current=%s; vpn candidates=%v current=%s; web/API remains on the Discord service route", realtimeCandidates, realtimeCurrent, vpnCandidates, vpnCurrent))
 	go a.runDiscordRealtimeMonitor(ctx, controller)
+}
+
+func discordRealtimeShouldPreferVPN(method string, freeMethodsAllowed, automatic bool, cached serviceStrategyCacheEntry, hasVPN bool) bool {
+	if !hasVPN {
+		return false
+	}
+	if method == FreeAccessMethodVPN || !freeMethodsAllowed {
+		return true
+	}
+	return automatic && cached.MethodTag == FreeAccessMethodVPN
 }
 
 func (a *App) prepareDiscordRealtimeSession() {

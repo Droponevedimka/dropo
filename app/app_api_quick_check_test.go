@@ -120,6 +120,7 @@ func TestRouteStrategyMaintenanceSkippedWhileStopping(t *testing.T) {
 
 func TestRouteStrategyMaintenanceCoalescesByService(t *testing.T) {
 	app := NewApp()
+	app.isRunning = true
 	defer close(app.routeStrategyJobs)
 
 	uniqueTags := map[string]bool{}
@@ -152,6 +153,7 @@ func TestRouteStrategyMaintenanceCoalescesByService(t *testing.T) {
 
 func TestRouteStrategyMaintenanceAllowsLaterRetryAfterCooldown(t *testing.T) {
 	app := NewApp()
+	app.isRunning = true
 	defer close(app.routeStrategyJobs)
 
 	app.requestRouteStrategyMaintenance("service:discord first failure")

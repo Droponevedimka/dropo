@@ -21,6 +21,11 @@ const String _bundledAppVersion = String.fromEnvironment(
 );
 
 @visibleForTesting
+bool isConnectionBlockingBusyTask(String id) {
+  return id == 'vpn-connect' || id == 'vpn-disconnect';
+}
+
+@visibleForTesting
 bool? debugMobileShellOverride;
 
 bool get _isMobileShell =>
@@ -3166,9 +3171,7 @@ class _DropoHomePageState extends State<DropoHomePage>
   double? updateProgressPercent;
 
   bool get connectionBusy {
-    return busyTasks.containsKey('vpn-connect') ||
-        busyTasks.containsKey('discord-realtime-connect') ||
-        busyTasks.containsKey('vpn-disconnect') ||
+    return busyTasks.keys.any(isConnectionBlockingBusyTask) ||
         status.connecting ||
         status.disconnecting;
   }
@@ -3613,18 +3616,20 @@ class _DropoHomePageState extends State<DropoHomePage>
           if (id == 'app-exit' && message.trim().isNotEmpty) {
             quitProgressMessage = message;
           }
-          if (id == 'vpn-connect' ||
-              id == 'discord-realtime-connect' ||
-              id == 'vpn-disconnect') {
+          if (id == 'discord-realtime-connect') {
+            // Discord media proof is ongoing health maintenance. It may take a
+            // full realtime observation window and must never make an already
+            // usable VPN look like it is still connecting or disable controls.
+            connectionHintDanger = false;
+            connectionHint = message;
+          } else if (id == 'vpn-connect' || id == 'vpn-disconnect') {
             connectionHintDanger = false;
             connectionHint = id == 'vpn-disconnect'
                 ? (message.isEmpty ? 'Выполняется операция...' : message)
-                : (id == 'discord-realtime-connect' ? message : '');
+                : '';
             statusMessage = id == 'vpn-disconnect'
                 ? 'Отключаем VPN'
-                : (id == 'discord-realtime-connect'
-                      ? 'Проверяем Discord voice'
-                      : 'Подключаем VPN');
+                : 'Подключаем VPN';
           }
         } else {
           busyTasks.remove(id);
@@ -3904,7 +3909,7 @@ class _DropoHomePageState extends State<DropoHomePage>
         : 'Останавливаем VPN...';
     statusMessage = target ? 'Подключаем VPN' : 'Отключаем VPN';
     connectionHint = target
-        ? 'Проверяем окружение и готовим подбор методов обхода.'
+        ? 'Проверяем окружение и запускаем безопасный начальный маршрут.'
         : 'Останавливаем сетевые процессы и возвращаем системные настройки.';
     connectionHintDanger = false;
     if (target) {
@@ -3941,13 +3946,11 @@ class _DropoHomePageState extends State<DropoHomePage>
       }
       setState(() {
         busyTasks[target ? 'vpn-connect' : 'vpn-disconnect'] = target
-            ? 'Подбираем рабочие стратегии обхода...'
+            ? 'Запускаем VPN и безопасные маршруты...'
             : 'Останавливаем VPN...';
-        statusMessage = target
-            ? 'Подбор работающих стратегий'
-            : 'Отключаем VPN';
+        statusMessage = target ? 'Подключаем VPN' : 'Отключаем VPN';
         connectionHint = target
-            ? 'Проверяем конфиг, подбираем методы обхода и запускаем фоновые процессы.'
+            ? 'Проверяем конфиг и запускаем VPN; стратегии сервисов проверятся в фоне.'
             : 'Останавливаем сетевые процессы и возвращаем системные настройки.';
         connectionHintDanger = false;
       });
@@ -4785,9 +4788,6 @@ class _DropoHomePageState extends State<DropoHomePage>
     if (busyTasks.containsKey('vpn-connect')) {
       return 'Подключаем VPN';
     }
-    if (busyTasks.containsKey('discord-realtime-connect')) {
-      return 'Проверяем Discord voice';
-    }
     if (connectionBusy) {
       return status.connected ? 'VPN работает' : 'Подключаем VPN';
     }
@@ -5118,7 +5118,7 @@ class _DropoHomePageState extends State<DropoHomePage>
       return 'Подключение';
     }
     if (busyTasks.containsKey('discord-realtime-connect')) {
-      return 'Подбор Discord voice';
+      return 'Фоновая проверка Discord';
     }
     if (connectionBusy) {
       return status.connected ? 'Отключение' : 'Подключение';

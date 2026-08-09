@@ -32,6 +32,24 @@ commit workflow.
   Do not allow private destinations to fall through to a public VPN source.
 - A strategy selector must validate every required TCP, UDP and web target
   before committing. Never persist a partial-success candidate.
+- The Windows connection-ready gate ends once sing-box/TUN, an immutable
+  bootstrap `TrafficPlan`, and safe outbound selectors are active. Never wait
+  synchronously in `Start()` for service probes, Discord media observation, or
+  a complete strategy ladder; all automatic selection runs after the client is
+  connected.
+- At bootstrap, automatic blocked services may use a network-valid proven
+  direct-strategy cache. Otherwise route them through the available VPN
+  subscription fallback, or direct only when no subscription exists. Background
+  selection must try a small bounded candidate set, commit only after every
+  required target succeeds, and retry temporary VPN/direct fallbacks on each new
+  session.
+- Discord realtime/media health is background maintenance and must never set a
+  connection-wide busy state or disable settings. Mark Discord working only
+  after sustained bidirectional media evidence. Explicit user Direct/VPN policy
+  remains authoritative and bypasses automatic discovery.
+- Tie every background strategy task to the active VPN-session generation and
+  abort it on Stop or process exit. A stale task must never restart or mutate the
+  traffic engine after disconnect.
 - VPN fallback is ordered between independent `VPNSource` entries. Do not turn
   sibling nodes inside one subscription into automatic fallback levels; the
   provider's first supported node or the user's manual choice is authoritative.

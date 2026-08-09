@@ -275,6 +275,13 @@ func (a *App) Start() map[string]interface{} {
 		}
 	}
 	a.updateBusy(busyID, "Проверяем, что выбранные бесплатные методы всё ещё активны...")
+	if runtime.GOOS == "windows" {
+		if changed, bootstrapErr := a.applyWindowsUnifiedBootstrapRoutesToConfig(configPath); bootstrapErr != nil {
+			a.writeLog(fmt.Sprintf("[FreeAccess] failed to prepare safe Windows Unified bootstrap routes: %v", bootstrapErr))
+		} else if changed {
+			a.writeLog("[FreeAccess] safe bootstrap routes applied: proven cache -> direct, unproven automatic services -> VPN/direct fallback")
+		}
+	}
 	liveFreeAccessTags := liveFreeAccessProxyTags(activeFreeAccessTags)
 	if err := a.filterActiveFreeAccessOutbounds(configPath, liveFreeAccessTags); err != nil {
 		a.writeLog(fmt.Sprintf("[FreeAccess] failed to re-check live free-access outbounds: %v", err))
@@ -372,8 +379,8 @@ func (a *App) Start() map[string]interface{} {
 	a.isRunning = true
 	a.hasError.Store(false)
 	a.mu.Unlock()
-	// Drain logs while the first-run strategy search is using sing-box. Waiting
-	// until after the search can fill child-process pipes and stall the runtime.
+	// Drain logs immediately. The connected-session strategy validator runs in
+	// the background and must never fill child-process pipes or stall the runtime.
 	go a.logOutput(stdout, "sing-box/out")
 	go a.logOutput(stderr, "sing-box/log")
 	a.updateBusy(busyID, "Проверяем цепочку VPN-источников...")
@@ -386,7 +393,7 @@ func (a *App) Start() map[string]interface{} {
 	// initiation packet. It remains a sidecar; WireGuard owns the tunnel.
 	a.resetWireGuardCamouflageSession()
 	a.prepareDiscordRealtimeSession()
-	a.updateBusy(busyID, "Подбираем стратегии для заблокированных сервисов...")
+	a.updateBusy(busyID, "Запускаем быстрые маршруты для заблокированных сервисов...")
 	if err := a.startComposedTransparentEngine(busyID); err != nil {
 		a.writeLog(fmt.Sprintf("[NetworkMode] native traffic engine failed to start: %v", err))
 		_, _ = a.forceSubscriptionFallbackForTransparentRuntime(configPath)
@@ -412,8 +419,6 @@ func (a *App) Start() map[string]interface{} {
 			}
 		}
 	}
-	a.startDiscordRealtimeMonitor()
-
 	// Start Native WireGuard tunnels only after strictly-scoped handshake
 	// transformations are active.
 	if a.nativeWG != nil && a.nativeWG.IsInstalled() {
@@ -421,24 +426,27 @@ func (a *App) Start() map[string]interface{} {
 		a.startNativeWireGuardTunnels()
 	}
 
-	// Start user-visible session accounting only after the mandatory strategy
-	// gate succeeds. A failed validation must not leave a phantom traffic session.
+	// Start user-visible session accounting as soon as the base VPN and immutable
+	// bootstrap traffic plan are ready. Service probes continue in the background.
 	if a.trafficStats != nil {
 		a.trafficStats.StartSession()
 		a.startTrafficStatsPolling()
 	}
 
-	// Publish the connected state only after every enabled blocked service has
-	// either confirmed its current transparent strategy or exhausted its bounded
-	// ladder and selected the configured VPN/direct fallback. Do this before the
-	// waiter starts so an immediate process exit always overwrites it with the
-	// final disconnected/error state, never the other way around.
+	// Publish the connected state before service validation. Slow remote probes
+	// must never keep a usable TUN/VPN session behind the connecting spinner.
+	// Do this before the waiter starts so an immediate process exit always
+	// overwrites it with the final disconnected/error state.
 	UpdateTrayIcon("connected")
 	a.setRestoreVPNOnStartup(true)
-	a.writeLog("VPN started successfully; initial service strategies validated")
-	a.AddToLogBuffer("VPN запущен, стратегии сервисов проверены")
+	a.writeLog("VPN started successfully; service strategies are validating in the background")
+	a.AddToLogBuffer("VPN запущен; стратегии сервисов проверяются в фоне")
 	startupSucceeded = true
-
+	deferDiscordMonitor := false
+	if runtime.GOOS == "windows" && a.storage != nil {
+		settings := a.storage.GetAppSettings()
+		deferDiscordMonitor = FreeMethodsAllowed(settings) && FreeAccessServiceMethod(settings, "discord") == FreeAccessMethodAuto
+	}
 	// Monitor process in goroutine
 	go func(cmd *exec.Cmd, done chan error) {
 		err := cmd.Wait()
@@ -463,6 +471,9 @@ func (a *App) Start() map[string]interface{} {
 		// ALWAYS stop WireGuard tunnels when VPN process exits
 		// This prevents orphaned tunnels that block user's native WireGuard
 		a.mu.Unlock() // Unlock before calling stopNativeWireGuardTunnels to avoid deadlock
+		if isCurrentProcess {
+			a.invalidateRouteStrategySession()
+		}
 		a.stopNativeWireGuardTunnels()
 		a.stopVPNSourceMonitor()
 		a.stopDiscordRealtimeMonitor()
@@ -499,6 +510,12 @@ func (a *App) Start() map[string]interface{} {
 			a.emitEvent("vpn-status-changed", false)
 		}
 	}(cmd, cmdDone)
+	if !deferDiscordMonitor {
+		a.startDiscordRealtimeMonitor()
+	}
+	if runtime.GOOS == "windows" {
+		a.startWindowsUnifiedServiceValidationAsync(deferDiscordMonitor)
+	}
 	a.updateBusy(busyID, "Подключение запущено")
 	return map[string]interface{}{
 		"success": true,
@@ -1135,6 +1152,7 @@ func (a *App) Stop() map[string]interface{} {
 
 	a.vpnStopping.Store(true)
 	defer a.vpnStopping.Store(false)
+	a.invalidateRouteStrategySession()
 
 	a.writeLog("VPN stop requested")
 	manualStop := !a.isShuttingDown()

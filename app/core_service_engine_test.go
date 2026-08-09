@@ -154,6 +154,114 @@ func TestWindowsUnifiedServiceGroupIsDeterministicSelector(t *testing.T) {
 	}
 }
 
+func TestWindowsUnifiedBootstrapUsesSafeFallbackUntilStrategyIsProven(t *testing.T) {
+	settings := GlobalAppSettings{
+		FreeAccessEnabled:  true,
+		FreeAccessServices: DefaultFreeAccessServiceState(),
+		FreeAccessMethods:  DefaultFreeAccessServiceMethodState(),
+	}
+	youtube, ok := findFreeAccessService("youtube")
+	if !ok {
+		t.Fatal("YouTube service is missing")
+	}
+	if got := windowsUnifiedBootstrapServiceRoute(settings, youtube, serviceStrategyCacheEntry{}, true); got != "auto-select" {
+		t.Fatalf("uncached automatic service bootstrap = %q, want VPN fallback", got)
+	}
+	method := rankedMethodsForService("youtube")[0]
+	if got := windowsUnifiedBootstrapServiceRoute(settings, youtube, serviceStrategyCacheEntry{MethodTag: method.Tag}, true); got != "direct" {
+		t.Fatalf("proven transparent service bootstrap = %q, want direct", got)
+	}
+	if got := windowsUnifiedBootstrapDiscordRealtimeRoute(settings, serviceStrategyCacheEntry{}, true); got != discordVPNGroupTag {
+		t.Fatalf("uncached Discord realtime bootstrap = %q, want safe VPN route", got)
+	}
+	if got := windowsUnifiedBootstrapDiscordRealtimeRoute(settings, serviceStrategyCacheEntry{MethodTag: method.Tag}, true); got != "direct" {
+		t.Fatalf("proven Discord realtime bootstrap = %q, want direct", got)
+	}
+}
+
+func TestConnectedValidationRetriesTemporaryFallbacksEverySession(t *testing.T) {
+	transparent := rankedMethodsForService("youtube")[0]
+	validation := serviceStrategyCacheForConnectedValidation(map[string]serviceStrategyCacheEntry{
+		"youtube":  {MethodTag: transparent.Tag},
+		"discord":  {MethodTag: FreeAccessMethodVPN, Source: "fallback-vpn"},
+		"telegram": {MethodTag: FreeAccessMethodDirect, Source: "fallback-direct"},
+	})
+	if validation["youtube"].MethodTag != transparent.Tag {
+		t.Fatalf("proven transparent cache was discarded: %#v", validation)
+	}
+	if _, ok := validation["discord"]; ok {
+		t.Fatalf("VPN fallback was not queued for connected-session retry: %#v", validation)
+	}
+	if _, ok := validation["telegram"]; ok {
+		t.Fatalf("direct fallback was not queued for connected-session retry: %#v", validation)
+	}
+}
+
+func TestBackgroundValidationTokenExpiresWhenVPNSessionEnds(t *testing.T) {
+	app := &App{isRunning: true}
+	app.resetRouteStrategySession()
+	session := app.currentRouteStrategySession()
+	if !app.routeStrategySessionActive(session) {
+		t.Fatal("new running VPN session did not accept its validation token")
+	}
+	app.invalidateRouteStrategySession()
+	if app.routeStrategySessionActive(session) {
+		t.Fatal("ended VPN session still accepted a stale background validation token")
+	}
+}
+
+func TestWindowsUnifiedBootstrapKeepsManualServicePolicyAuthoritative(t *testing.T) {
+	settings := GlobalAppSettings{
+		FreeAccessEnabled:  true,
+		FreeAccessServices: DefaultFreeAccessServiceState(),
+		FreeAccessMethods:  DefaultFreeAccessServiceMethodState(),
+	}
+	discord, ok := findFreeAccessService("discord")
+	if !ok {
+		t.Fatal("Discord service is missing")
+	}
+	settings.FreeAccessMethods["discord"] = FreeAccessMethodVPN
+	cached := serviceStrategyCacheEntry{MethodTag: rankedMethodsForService("discord")[0].Tag}
+	if got := windowsUnifiedBootstrapServiceRoute(settings, discord, cached, true); got != "auto-select" {
+		t.Fatalf("manual Discord VPN bootstrap = %q, want auto-select", got)
+	}
+	if got := windowsUnifiedBootstrapDiscordRealtimeRoute(settings, cached, true); got != discordVPNGroupTag {
+		t.Fatalf("manual Discord realtime VPN bootstrap = %q, want %q", got, discordVPNGroupTag)
+	}
+
+	settings.FreeAccessMethods["discord"] = FreeAccessMethodDirect
+	if got := windowsUnifiedBootstrapServiceRoute(settings, discord, serviceStrategyCacheEntry{MethodTag: FreeAccessMethodVPN}, true); got != "direct" {
+		t.Fatalf("manual Discord direct bootstrap = %q, want direct", got)
+	}
+	if got := windowsUnifiedBootstrapDiscordRealtimeRoute(settings, serviceStrategyCacheEntry{MethodTag: FreeAccessMethodVPN}, true); got != "direct" {
+		t.Fatalf("manual Discord realtime direct bootstrap = %q, want direct", got)
+	}
+}
+
+func TestSelectBootstrapOutboundPinsExistingCandidateWithoutHealthChecks(t *testing.T) {
+	group := map[string]interface{}{
+		"type":      "urltest",
+		"outbounds": []interface{}{"direct", "auto-select"},
+		"url":       "https://example.com",
+		"interval":  "90s",
+	}
+	if !selectBootstrapOutbound(group, "auto-select") {
+		t.Fatal("bootstrap selector did not report a route change")
+	}
+	if group["type"] != "selector" || group["default"] != "auto-select" {
+		t.Fatalf("bootstrap group = %#v, want pinned auto-select selector", group)
+	}
+	if got := interfaceStringSlice(group["outbounds"]); len(got) != 2 || got[0] != "auto-select" || got[1] != "direct" {
+		t.Fatalf("bootstrap candidates = %v, want VPN then direct", got)
+	}
+	if _, exists := group["url"]; exists {
+		t.Fatalf("bootstrap selector retained urltest fields: %#v", group)
+	}
+	if selectBootstrapOutbound(group, "missing") {
+		t.Fatal("bootstrap selector accepted a missing outbound candidate")
+	}
+}
+
 func TestWindowsUnifiedCatalogUsesPerServiceWorkingCache(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("Windows Unified is Windows-only")
@@ -240,6 +348,25 @@ func TestAutomaticServiceStrategySearchIsBoundedBeforeVPNFallback(t *testing.T) 
 		if method.Tag == cached.Tag {
 			t.Fatalf("recovery ladder repeats failed current strategy %q", cached.Tag)
 		}
+	}
+}
+
+func TestCommonBlockedStrategySearchIsBounded(t *testing.T) {
+	all := commonBlockedMethods()
+	if len(all) < maxAutomaticServiceStrategies {
+		t.Fatalf("common strategy catalog is too short: %d", len(all))
+	}
+	cached := all[len(all)-1]
+	ladder := commonBlockedSearchLadder(cached)
+	if len(ladder) != maxAutomaticServiceStrategies || ladder[0].Tag != cached.Tag {
+		t.Fatalf("common startup ladder = %#v, want cached first and %d attempts", ladder, maxAutomaticServiceStrategies)
+	}
+	seen := map[string]bool{}
+	for _, method := range ladder {
+		if seen[method.Tag] {
+			t.Fatalf("common startup ladder repeats %q", method.Tag)
+		}
+		seen[method.Tag] = true
 	}
 }
 

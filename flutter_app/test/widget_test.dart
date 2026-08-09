@@ -11,6 +11,15 @@ void main() {
   });
 
   test(
+    'Discord realtime health is background work, not connection blocking',
+    () {
+      expect(isConnectionBlockingBusyTask('vpn-connect'), isTrue);
+      expect(isConnectionBlockingBusyTask('vpn-disconnect'), isTrue);
+      expect(isConnectionBlockingBusyTask('discord-realtime-connect'), isFalse);
+    },
+  );
+
+  test(
     'service catalog keeps the saved policy separate from its effective route',
     () {
       final route = RouteService.fromFreeAccessJson(const {
