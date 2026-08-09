@@ -107,7 +107,7 @@ void main() {
       await tester.pump(const Duration(milliseconds: 600));
 
       final routeField = find.byKey(
-        const ValueKey<String>('service-route-discord'),
+        const ValueKey<String>('service-route-discord-auto'),
       );
       expect(routeField, findsOneWidget);
       final dropdown = tester.widget<DropdownButtonFormField<String>>(
@@ -133,7 +133,62 @@ void main() {
       expect(bridge.lastTag, 'discord');
       expect(bridge.lastMethod, 'vpn');
       expect(
+        find.byKey(const ValueKey<String>('service-route-discord-vpn')),
+        findsOneWidget,
+      );
+      expect(
         find.textContaining('Маршрут для Discord сохранён'),
+        findsOneWidget,
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'Windows service policy stays clickable while VPN is active and reports reconnect',
+    (tester) async {
+      tester.view.physicalSize = const Size(960, 720);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      final bridge = _RoutePolicyRecordingBridge(restarted: true);
+      await bridge.setConnected(true);
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: ThemeData.dark(),
+          home: DropoHomePage(bridge: bridge),
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 2));
+      await tester.tap(find.byIcon(Icons.settings));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 600));
+
+      final routeField = find.byKey(
+        const ValueKey<String>('service-route-discord-auto'),
+      );
+      expect(routeField, findsOneWidget);
+      expect(
+        tester.widget<DropdownButtonFormField<String>>(routeField).onChanged,
+        isNotNull,
+      );
+      expect(
+        find.textContaining('dropo безопасно переподключит VPN автоматически'),
+        findsOneWidget,
+      );
+
+      await tester.ensureVisible(routeField);
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.tap(routeField);
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.tap(find.text('Через VPN').last);
+      await tester.pump(const Duration(milliseconds: 800));
+
+      expect(bridge.lastMethod, 'vpn');
+      expect(
+        find.textContaining('VPN автоматически переподключён'),
         findsOneWidget,
       );
       expect(tester.takeException(), isNull);
@@ -541,17 +596,21 @@ class _BundledRuntimePreparingBridge extends MockCoreBridge {
 }
 
 class _RoutePolicyRecordingBridge extends MockCoreBridge {
+  _RoutePolicyRecordingBridge({this.restarted = false});
+
+  final bool restarted;
   String lastTag = '';
   String lastMethod = '';
+  String currentMethod = 'auto';
 
   @override
   Future<List<RouteService>> routes({bool live = false}) async {
-    return const [
+    return [
       RouteService(
         tag: 'discord',
         name: 'Discord',
         method: 'Discord active decoys x3',
-        selectedMethod: 'auto',
+        selectedMethod: currentMethod,
         requiresVpn: false,
         delayMs: 0,
         domainSuffixes: ['discord.com', 'discord.gg'],
@@ -566,6 +625,12 @@ class _RoutePolicyRecordingBridge extends MockCoreBridge {
   ) async {
     lastTag = tag;
     lastMethod = method;
-    return {'success': true, 'tag': tag, 'method': method};
+    currentMethod = method;
+    return {
+      'success': true,
+      'tag': tag,
+      'method': method,
+      'restarted': restarted,
+    };
   }
 }

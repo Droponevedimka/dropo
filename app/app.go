@@ -44,6 +44,7 @@ type App struct {
 	logFileMu              sync.Mutex
 	storage                *Storage                 // Unified storage for all settings
 	configBuilder          *ConfigBuilderForStorage // Config builder for storage
+	settingsPolicyMu       sync.Mutex               // Serializes transactional service-policy changes and reconnects.
 	trafficStats           *TrafficStats
 	nativeWG               *NativeWireGuardManager // Native WireGuard tunnel manager
 	byeDPI                 *ByeDPIManager          // Free access (DPI-bypass) process manager

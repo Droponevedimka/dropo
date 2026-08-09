@@ -358,15 +358,37 @@ func (s *Storage) GetResourcesPath() string {
 func (s *Storage) GetAppSettings() GlobalAppSettings {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.data.App
+	return cloneGlobalAppSettings(s.data.App)
 }
 
 // UpdateAppSettings updates app settings.
 func (s *Storage) UpdateAppSettings(settings GlobalAppSettings) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.data.App = settings
-	return s.saveInternal()
+	previous := s.data.App
+	s.data.App = cloneGlobalAppSettings(settings)
+	if err := s.saveInternal(); err != nil {
+		s.data.App = previous
+		return err
+	}
+	return nil
+}
+
+func cloneGlobalAppSettings(settings GlobalAppSettings) GlobalAppSettings {
+	cloned := settings
+	if settings.FreeAccessServices != nil {
+		cloned.FreeAccessServices = make(map[string]bool, len(settings.FreeAccessServices))
+		for tag, enabled := range settings.FreeAccessServices {
+			cloned.FreeAccessServices[tag] = enabled
+		}
+	}
+	if settings.FreeAccessMethods != nil {
+		cloned.FreeAccessMethods = make(map[string]string, len(settings.FreeAccessMethods))
+		for tag, method := range settings.FreeAccessMethods {
+			cloned.FreeAccessMethods[tag] = method
+		}
+	}
+	return cloned
 }
 
 // GetActiveProfileID returns the active profile ID.

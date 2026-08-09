@@ -10330,6 +10330,8 @@ class _SettingsDialogState extends State<_SettingsDialog> {
       }
       statusText = result['success'] == false
           ? result['error']?.toString() ?? 'Не удалось сохранить маршрут'
+          : result['restarted'] == true
+          ? 'Маршрут для ${service.name} сохранён, VPN автоматически переподключён.'
           : 'Маршрут для ${service.name} сохранён и применится при следующем старте VPN.';
     });
   }
@@ -10381,11 +10383,12 @@ class _SettingsDialogState extends State<_SettingsDialog> {
         ),
         const SizedBox(height: 14),
         if (vpnRunning) ...[
-          const _InfoBand(
+          _InfoBand(
             icon: Icons.lock_outline,
             title: 'VPN активен',
-            body:
-                'Некоторые настройки нельзя изменить во время активного VPN. Остановите VPN, если нужно поменять маршруты, режим сети или логирование.',
+            body: isMobile
+                ? 'Остановите Android VPN, чтобы изменить маршруты, режим сети или логирование.'
+                : 'Режим сети и логирование требуют остановки VPN. Маршрут отдельного сервиса можно изменить: dropo безопасно переподключит VPN автоматически.',
           ),
           const SizedBox(height: 14),
         ],
@@ -10617,7 +10620,7 @@ class _SettingsDialogState extends State<_SettingsDialog> {
               services: serviceCatalog,
               loading: serviceCatalogLoading,
               error: serviceCatalogError,
-              policyEditingEnabled: canChangeRuntime,
+              policyEditingEnabled: !saving && (!isMobile || !vpnRunning),
               allowAutomaticPolicy: !isMobile,
               onPolicyChanged: (service, policy) =>
                   unawaited(_setServiceRoutePolicy(service, policy)),
@@ -11015,7 +11018,9 @@ class _ServiceCatalogRow extends StatelessWidget {
                     SizedBox(
                       width: 122,
                       child: DropdownButtonFormField<String>(
-                        key: ValueKey('service-route-${service.tag}'),
+                        key: ValueKey(
+                          'service-route-${service.tag}-$routeValue',
+                        ),
                         initialValue: routeValue,
                         isExpanded: true,
                         isDense: true,

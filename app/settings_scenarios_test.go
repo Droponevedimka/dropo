@@ -125,6 +125,77 @@ func TestSettingsAPIsPersistFreeAccessPolicy(t *testing.T) {
 	}
 }
 
+func TestAppSettingsMapsAreIsolatedAndFailedWritesRollback(t *testing.T) {
+	app := newInitializedSettingsScenarioApp(t)
+
+	detached := app.storage.GetAppSettings()
+	detached.FreeAccessMethods["discord"] = FreeAccessMethodVPN
+	detached.FreeAccessServices["youtube"] = false
+	stored := app.storage.GetAppSettings()
+	if stored.FreeAccessMethods["discord"] == FreeAccessMethodVPN || !FreeAccessServiceEnabled(stored, "youtube") {
+		t.Fatal("GetAppSettings leaked mutable maps into storage")
+	}
+
+	detached = app.storage.GetAppSettings()
+	detached.FreeAccessMethods["discord"] = FreeAccessMethodVPN
+	if err := app.storage.UpdateAppSettings(detached); err != nil {
+		t.Fatalf("update app settings failed: %v", err)
+	}
+	detached.FreeAccessMethods["discord"] = FreeAccessMethodDirect
+	if got := app.storage.GetAppSettings().FreeAccessMethods["discord"]; got != FreeAccessMethodVPN {
+		t.Fatalf("UpdateAppSettings retained caller map: got %q, want vpn", got)
+	}
+
+	beforeFailure := app.storage.GetAppSettings()
+	updated := beforeFailure
+	updated.Theme = ThemeLight
+	originalPath := app.storage.settingsPath
+	app.storage.settingsPath = t.TempDir()
+	if err := app.storage.UpdateAppSettings(updated); err == nil {
+		t.Fatal("UpdateAppSettings unexpectedly succeeded with a directory as settings path")
+	}
+	app.storage.settingsPath = originalPath
+	if got := app.storage.GetAppSettings().Theme; got != beforeFailure.Theme {
+		t.Fatalf("failed settings write changed in-memory state: got %q, want %q", got, beforeFailure.Theme)
+	}
+}
+
+func TestServicePolicyAPIsRejectUnknownMethodsAndRollbackRebuildFailures(t *testing.T) {
+	app := newInitializedSettingsScenarioApp(t)
+
+	before := app.storage.GetAppSettings()
+	result := app.SetFreeAccessServiceMethod("discord", "not-a-route")
+	if success, _ := result["success"].(bool); success {
+		t.Fatalf("unknown route method unexpectedly succeeded: %+v", result)
+	}
+	if got := app.storage.GetAppSettings().FreeAccessMethods["discord"]; got != before.FreeAccessMethods["discord"] {
+		t.Fatalf("unknown method changed stored policy: got %q, want %q", got, before.FreeAccessMethods["discord"])
+	}
+
+	app.configBuilder = nil
+	targetMethod := FreeAccessMethodVPN
+	if FreeAccessServiceMethod(before, "discord") == targetMethod {
+		targetMethod = FreeAccessMethodDirect
+	}
+	result = app.SetFreeAccessServiceMethod("discord", targetMethod)
+	if success, _ := result["success"].(bool); success {
+		t.Fatalf("service method unexpectedly survived rebuild failure: %+v", result)
+	}
+	afterMethodFailure := app.storage.GetAppSettings()
+	if got := afterMethodFailure.FreeAccessMethods["discord"]; got != before.FreeAccessMethods["discord"] {
+		t.Fatalf("service method rollback = %q, want %q", got, before.FreeAccessMethods["discord"])
+	}
+
+	wasEnabled := FreeAccessServiceEnabled(before, "youtube")
+	result = app.ToggleFreeAccessService("youtube", !wasEnabled)
+	if success, _ := result["success"].(bool); success {
+		t.Fatalf("service toggle unexpectedly survived rebuild failure: %+v", result)
+	}
+	if got := FreeAccessServiceEnabled(app.storage.GetAppSettings(), "youtube"); got != wasEnabled {
+		t.Fatalf("service toggle rollback = %t, want %t", got, wasEnabled)
+	}
+}
+
 func TestSettingsAPIsPersistHideRuTrafficPolicy(t *testing.T) {
 	app := newInitializedSettingsScenarioApp(t)
 

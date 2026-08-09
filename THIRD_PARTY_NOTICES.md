@@ -28,10 +28,10 @@
 | [bol-van/zapret](https://github.com/bol-van/zapret) | Исторические описания split/overlap/fake-подходов и blockcheck | Не поставляется и не вызывается |
 | [hufrea/byedpi](https://github.com/hufrea/byedpi) | Сравнение proxy-based обхода с прозрачным packet engine | Не входит в Windows release |
 
-Последние исследованные ревизии на 2026-08-07:
+Последние исследованные ревизии на 2026-08-09:
 
 - zapret2: `032651deeb2117a32c67fdf5cec115d5e52a63dd`;
-- Flowseal zapret-discord-youtube: `61d7596c7ce82b6f320e5c79ff4598856f4ae7d3`.
+- Flowseal zapret-discord-youtube: `47da17f80ad36a8424cdd25658153fdebd7eb938` (обновление стратегий от 2026-08-09 проверено; обработка неизвестного или слабо классифицированного игрового payload намеренно не перенесена в fail-safe packet path dropo).
 
 Обновление upstream само по себе не обновляет dropo: сначала выполняются
 license/security review, перевод идеи в типизированную модель, unit/fixture/

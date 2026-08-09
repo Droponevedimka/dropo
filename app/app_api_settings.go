@@ -356,7 +356,7 @@ func (a *App) SetRoutingMode(mode string) map[string]interface{} {
 
 	// Update settings
 	settings := a.storage.GetAppSettings()
-	previousSettings := settings
+	previousSettings := cloneGlobalAppSettings(settings)
 	settings.RoutingMode = routingMode
 
 	if err := a.storage.UpdateAppSettings(settings); err != nil {
@@ -559,7 +559,7 @@ func (a *App) SetDisableFreeAccess(disabled bool) map[string]interface{} {
 	}
 
 	settings := a.storage.GetAppSettings()
-	previousSettings := settings
+	previousSettings := cloneGlobalAppSettings(settings)
 	settings.DisableFreeAccess = disabled
 	settings.FreeAccessEnabled = true
 	settings.FreeAccessReverse = false
@@ -601,6 +601,8 @@ func (a *App) SetFreeAccessReverse(reverse bool) map[string]interface{} {
 // ToggleFreeAccessService enables/disables a single service in the "Free access" list.
 func (a *App) ToggleFreeAccessService(tag string, enabled bool) map[string]interface{} {
 	a.waitForInit()
+	a.settingsPolicyMu.Lock()
+	defer a.settingsPolicyMu.Unlock()
 
 	if a.storage == nil {
 		return map[string]interface{}{
@@ -634,6 +636,7 @@ func (a *App) ToggleFreeAccessService(tag string, enabled bool) map[string]inter
 	}
 
 	settings := a.storage.GetAppSettings()
+	previousSettings := cloneGlobalAppSettings(settings)
 	if settings.FreeAccessServices == nil {
 		settings.FreeAccessServices = DefaultFreeAccessServiceState()
 	}
@@ -647,6 +650,7 @@ func (a *App) ToggleFreeAccessService(tag string, enabled bool) map[string]inter
 	}
 
 	if err := a.RebuildActiveProfileConfig(); err != nil {
+		_ = a.storage.UpdateAppSettings(previousSettings)
 		return map[string]interface{}{
 			"success": false,
 			"error":   fmt.Sprintf("Ошибка перестройки конфига: %v", err),
@@ -667,6 +671,8 @@ func (a *App) ToggleFreeAccessService(tag string, enabled bool) map[string]inter
 // direct, VPN subscription, or one of the bundled free methods.
 func (a *App) SetFreeAccessServiceMethod(tag string, method string) map[string]interface{} {
 	a.waitForInit()
+	a.settingsPolicyMu.Lock()
+	defer a.settingsPolicyMu.Unlock()
 
 	if a.storage == nil {
 		return map[string]interface{}{
@@ -689,46 +695,163 @@ func (a *App) SetFreeAccessServiceMethod(tag string, method string) map[string]i
 		}
 	}
 
+	normalized, valid := normalizeRequestedFreeAccessServiceMethod(method)
+	if !valid {
+		return map[string]interface{}{
+			"success": false,
+			"error":   fmt.Sprintf("Неизвестный метод маршрута: %s", strings.TrimSpace(method)),
+		}
+	}
+
 	a.mu.Lock()
 	isRunning := a.isRunning
+	isStarting := a.isStarting
 	a.mu.Unlock()
-	if isRunning {
+	if isStarting {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "Дождитесь завершения текущего подключения VPN и повторите изменение маршрута.",
+		}
+	}
+	if isRunning && runtime.GOOS != "windows" {
 		return map[string]interface{}{
 			"success": false,
 			"error":   "Нельзя изменить метод пока VPN активен. Сначала отключите VPN.",
 		}
 	}
 
-	normalized := NormalizeFreeAccessServiceMethod(method)
 	settings := a.storage.GetAppSettings()
-	previousSettings := settings
+	previousSettings := cloneGlobalAppSettings(settings)
+	existing := FreeAccessMethodAuto
+	if settings.FreeAccessMethods != nil {
+		existing = NormalizeFreeAccessServiceMethod(settings.FreeAccessMethods[tag])
+		if runtime.GOOS == "windows" && (IsFreeAccessProxyMethod(existing) || IsFreeAccessTransparentMethod(existing)) {
+			existing = FreeAccessMethodAuto
+		}
+	}
+	if existing == normalized {
+		return map[string]interface{}{
+			"success":   true,
+			"tag":       tag,
+			"method":    normalized,
+			"restarted": false,
+			"unchanged": true,
+		}
+	}
 	if settings.FreeAccessMethods == nil {
 		settings.FreeAccessMethods = DefaultFreeAccessServiceMethodState()
 	}
 	settings.FreeAccessMethods[tag] = normalized
 
+	if isRunning {
+		stopResult := a.Stop()
+		if !apiResultSucceeded(stopResult) {
+			return map[string]interface{}{
+				"success": false,
+				"error":   fmt.Sprintf("Не удалось остановить VPN для смены маршрута: %s", apiResultMessage(stopResult)),
+			}
+		}
+	}
+
 	if err := a.storage.UpdateAppSettings(settings); err != nil {
+		recovery := a.restartAfterServicePolicyFailure(isRunning)
 		return map[string]interface{}{
 			"success": false,
-			"error":   fmt.Sprintf("Ошибка сохранения настроек: %v", err),
+			"error":   fmt.Sprintf("Ошибка сохранения настроек: %v%s", err, recovery),
 		}
 	}
 
 	if err := a.RebuildActiveProfileConfig(); err != nil {
-		_ = a.storage.UpdateAppSettings(previousSettings)
+		rollbackErr := a.restoreServicePolicy(previousSettings)
+		recovery := a.restartAfterServicePolicyFailure(isRunning)
 		return map[string]interface{}{
 			"success": false,
-			"error":   fmt.Sprintf("Ошибка перестройки конфига: %v", err),
+			"error":   fmt.Sprintf("Ошибка перестройки конфига: %v%s%s", err, rollbackErr, recovery),
+		}
+	}
+	if isRunning {
+		startResult := a.Start()
+		if !apiResultSucceeded(startResult) {
+			startError := apiResultMessage(startResult)
+			rollbackErr := a.restoreServicePolicy(previousSettings)
+			recovery := a.restartAfterServicePolicyFailure(true)
+			return map[string]interface{}{
+				"success": false,
+				"error":   fmt.Sprintf("Новый маршрут сохранён, но VPN не переподключился: %s%s%s", startError, rollbackErr, recovery),
+			}
 		}
 	}
 
 	a.writeLog(fmt.Sprintf("Free access service %s method: %s", tag, normalized))
 
 	return map[string]interface{}{
-		"success": true,
-		"tag":     tag,
-		"method":  normalized,
+		"success":   true,
+		"tag":       tag,
+		"method":    normalized,
+		"restarted": isRunning,
 	}
+}
+
+func normalizeRequestedFreeAccessServiceMethod(method string) (string, bool) {
+	requested := strings.TrimSpace(strings.ToLower(method))
+	switch requested {
+	case "", FreeAccessMethodAuto, FreeAccessMethodDirect, FreeAccessMethodVPN, "subscription", "auto-select", "proxy":
+		return NormalizeFreeAccessServiceMethod(requested), true
+	}
+	if IsFreeAccessProxyMethod(requested) || IsFreeAccessTransparentMethod(requested) || isKnownLegacyFreeAccessMethod(requested) {
+		if runtime.GOOS == "windows" {
+			return FreeAccessMethodAuto, true
+		}
+		return requested, true
+	}
+	return "", false
+}
+
+func isKnownLegacyFreeAccessMethod(method string) bool {
+	for _, strategy := range DefaultByeDPIStrategies {
+		if strategy.Tag == method {
+			return true
+		}
+	}
+	for _, strategy := range DefaultZapretTransparentStrategies {
+		if strategy.Tag == method {
+			return true
+		}
+	}
+	return false
+}
+
+func apiResultSucceeded(result map[string]interface{}) bool {
+	success, _ := result["success"].(bool)
+	return success
+}
+
+func apiResultMessage(result map[string]interface{}) string {
+	if message := strings.TrimSpace(fmt.Sprint(result["error"])); message != "" && message != "<nil>" {
+		return message
+	}
+	return "неизвестная ошибка"
+}
+
+func (a *App) restoreServicePolicy(previous GlobalAppSettings) string {
+	if err := a.storage.UpdateAppSettings(previous); err != nil {
+		return fmt.Sprintf("; не удалось откатить настройки: %v", err)
+	}
+	if err := a.RebuildActiveProfileConfig(); err != nil {
+		return fmt.Sprintf("; настройки откатились, но прежний конфиг не восстановлен: %v", err)
+	}
+	return "; прежний маршрут восстановлен"
+}
+
+func (a *App) restartAfterServicePolicyFailure(wasRunning bool) string {
+	if !wasRunning {
+		return ""
+	}
+	result := a.Start()
+	if apiResultSucceeded(result) {
+		return "; прежнее VPN-подключение восстановлено"
+	}
+	return fmt.Sprintf("; не удалось восстановить VPN-подключение: %s", apiResultMessage(result))
 }
 
 // ============================================================================
@@ -827,6 +950,9 @@ func (a *App) RebuildActiveProfileConfig() error {
 	if a.storage == nil {
 		return fmt.Errorf("storage not initialized")
 	}
+	if a.configBuilder == nil {
+		return fmt.Errorf("config builder not initialized")
+	}
 
 	profile, err := a.storage.GetActiveProfile()
 	if err != nil || profile == nil {
@@ -835,9 +961,7 @@ func (a *App) RebuildActiveProfileConfig() error {
 
 	// Get routing mode from settings
 	settings := a.storage.GetAppSettings()
-	if a.configBuilder != nil {
-		a.configBuilder.SetRoutingMode(settings.RoutingMode)
-	}
+	a.configBuilder.SetRoutingMode(settings.RoutingMode)
 
 	// Rebuild using config builder
 	return a.configBuilder.BuildConfig(profile.SubscriptionURL)
