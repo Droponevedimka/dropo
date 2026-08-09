@@ -177,6 +177,32 @@ func TestWindowsUnifiedCatalogUsesPerServiceWorkingCache(t *testing.T) {
 	}
 }
 
+func TestManualVPNPolicyNeverFallsBackToFreeStrategy(t *testing.T) {
+	app := newServiceEngineTestApp(t)
+	service, ok := findFreeAccessService("discord")
+	if !ok {
+		t.Fatal("Discord service is missing")
+	}
+	settings := app.storage.GetAppSettings()
+	settings.FreeAccessMethods = map[string]string{service.Tag: FreeAccessMethodVPN}
+	freeMethod := rankedMethodsForService(service.Tag)[0]
+
+	selection := app.selectFreeAccessStrategyForService(
+		settings,
+		service,
+		nil,
+		map[string]serviceStrategyCacheEntry{
+			service.Tag: {MethodTag: freeMethod.Tag, State: serviceStrategyStateWorking, Source: "test"},
+		},
+		nil,
+		map[string]bool{freeMethod.Tag: true},
+		false,
+	)
+	if selection.MethodTag != "" {
+		t.Fatalf("strict manual VPN selection = %+v, want no route while VPN is unavailable", selection)
+	}
+}
+
 func TestStartupServiceSearchLadderKeepsWorkingCachedMethodFirst(t *testing.T) {
 	ranked := rankedMethodsForService("discord")
 	if len(ranked) < 3 {

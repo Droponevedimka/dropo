@@ -185,7 +185,11 @@ func (a *App) selectFreeAccessStrategyForService(settings GlobalAppSettings, svc
 		if strategyMethodAvailable(manual, activeProxyTags, transparentTags, hasVPNProxy) {
 			return makeFreeAccessStrategySelection(svc, manual, "manual", 0)
 		}
-		a.writeLog(fmt.Sprintf("[FreeAccess] manual method %s for %s is unavailable, falling back to automatic strategy", manual, svc.DisplayName))
+		// A manual route is a strict policy, not a preference. In particular,
+		// forcing VPN must never silently re-enable transparent/free methods when
+		// the subscription is temporarily unavailable.
+		a.writeLog(fmt.Sprintf("[FreeAccess] strict manual method %s for %s is unavailable; automatic strategies remain disabled for this service", manual, svc.DisplayName))
+		return freeAccessStrategySelection{}
 	}
 	if cached, ok := serviceFallbackCache[svc.Tag]; ok && !isFreeAccessFallbackTag(cached.MethodTag) {
 		if method, exists := findServiceBypassMethod(svc.Tag, cached.MethodTag); exists {

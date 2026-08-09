@@ -12,8 +12,12 @@ param(
 $ScriptRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 $versionFile = Join-Path $ScriptRoot "version.json"
 
-# Read current version
-$config = Get-Content $versionFile | ConvertFrom-Json
+# Read the source of truth as strict UTF-8. Windows PowerShell 5.1 otherwise
+# decodes UTF-8 without a BOM through the active ANSI code page and can corrupt
+# non-ASCII metadata such as the copyright symbol.
+$strictUtf8 = [Text.UTF8Encoding]::new($false, $true)
+$versionJson = [IO.File]::ReadAllText($versionFile, $strictUtf8)
+$config = $versionJson | ConvertFrom-Json
 $currentVersion = $config.version
 
 Write-Host "Current version: $currentVersion" -ForegroundColor Cyan
@@ -54,14 +58,18 @@ if (-not [version]::TryParse($newVersion, [ref]$parsedVersion) -or
     throw "Version must contain exactly three non-negative numeric components (for example 3.0.11)."
 }
 
-# Update version.json
-$config.version = $newVersion
-$versionJson = $config | ConvertTo-Json -Depth 10
-[IO.File]::WriteAllText(
-    $versionFile,
-    $versionJson + [Environment]::NewLine,
-    [Text.UTF8Encoding]::new($false)
+# Update only the version token so formatting and unrelated metadata remain
+# byte-for-byte stable.
+$updatedVersionJson = [regex]::Replace(
+    $versionJson,
+    '(?m)("version"\s*:\s*")[^"]+("\s*,)',
+    ('${1}' + $newVersion + '${2}'),
+    1
 )
+if ($updatedVersionJson -eq $versionJson) {
+    throw "Could not update the version field in version.json."
+}
+[IO.File]::WriteAllText($versionFile, $updatedVersionJson, [Text.UTF8Encoding]::new($false))
 
 Write-Host ""
 Write-Host "Updated version.json" -ForegroundColor Green

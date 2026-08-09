@@ -54,6 +54,13 @@ try {
         $publisherText -notmatch 'UTF8Encoding\]::new\(\$false\)\.GetBytes') {
         $failures.Add("tools/publish-release-assets.ps1: GitHub JSON PATCH must use explicit UTF-8 bytes")
     }
+
+    $bumpPath = Join-Path $RepoRoot "scripts\release\bump-version.ps1"
+    $bumpText = $strictUtf8.GetString([IO.File]::ReadAllBytes($bumpPath))
+    if ($bumpText -notmatch 'ReadAllText\(\$versionFile, \$strictUtf8\)' -or
+        $bumpText -notmatch 'Update only the version token') {
+        $failures.Add("scripts/release/bump-version.ps1: version.json must be read as strict UTF-8 and updated without reserialization")
+    }
 } finally {
     Pop-Location
 }

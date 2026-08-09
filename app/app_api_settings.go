@@ -701,6 +701,7 @@ func (a *App) SetFreeAccessServiceMethod(tag string, method string) map[string]i
 
 	normalized := NormalizeFreeAccessServiceMethod(method)
 	settings := a.storage.GetAppSettings()
+	previousSettings := settings
 	if settings.FreeAccessMethods == nil {
 		settings.FreeAccessMethods = DefaultFreeAccessServiceMethodState()
 	}
@@ -714,6 +715,7 @@ func (a *App) SetFreeAccessServiceMethod(tag string, method string) map[string]i
 	}
 
 	if err := a.RebuildActiveProfileConfig(); err != nil {
+		_ = a.storage.UpdateAppSettings(previousSettings)
 		return map[string]interface{}{
 			"success": false,
 			"error":   fmt.Sprintf("Ошибка перестройки конфига: %v", err),

@@ -10,6 +10,23 @@ void main() {
     expect(themeModeFromSetting('invalid'), ThemeMode.system);
   });
 
+  test(
+    'service catalog keeps the saved policy separate from its effective route',
+    () {
+      final route = RouteService.fromFreeAccessJson(const {
+        'tag': 'discord',
+        'name': 'Discord',
+        'selectedMethod': 'auto',
+        'effectiveMethod': 'vpn',
+        'effectiveMethodLabel': 'VPN подписка',
+        'requiresVpn': false,
+      });
+
+      expect(route.selectedMethod, 'auto');
+      expect(route.method, 'VPN подписка');
+    },
+  );
+
   testWidgets('dropo Flutter shell keeps the compact map dashboard controls', (
     tester,
   ) async {
@@ -67,6 +84,61 @@ void main() {
     expect(find.text('Встроенный runtime'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets(
+    'Windows service policy is clickable, high contrast, and persists forced VPN',
+    (tester) async {
+      tester.view.physicalSize = const Size(960, 720);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      final bridge = _RoutePolicyRecordingBridge();
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: ThemeData.dark(),
+          home: DropoHomePage(bridge: bridge),
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 2));
+      await tester.tap(find.byIcon(Icons.settings));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 600));
+
+      final routeField = find.byKey(
+        const ValueKey<String>('service-route-discord'),
+      );
+      expect(routeField, findsOneWidget);
+      final dropdown = tester.widget<DropdownButtonFormField<String>>(
+        routeField,
+      );
+      expect(dropdown.onChanged, isNotNull);
+      expect(
+        tester.widget<Text>(find.text('Сервисы и маршруты')).style?.color,
+        const Color(0xFFE8F3EF),
+      );
+      expect(
+        tester.widget<Text>(find.text('Discord')).style?.color,
+        const Color(0xFFE8F3EF),
+      );
+
+      await tester.ensureVisible(routeField);
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.tap(routeField);
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.tap(find.text('Через VPN').last);
+      await tester.pump(const Duration(milliseconds: 800));
+
+      expect(bridge.lastTag, 'discord');
+      expect(bridge.lastMethod, 'vpn');
+      expect(
+        find.textContaining('Маршрут для Discord сохранён'),
+        findsOneWidget,
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets(
     'Android shell uses bottom navigation and requires subscription before VPN start',
@@ -465,5 +537,35 @@ class _BundledRuntimePreparingBridge extends MockCoreBridge {
         'singboxVersion': '1.13.14',
       },
     });
+  }
+}
+
+class _RoutePolicyRecordingBridge extends MockCoreBridge {
+  String lastTag = '';
+  String lastMethod = '';
+
+  @override
+  Future<List<RouteService>> routes({bool live = false}) async {
+    return const [
+      RouteService(
+        tag: 'discord',
+        name: 'Discord',
+        method: 'Discord active decoys x3',
+        selectedMethod: 'auto',
+        requiresVpn: false,
+        delayMs: 0,
+        domainSuffixes: ['discord.com', 'discord.gg'],
+      ),
+    ];
+  }
+
+  @override
+  Future<Map<String, dynamic>> setFreeAccessServiceMethod(
+    String tag,
+    String method,
+  ) async {
+    lastTag = tag;
+    lastMethod = method;
+    return {'success': true, 'tag': tag, 'method': method};
   }
 }

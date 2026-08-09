@@ -152,6 +152,10 @@ abstract class CoreBridge {
   );
   Future<Map<String, dynamic>> freeAccessConfig();
   Future<Map<String, dynamic>> setDisableFreeAccess(bool disabled);
+  Future<Map<String, dynamic>> setFreeAccessServiceMethod(
+    String tag,
+    String method,
+  );
   Future<List<RouteService>> routes({bool live = false});
   Future<List<String>> logs();
   Future<List<BridgeEvent>> events({required int since});
@@ -437,6 +441,14 @@ class HttpCoreBridge implements CoreBridge {
   @override
   Future<Map<String, dynamic>> setDisableFreeAccess(bool disabled) {
     return callMap('SetDisableFreeAccess', args: [disabled]);
+  }
+
+  @override
+  Future<Map<String, dynamic>> setFreeAccessServiceMethod(
+    String tag,
+    String method,
+  ) {
+    return callMap('SetFreeAccessServiceMethod', args: [tag, method]);
   }
 
   @override
@@ -1057,6 +1069,14 @@ class ChannelCoreBridge implements CoreBridge {
   }
 
   @override
+  Future<Map<String, dynamic>> setFreeAccessServiceMethod(
+    String tag,
+    String method,
+  ) {
+    return callMap('SetFreeAccessServiceMethod', args: [tag, method]);
+  }
+
+  @override
   Future<List<RouteService>> routes({bool live = false}) async {
     final data = await callMap(
       live ? 'GetBypassRouteSummary' : 'GetFreeAccessConfig',
@@ -1503,6 +1523,7 @@ class ChannelCoreBridge implements CoreBridge {
 class MockCoreBridge implements CoreBridge {
   bool _connected = false;
   String _subscriptionUrl = '';
+  final Map<String, String> _routeMethods = <String, String>{};
   AppConfig _config = AppConfig.defaults.copyWith(
     autoStart: false,
     autoStartPrompted: true,
@@ -1742,9 +1763,29 @@ class MockCoreBridge implements CoreBridge {
   }
 
   @override
+  Future<Map<String, dynamic>> setFreeAccessServiceMethod(
+    String tag,
+    String method,
+  ) async {
+    final normalized = switch (method.trim().toLowerCase()) {
+      'direct' => 'direct',
+      'vpn' => 'vpn',
+      _ => 'auto',
+    };
+    _routeMethods[tag] = normalized;
+    return {'success': true, 'tag': tag, 'method': normalized};
+  }
+
+  @override
   Future<List<RouteService>> routes({bool live = false}) async {
     if (!live) {
-      return fallbackRoutes;
+      return fallbackRoutes
+          .map(
+            (route) => route.copyWith(
+              selectedMethod: _routeMethods[route.tag] ?? route.selectedMethod,
+            ),
+          )
+          .toList(growable: false);
     }
     return fallbackRoutes
         .map(
@@ -1752,6 +1793,7 @@ class MockCoreBridge implements CoreBridge {
             tag: route.tag,
             name: route.name,
             method: _connected ? route.method : 'Mock standby',
+            selectedMethod: _routeMethods[route.tag] ?? route.selectedMethod,
             requiresVpn: route.requiresVpn,
             delayMs: _connected ? 24 + route.tag.length : 0,
             domainSuffixes: route.domainSuffixes,
@@ -2540,6 +2582,7 @@ class RouteService {
     required this.tag,
     required this.name,
     required this.method,
+    this.selectedMethod = 'auto',
     required this.requiresVpn,
     required this.delayMs,
     this.domainSuffixes = const [],
@@ -2549,6 +2592,7 @@ class RouteService {
   final String tag;
   final String name;
   final String method;
+  final String selectedMethod;
   final bool requiresVpn;
   final int delayMs;
   final List<String> domainSuffixes;
@@ -2563,6 +2607,7 @@ class RouteService {
           json['methodLabel']?.toString() ??
           json['selectedMethod']?.toString() ??
           'Auto',
+      selectedMethod: _routePolicyFromJson(json),
       requiresVpn: json['requiresVpn'] == true,
       domainSuffixes: _asStringList(
         json['domainSuffixes'] ?? json['domain_suffixes'],
@@ -2588,6 +2633,7 @@ class RouteService {
           json['methodLabel']?.toString() ??
           json['outbound']?.toString() ??
           'Auto',
+      selectedMethod: _routePolicyFromJson(json),
       requiresVpn:
           json['requiresVpn'] == true ||
           json['method']?.toString().toLowerCase().contains('vpn') == true ||
@@ -2611,6 +2657,7 @@ class RouteService {
     String? tag,
     String? name,
     String? method,
+    String? selectedMethod,
     bool? requiresVpn,
     int? delayMs,
     List<String>? domainSuffixes,
@@ -2620,6 +2667,7 @@ class RouteService {
       tag: tag ?? this.tag,
       name: name ?? this.name,
       method: method ?? this.method,
+      selectedMethod: selectedMethod ?? this.selectedMethod,
       requiresVpn: requiresVpn ?? this.requiresVpn,
       delayMs: delayMs ?? this.delayMs,
       domainSuffixes: domainSuffixes ?? this.domainSuffixes,
@@ -6798,6 +6846,7 @@ class _MenuPageSurfaceState extends State<_MenuPageSurface> {
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
+                    color: Color(0xFFE8F3EF),
                     fontSize: 18,
                     fontWeight: FontWeight.w400,
                   ),
@@ -7697,6 +7746,7 @@ class _AppDialog extends StatelessWidget {
                     child: Text(
                       title,
                       style: const TextStyle(
+                        color: Color(0xFFE8F3EF),
                         fontSize: 18,
                         fontWeight: FontWeight.w800,
                       ),
@@ -7704,6 +7754,7 @@ class _AppDialog extends StatelessWidget {
                   ),
                   IconButton(
                     onPressed: () => Navigator.of(context).pop(),
+                    color: const Color(0xFFCDE7DE),
                     icon: const Icon(Icons.close),
                     tooltip: 'Закрыть',
                     mouseCursor: SystemMouseCursors.click,
@@ -7991,9 +8042,14 @@ class _ActionButton extends StatelessWidget {
             backgroundColor: danger
                 ? const Color(0xFF7F1D1D)
                 : secondary
-                ? const Color(0xFF263331)
-                : const Color(0xFF1F8C78),
-            foregroundColor: secondary ? const Color(0xFFD4E5E0) : Colors.white,
+                ? const Color(0xFF2B3C38)
+                : const Color(0xFF176B5D),
+            foregroundColor: secondary ? const Color(0xFFE8F3EF) : Colors.white,
+            disabledBackgroundColor: const Color(0xFF24312F),
+            disabledForegroundColor: const Color(0xFFA3B5AF),
+            side: BorderSide(
+              color: secondary ? const Color(0xFF48615A) : Colors.transparent,
+            ),
             padding: EdgeInsets.symmetric(
               horizontal: compact ? 10 : 14,
               vertical: compact ? 8 : 13,
@@ -10252,10 +10308,9 @@ class _SettingsDialogState extends State<_SettingsDialog> {
     Map<String, dynamic> result;
     List<RouteService>? updatedServices;
     try {
-      result = await widget.bridge.callMap(
-        'SetAndroidRoutePolicy',
-        args: [service.tag, policy],
-        timeout: const Duration(seconds: 12),
+      result = await widget.bridge.setFreeAccessServiceMethod(
+        service.tag,
+        policy,
       );
       if (result['success'] != false) {
         updatedServices = await widget.bridge.routes(live: false);
@@ -10275,7 +10330,7 @@ class _SettingsDialogState extends State<_SettingsDialog> {
       }
       statusText = result['success'] == false
           ? result['error']?.toString() ?? 'Не удалось сохранить маршрут'
-          : 'Маршрут для ${service.name} применится при следующем старте VPN.';
+          : 'Маршрут для ${service.name} сохранён и применится при следующем старте VPN.';
     });
   }
 
@@ -10562,11 +10617,10 @@ class _SettingsDialogState extends State<_SettingsDialog> {
               services: serviceCatalog,
               loading: serviceCatalogLoading,
               error: serviceCatalogError,
-              policyEditingEnabled: isMobile && canChangeRuntime,
-              onPolicyChanged: isMobile
-                  ? (service, policy) =>
-                        unawaited(_setServiceRoutePolicy(service, policy))
-                  : null,
+              policyEditingEnabled: canChangeRuntime,
+              allowAutomaticPolicy: !isMobile,
+              onPolicyChanged: (service, policy) =>
+                  unawaited(_setServiceRoutePolicy(service, policy)),
             ),
           ],
         ),
@@ -10658,6 +10712,7 @@ class _ServiceCatalogTable extends StatelessWidget {
     required this.loading,
     required this.error,
     required this.policyEditingEnabled,
+    required this.allowAutomaticPolicy,
     required this.onPolicyChanged,
   });
 
@@ -10666,6 +10721,7 @@ class _ServiceCatalogTable extends StatelessWidget {
   final bool loading;
   final String error;
   final bool policyEditingEnabled;
+  final bool allowAutomaticPolicy;
   final void Function(RouteService service, String policy)? onPolicyChanged;
 
   @override
@@ -10677,9 +10733,9 @@ class _ServiceCatalogTable extends StatelessWidget {
       margin: const EdgeInsets.only(bottom: 7),
       padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.055),
+        color: const Color(0xFF15211F),
         borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
+        border: Border.all(color: const Color(0xFF344A44)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -10698,6 +10754,7 @@ class _ServiceCatalogTable extends StatelessWidget {
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
+                    color: Color(0xFFE8F3EF),
                     fontSize: 12,
                     fontWeight: FontWeight.w800,
                   ),
@@ -10737,6 +10794,7 @@ class _ServiceCatalogTable extends StatelessWidget {
                               (service) => _ServiceCatalogRow(
                                 service: service,
                                 enabled: policyEditingEnabled,
+                                allowAutomaticPolicy: allowAutomaticPolicy,
                                 onPolicyChanged: onPolicyChanged,
                               ),
                             )
@@ -10860,11 +10918,13 @@ class _ServiceCatalogRow extends StatelessWidget {
   const _ServiceCatalogRow({
     required this.service,
     required this.enabled,
+    required this.allowAutomaticPolicy,
     required this.onPolicyChanged,
   });
 
   final RouteService service;
   final bool enabled;
+  final bool allowAutomaticPolicy;
   final void Function(RouteService service, String policy)? onPolicyChanged;
 
   @override
@@ -10873,8 +10933,13 @@ class _ServiceCatalogRow extends StatelessWidget {
     final ipText = service.ipCidrs.isEmpty
         ? 'IP: CDN/динамические'
         : 'IP: ${_compactTargets(service.ipCidrs)}';
-    final routeValue =
-        service.requiresVpn || service.method.toLowerCase().contains('vpn')
+    final selectedMethod = service.selectedMethod.trim().toLowerCase();
+    final routeValue = allowAutomaticPolicy && selectedMethod == 'auto'
+        ? 'auto'
+        : selectedMethod == 'vpn' ||
+              (selectedMethod.isEmpty &&
+                  (service.requiresVpn ||
+                      service.method.toLowerCase().contains('vpn')))
         ? 'vpn'
         : 'direct';
     final pingText = service.delayMs > 0
@@ -10884,9 +10949,9 @@ class _ServiceCatalogRow extends StatelessWidget {
       margin: const EdgeInsets.only(bottom: 6),
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
       decoration: BoxDecoration(
-        color: Colors.black.withValues(alpha: 0.18),
+        color: const Color(0xFF0E1816),
         borderRadius: BorderRadius.circular(7),
-        border: Border.all(color: Colors.white.withValues(alpha: 0.05)),
+        border: Border.all(color: const Color(0xFF2D423C)),
       ),
       child: Row(
         children: [
@@ -10910,6 +10975,7 @@ class _ServiceCatalogRow extends StatelessWidget {
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: const TextStyle(
+                          color: Color(0xFFE8F3EF),
                           fontSize: 11.5,
                           fontWeight: FontWeight.w800,
                         ),
@@ -10949,12 +11015,31 @@ class _ServiceCatalogRow extends StatelessWidget {
                     SizedBox(
                       width: 122,
                       child: DropdownButtonFormField<String>(
+                        key: ValueKey('service-route-${service.tag}'),
                         initialValue: routeValue,
                         isExpanded: true,
                         isDense: true,
                         dropdownColor: const Color(0xFF14211F),
-                        decoration: _fieldDecoration(),
-                        items: const [
+                        iconEnabledColor: const Color(0xFFCDE7DE),
+                        iconDisabledColor: const Color(0xFF82958F),
+                        style: TextStyle(
+                          color: enabled
+                              ? const Color(0xFFE8F3EF)
+                              : const Color(0xFFA3B5AF),
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                        ),
+                        decoration: _fieldDecoration(enabled: enabled),
+                        items: [
+                          if (allowAutomaticPolicy)
+                            const DropdownMenuItem(
+                              value: 'auto',
+                              child: Text(
+                                'Авто',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
                           DropdownMenuItem(
                             value: 'direct',
                             child: Text(
@@ -11043,7 +11128,7 @@ class _SettingsGroup extends StatelessWidget {
           Text(
             title.toUpperCase(),
             style: const TextStyle(
-              color: Color(0xFF7B8F89),
+              color: Color(0xFFA9BDB7),
               fontSize: 11,
               fontWeight: FontWeight.w800,
               letterSpacing: 0.5,
@@ -11079,7 +11164,11 @@ class _SettingShell extends StatelessWidget {
           title,
           maxLines: 2,
           overflow: TextOverflow.ellipsis,
-          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w800),
+          style: const TextStyle(
+            color: Color(0xFFE8F3EF),
+            fontSize: 12,
+            fontWeight: FontWeight.w800,
+          ),
         ),
         const SizedBox(height: 3),
         Text(
@@ -11087,7 +11176,7 @@ class _SettingShell extends StatelessWidget {
           maxLines: 3,
           overflow: TextOverflow.ellipsis,
           style: const TextStyle(
-            color: Color(0xFF7F918C),
+            color: Color(0xFFA3B5AF),
             fontSize: 10,
             height: 1.25,
           ),
@@ -11165,7 +11254,16 @@ class _SelectSetting extends StatelessWidget {
       isExpanded: true,
       isDense: true,
       dropdownColor: const Color(0xFF14211F),
-      decoration: _fieldDecoration(),
+      iconEnabledColor: const Color(0xFFCDE7DE),
+      iconDisabledColor: const Color(0xFF82958F),
+      style: TextStyle(
+        color: onChanged == null
+            ? const Color(0xFFA3B5AF)
+            : const Color(0xFFE8F3EF),
+        fontSize: 13,
+        fontWeight: FontWeight.w600,
+      ),
+      decoration: _fieldDecoration(enabled: onChanged != null),
       items: [
         for (final entry in options.entries)
           DropdownMenuItem(
@@ -11223,7 +11321,11 @@ class _TextSettingState extends State<_TextSetting> {
       trailing: TextField(
         controller: controller,
         enabled: widget.onSubmitted != null,
-        decoration: _fieldDecoration(hint: 'vless://...'),
+        style: const TextStyle(color: Color(0xFFE8F3EF)),
+        decoration: _fieldDecoration(
+          hint: 'vless://...',
+          enabled: widget.onSubmitted != null,
+        ),
         onSubmitted: widget.onSubmitted,
       ),
     );
@@ -12636,20 +12738,29 @@ class _TelegramAssetShot extends StatelessWidget {
   }
 }
 
-InputDecoration _fieldDecoration({String? hint, Widget? suffixIcon}) {
+InputDecoration _fieldDecoration({
+  String? hint,
+  Widget? suffixIcon,
+  bool enabled = true,
+}) {
   return InputDecoration(
     hintText: hint,
     suffixIcon: suffixIcon,
     filled: true,
-    fillColor: Colors.black.withValues(alpha: 0.30),
+    hintStyle: const TextStyle(color: Color(0xFF82958F)),
+    fillColor: enabled ? const Color(0xFF0D1715) : const Color(0xFF182321),
     contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
     border: OutlineInputBorder(
       borderRadius: BorderRadius.circular(8),
-      borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.10)),
+      borderSide: const BorderSide(color: Color(0xFF3A514B)),
     ),
     enabledBorder: OutlineInputBorder(
       borderRadius: BorderRadius.circular(8),
-      borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.10)),
+      borderSide: const BorderSide(color: Color(0xFF45615A)),
+    ),
+    disabledBorder: OutlineInputBorder(
+      borderRadius: BorderRadius.circular(8),
+      borderSide: const BorderSide(color: Color(0xFF30423D)),
     ),
     focusedBorder: OutlineInputBorder(
       borderRadius: BorderRadius.circular(8),
@@ -12710,11 +12821,36 @@ String _cleanError(Object error) {
       .replaceFirst('TimeoutException after ', 'Таймаут: ');
 }
 
+String _routePolicyFromJson(Map<String, dynamic> json) {
+  final selected =
+      json['selectedMethod']?.toString().trim().toLowerCase() ?? '';
+  if (selected == 'auto' || selected == 'direct' || selected == 'vpn') {
+    return selected;
+  }
+  if (json['requiresVpn'] == true) {
+    return 'vpn';
+  }
+  final effective = [
+    json['effectiveMethod'],
+    json['method'],
+    json['outbound'],
+    json['effectiveMethodLabel'],
+    json['methodLabel'],
+  ].whereType<Object>().map((value) => value.toString().toLowerCase());
+  return effective.any(
+        (value) =>
+            value == 'vpn' || value.contains('vpn') || value == 'auto-select',
+      )
+      ? 'vpn'
+      : 'direct';
+}
+
 const List<RouteService> fallbackRoutes = [
   RouteService(
     tag: 'openai',
     name: 'ChatGPT / Copilot',
     method: 'Через VPN',
+    selectedMethod: 'vpn',
     requiresVpn: true,
     delayMs: 0,
     domainSuffixes: ['openai.com', 'chatgpt.com'],
@@ -12723,6 +12859,7 @@ const List<RouteService> fallbackRoutes = [
     tag: 'youtube',
     name: 'YouTube',
     method: 'Через VPN',
+    selectedMethod: 'vpn',
     requiresVpn: true,
     delayMs: 0,
     domainSuffixes: ['youtube.com', 'youtu.be', 'googlevideo.com'],
@@ -12731,6 +12868,7 @@ const List<RouteService> fallbackRoutes = [
     tag: 'discord',
     name: 'Discord',
     method: 'Через VPN',
+    selectedMethod: 'vpn',
     requiresVpn: true,
     delayMs: 0,
     domainSuffixes: ['discord.com', 'discord.gg', 'discordapp.net'],
@@ -12739,6 +12877,7 @@ const List<RouteService> fallbackRoutes = [
     tag: 'google',
     name: 'Google Search',
     method: 'Напрямую',
+    selectedMethod: 'direct',
     requiresVpn: false,
     delayMs: 0,
     domainSuffixes: ['google.com', 'google.ru', 'gstatic.com'],
@@ -12747,6 +12886,7 @@ const List<RouteService> fallbackRoutes = [
     tag: 'gosuslugi',
     name: 'Gosuslugi and RU services',
     method: 'Напрямую',
+    selectedMethod: 'direct',
     requiresVpn: false,
     delayMs: 0,
     domainSuffixes: ['gosuslugi.ru', 'mos.ru', 'nalog.ru'],
