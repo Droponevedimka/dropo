@@ -48,9 +48,26 @@ function Add-MarkOfTheWeb {
 
 function Invoke-DefenderScan {
     param([string]$MpCmdRun, [string]$Path)
-    & $MpCmdRun -Scan -ScanType 3 -File $Path -DisableRemediation
-    if ($LASTEXITCODE -ne 0) {
-        throw "Microsoft Defender rejected $Path (MpCmdRun exit $LASTEXITCODE)."
+
+    foreach ($attempt in 1..3) {
+        $output = @(& $MpCmdRun -Scan -ScanType 3 -File $Path -DisableRemediation 2>&1)
+        $exitCode = $LASTEXITCODE
+        $output | ForEach-Object { Write-Host $_ }
+        if ($exitCode -eq 0) {
+            return
+        }
+
+        $details = ($output | Out-String)
+        $transientServiceFailure = $details -match '(?i)0x800106ba|0x800706be|remote procedure call failed|service.+(?:stopped|not running|unavailable)'
+        if (-not $transientServiceFailure) {
+            throw "Microsoft Defender rejected $Path (MpCmdRun exit $exitCode)."
+        }
+        if ($attempt -eq 3) {
+            throw "Microsoft Defender service remained unavailable while scanning $Path after $attempt attempts (MpCmdRun exit $exitCode)."
+        }
+
+        Write-Warning "Microsoft Defender service was temporarily unavailable while scanning $Path; retrying ($attempt/3)."
+        Start-Sleep -Seconds (5 * $attempt)
     }
 }
 

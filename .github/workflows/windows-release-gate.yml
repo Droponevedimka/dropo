@@ -57,7 +57,24 @@ jobs:
           "DROPO_INNO_ISCC_PATH=$iscc" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Update Defender intelligence
         shell: powershell
-        run: Update-MpSignature
+        run: |
+          $updated = $false
+          foreach ($attempt in 1..3) {
+            try {
+              Update-MpSignature -ErrorAction Stop
+              $updated = $true
+              break
+            } catch {
+              Write-Warning "Defender intelligence update attempt $attempt/3 failed: $($_.Exception.Message)"
+              if ($attempt -lt 3) { Start-Sleep -Seconds (5 * $attempt) }
+            }
+          }
+          if (-not $updated) {
+            # Hosted runners occasionally restart the Defender RPC service while
+            # updating. The later -RequireDefender gate still fails closed unless
+            # all package scans succeed with the installed intelligence.
+            Write-Warning "Using installed Defender intelligence; the mandatory package scans remain authoritative."
+          }
       - name: Build unsigned installer and portable archive
         shell: powershell
         env:
