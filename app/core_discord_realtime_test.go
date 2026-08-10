@@ -325,6 +325,46 @@ func TestDiscordRealtimeLocalAttemptsStayBounded(t *testing.T) {
 	}
 }
 
+func TestDiscordRealtimeStartsFromTheWebValidatedAttempt(t *testing.T) {
+	app := &App{discordRealtime: newDiscordRealtimeController()}
+	ladder := []ServiceBypassMethod{
+		{Tag: "one", NativeStrategyID: "strategy-one"},
+		{Tag: "two", NativeStrategyID: "strategy-two"},
+		{Tag: "three", NativeStrategyID: "strategy-three"},
+	}
+	app.seedDiscordRealtimeStrategyAttempts(ladder, 2)
+
+	controller := app.discordRealtime
+	controller.mu.Lock()
+	defer controller.mu.Unlock()
+	if controller.attempt != 3 {
+		t.Fatalf("Discord realtime attempt = %d, want 3", controller.attempt)
+	}
+	if !controller.localTried["strategy-one"] || !controller.localTried["strategy-two"] {
+		t.Fatalf("previously failed web strategies were not retained: %#v", controller.localTried)
+	}
+	if controller.localTried["strategy-three"] {
+		t.Fatal("current Discord strategy was marked tried before live media validation")
+	}
+}
+
+func TestDiscordRealtimeNoSubscriptionDeadlineEndsIdleSearch(t *testing.T) {
+	controller := newDiscordRealtimeController()
+	controller.running = true
+	controller.automatic = true
+	controller.searchDeadline = time.Unix(2100, 0)
+	app := &App{discordRealtime: controller}
+
+	if !app.retryDiscordLocalSearchIfDue(controller, controller.searchDeadline) {
+		t.Fatal("expired idle Discord search was not finalized")
+	}
+	controller.mu.Lock()
+	defer controller.mu.Unlock()
+	if controller.automatic || !controller.initialReady {
+		t.Fatalf("expired controller state = automatic:%v ready:%v", controller.automatic, controller.initialReady)
+	}
+}
+
 func TestDiscordRealtimeEndpointObservationDoesNotResetControllerState(t *testing.T) {
 	controller := newDiscordRealtimeController()
 	controller.learnedPorts[32123] = time.Now()

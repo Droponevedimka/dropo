@@ -351,6 +351,45 @@ func TestAutomaticServiceStrategySearchIsBoundedBeforeVPNFallback(t *testing.T) 
 	}
 }
 
+func TestNoSubscriptionStrategyCampaignIsExtendedButBounded(t *testing.T) {
+	campaign := serviceStrategySearchCampaign{
+		Cycle:      serviceStrategyExtendedCycles,
+		CycleTotal: serviceStrategyExtendedCycles,
+		HasVPN:     false,
+	}
+	attempt, total := backgroundStrategyAttempt(maxAutomaticServiceStrategies-1, maxAutomaticServiceStrategies, campaign)
+	wantTotal := serviceStrategyExtendedCycles * maxAutomaticServiceStrategies
+	if attempt != wantTotal || total != wantTotal {
+		t.Fatalf("last extended attempt = %d/%d, want %d/%d", attempt, total, wantTotal, wantTotal)
+	}
+	if total <= maxAutomaticServiceStrategies {
+		t.Fatalf("no-subscription campaign has only %d attempts, want more than the fast VPN ladder", total)
+	}
+	waitBudget := time.Duration(serviceStrategyExtendedCycles-1) * serviceStrategyExtendedRetryInterval
+	if waitBudget >= serviceStrategyExtendedMaxDuration {
+		t.Fatalf("retry waits consume %s, want room for probes inside %s", waitBudget, serviceStrategyExtendedMaxDuration)
+	}
+}
+
+func TestConnectedValidationRetriesOnlyRequestedFallbacks(t *testing.T) {
+	now := time.Now()
+	cache := map[string]serviceStrategyCacheEntry{
+		"youtube":  {MethodTag: FreeAccessMethodDirect, UpdatedAt: now},
+		"discord":  {MethodTag: FreeAccessMethodDirect, UpdatedAt: now},
+		"telegram": {MethodTag: "telegram-native-split", UpdatedAt: now},
+	}
+	filtered := serviceStrategyCacheForConnectedValidationTags(cache, []string{"youtube"})
+	if _, ok := filtered["youtube"]; ok {
+		t.Fatal("requested YouTube fallback was retained instead of being retried")
+	}
+	if got := filtered["discord"].MethodTag; got != FreeAccessMethodDirect {
+		t.Fatalf("unrelated Discord fallback = %q, want it preserved", got)
+	}
+	if got := filtered["telegram"].MethodTag; got != "telegram-native-split" {
+		t.Fatalf("working Telegram strategy = %q, want it preserved", got)
+	}
+}
+
 func TestCommonBlockedStrategySearchIsBounded(t *testing.T) {
 	all := commonBlockedMethods()
 	if len(all) < maxAutomaticServiceStrategies {

@@ -2688,6 +2688,12 @@ class RouteProbeProgress {
     this.method = '',
     this.status = 'waiting',
     this.error = '',
+    this.attempt = 0,
+    this.attemptTotal = 0,
+    this.strategyIndex = 0,
+    this.strategyTotal = 0,
+    this.cycle = 0,
+    this.cycleTotal = 0,
   });
 
   final String tag;
@@ -2695,15 +2701,29 @@ class RouteProbeProgress {
   final String method;
   final String status;
   final String error;
+  final int attempt;
+  final int attemptTotal;
+  final int strategyIndex;
+  final int strategyTotal;
+  final int cycle;
+  final int cycleTotal;
 
   bool get done => status == 'done';
   bool get failed => status == 'failed';
+  bool get pending =>
+      status == 'checking' || status == 'retrying' || status == 'voice-check';
 
   RouteProbeProgress copyWith({
     String? name,
     String? method,
     String? status,
     String? error,
+    int? attempt,
+    int? attemptTotal,
+    int? strategyIndex,
+    int? strategyTotal,
+    int? cycle,
+    int? cycleTotal,
   }) {
     return RouteProbeProgress(
       tag: tag,
@@ -2711,6 +2731,12 @@ class RouteProbeProgress {
       method: method ?? this.method,
       status: status ?? this.status,
       error: error ?? this.error,
+      attempt: attempt ?? this.attempt,
+      attemptTotal: attemptTotal ?? this.attemptTotal,
+      strategyIndex: strategyIndex ?? this.strategyIndex,
+      strategyTotal: strategyTotal ?? this.strategyTotal,
+      cycle: cycle ?? this.cycle,
+      cycleTotal: cycleTotal ?? this.cycleTotal,
     );
   }
 }
@@ -3156,6 +3182,11 @@ class _DropoHomePageState extends State<DropoHomePage>
   bool routeProbeActive = false;
   bool routeProbeFailed = false;
   int routeProbeExpectedCount = 0;
+  bool routeProbeExtended = false;
+  bool routeProbeHasSubscription = true;
+  int routeProbeMaxDurationMinutes = 0;
+  bool windowVisible = true;
+  String strategyTransitionNotice = '';
   bool depsFailureDialogShowing = false;
   String lastDepsFailureDialogMessage = '';
   DateTime? lastDepsFailureDialogAt;
@@ -3165,6 +3196,7 @@ class _DropoHomePageState extends State<DropoHomePage>
   final subscriptionController = TextEditingController();
   Timer? refreshTimer;
   Timer? eventsTimer;
+  Timer? strategyTransitionTimer;
   StreamSubscription<BridgeEvent>? pushEventsSubscription;
   bool startupUpdateCheckScheduled = false;
   bool compatibilityNoticeShowing = false;
@@ -3208,6 +3240,7 @@ class _DropoHomePageState extends State<DropoHomePage>
     WidgetsBinding.instance.removeObserver(this);
     refreshTimer?.cancel();
     eventsTimer?.cancel();
+    strategyTransitionTimer?.cancel();
     pushEventsSubscription?.cancel();
     subscriptionController.dispose();
     if (!quitting) {
@@ -3249,6 +3282,9 @@ class _DropoHomePageState extends State<DropoHomePage>
     super.didChangeAppLifecycleState(state);
     switch (state) {
       case AppLifecycleState.resumed:
+        if (!windowVisible && mounted) {
+          setState(() => windowVisible = true);
+        }
         if (online && !quitting && refreshTimer == null) {
           _startPolling();
           unawaited(_refresh(all: true));
@@ -3256,6 +3292,9 @@ class _DropoHomePageState extends State<DropoHomePage>
         break;
       case AppLifecycleState.hidden:
       case AppLifecycleState.paused:
+        if (windowVisible && mounted) {
+          setState(() => windowVisible = false);
+        }
         _stopPolling();
         break;
       case AppLifecycleState.inactive:
@@ -3432,8 +3471,6 @@ class _DropoHomePageState extends State<DropoHomePage>
         if (!loadedStatus.hasError &&
             loadedStatus.connected &&
             !connectionBusy) {
-          routeProbeActive = false;
-          routeProbeFailed = false;
           connectionHintDanger = false;
         }
         if (all) {
@@ -3653,8 +3690,15 @@ class _DropoHomePageState extends State<DropoHomePage>
         routeProbeFailed = false;
         connectionHintDanger = false;
         routeProbeExpectedCount = _asInt(event.payload['serviceCount']);
+        routeProbeExtended = event.payload['extended'] == true;
+        routeProbeHasSubscription = event.payload['hasSubscription'] != false;
+        routeProbeMaxDurationMinutes = _asInt(
+          event.payload['maxDurationMinutes'],
+        );
         routeProbeProgress = _routeProbeStartItems(event.payload['services']);
-        routeHint = 'Подбираем рабочие методы обхода для сервисов...';
+        routeHint = routeProbeExtended && !routeProbeHasSubscription
+            ? 'Подбираем стратегии обхода в фоне; без VPN-подписки это может занять до часа.'
+            : 'Подбираем рабочие методы обхода для сервисов...';
         break;
       case 'route-probe-service':
         _updateRouteProbeService(event.payload);
@@ -3667,9 +3711,20 @@ class _DropoHomePageState extends State<DropoHomePage>
             event.payload['methodTag']?.toString() ??
             'метод';
         final success = event.payload['success'] == true;
+        final retrying = event.payload['retrying'] == true;
+        final attempt = _asInt(event.payload['attempt']);
+        final attemptTotal = _asInt(event.payload['attemptTotal']);
         routeHint = success
             ? '$name: выбран $method'
-            : '$name: ищем следующий метод обхода';
+            : retrying
+            ? '$name: стратегия ${attempt > 0 ? attempt : ''}${attemptTotal > 0 ? '/$attemptTotal' : ''} не сработала, пробуем следующую'
+            : '$name: рабочая стратегия не найдена';
+        if (!success && retrying && windowVisible) {
+          _showStrategyTransition(
+            '$name: ${method == 'метод' ? 'текущая стратегия' : method} не сработала. '
+            'Пробуем следующую${attempt > 0 ? ' · попытка $attempt${attemptTotal > 0 ? '/$attemptTotal' : ''}' : ''}.',
+          );
+        }
         break;
       case 'route-probe-candidate':
         _updateRouteProbeCandidate(event.payload);
@@ -3682,7 +3737,10 @@ class _DropoHomePageState extends State<DropoHomePage>
             event.payload['methodLabel']?.toString() ??
             event.payload['label']?.toString() ??
             'метод';
-        routeHint = 'Проверяем $service через $method...';
+        final attempt = _asInt(event.payload['attempt']);
+        final attemptTotal = _asInt(event.payload['attemptTotal']);
+        routeHint =
+            'Проверяем $service через $method${attempt > 0 ? ' · попытка $attempt${attemptTotal > 0 ? '/$attemptTotal' : ''}' : ''}...';
         break;
       case 'route-probe-complete':
         _finishRouteProbe(event.payload);
@@ -3860,9 +3918,16 @@ class _DropoHomePageState extends State<DropoHomePage>
                 payload['methodLabel']?.toString() ??
                 payload['label']?.toString() ??
                 current.method,
-            status: 'checking',
+            status: payload['status']?.toString() ?? 'checking',
             error: payload['error']?.toString() ?? '',
+            attempt: _asInt(payload['attempt']),
+            attemptTotal: _asInt(payload['attemptTotal']),
+            strategyIndex: _asInt(payload['strategyIndex']),
+            strategyTotal: _asInt(payload['strategyTotal']),
+            cycle: _asInt(payload['cycle']),
+            cycleTotal: _asInt(payload['cycleTotal']),
           );
+    routeProbeActive = true;
   }
 
   void _updateRouteProbeService(Map<String, dynamic> payload) {
@@ -3871,10 +3936,12 @@ class _DropoHomePageState extends State<DropoHomePage>
       return;
     }
     final success = payload['success'] == true;
+    final finalResult = payload['final'] != false;
+    final retrying = payload['retrying'] == true;
     final current =
         routeProbeProgress[tag] ??
         RouteProbeProgress(tag: tag, name: payload['name']?.toString() ?? tag);
-    if (!success) {
+    if (!success && finalResult) {
       routeProbeFailed = true;
     }
     routeProbeProgress =
@@ -3885,9 +3952,22 @@ class _DropoHomePageState extends State<DropoHomePage>
                 payload['methodLabel']?.toString() ??
                 payload['methodTag']?.toString() ??
                 current.method,
-            status: success ? 'done' : 'failed',
+            status:
+                payload['status']?.toString() ??
+                (success
+                    ? 'done'
+                    : retrying && !finalResult
+                    ? 'retrying'
+                    : 'failed'),
             error: payload['error']?.toString() ?? '',
+            attempt: _asInt(payload['attempt']),
+            attemptTotal: _asInt(payload['attemptTotal']),
+            strategyIndex: _asInt(payload['strategyIndex']),
+            strategyTotal: _asInt(payload['strategyTotal']),
+            cycle: _asInt(payload['cycle']),
+            cycleTotal: _asInt(payload['cycleTotal']),
           );
+    routeProbeActive = routeProbeProgress.values.any((item) => item.pending);
   }
 
   void _finishRouteProbe(Map<String, dynamic> payload) {
@@ -3897,10 +3977,36 @@ class _DropoHomePageState extends State<DropoHomePage>
         _updateRouteProbeService(_asMap(item));
       }
     }
-    routeProbeActive = false;
+    final completionError = payload['error']?.toString().trim() ?? '';
+    if (completionError.isNotEmpty) {
+      routeProbeFailed = true;
+      routeProbeProgress =
+          Map<String, RouteProbeProgress>.from(routeProbeProgress).map(
+            (tag, item) => MapEntry(
+              tag,
+              item.pending || item.status == 'waiting'
+                  ? item.copyWith(status: 'failed', error: completionError)
+                  : item,
+            ),
+          );
+    }
+    routeProbeActive = routeProbeProgress.values.any((item) => item.pending);
     routeHint = routeProbeFailed
         ? 'Не для всех сервисов удалось подобрать стратегию обхода.'
+        : routeProbeActive
+        ? 'Часть стратегий ещё проверяется в фоне.'
         : 'Стратегии обхода подобраны.';
+  }
+
+  void _showStrategyTransition(String message) {
+    strategyTransitionTimer?.cancel();
+    strategyTransitionNotice = message;
+    strategyTransitionTimer = Timer(const Duration(seconds: 7), () {
+      if (!mounted) {
+        return;
+      }
+      setState(() => strategyTransitionNotice = '');
+    });
   }
 
   void _setConnectionPrimed(bool target) {
@@ -4893,6 +4999,7 @@ class _DropoHomePageState extends State<DropoHomePage>
             routes: routes,
             subscription: subscription,
             wireGuards: wireGuards,
+            strategyProgress: routeProbeProgress,
           ),
         ],
       ],
@@ -4973,6 +5080,17 @@ class _DropoHomePageState extends State<DropoHomePage>
         ? connectionHint
         : depsProgress;
     final useMobileNavigation = _isMobileShell;
+    final showExtendedStrategyWarning =
+        windowVisible &&
+        status.connected &&
+        routeProbeActive &&
+        routeProbeExtended &&
+        !routeProbeHasSubscription;
+    final strategyBannerMessage = strategyTransitionNotice.trim().isNotEmpty
+        ? strategyTransitionNotice.trim()
+        : showExtendedStrategyWarning
+        ? 'VPN-подписки нет. Стратегии обхода подбираются в фоне и для сложной сети это может занять до ${routeProbeMaxDurationMinutes > 0 ? routeProbeMaxDurationMinutes : 60} минут.'
+        : '';
     return Scaffold(
       body: Stack(
         children: [
@@ -5069,6 +5187,46 @@ class _DropoHomePageState extends State<DropoHomePage>
                 ),
               ),
             ),
+          Positioned(
+            left: useMobileNavigation ? 12 : (sideMenuExpanded ? 202 : 88),
+            right: 12,
+            top: 8,
+            child: SafeArea(
+              bottom: false,
+              child: IgnorePointer(
+                child: Center(
+                  child: AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 240),
+                    transitionBuilder: (child, animation) => FadeTransition(
+                      opacity: animation,
+                      child: SlideTransition(
+                        position:
+                            Tween<Offset>(
+                              begin: const Offset(0, -0.25),
+                              end: Offset.zero,
+                            ).animate(
+                              CurvedAnimation(
+                                parent: animation,
+                                curve: Curves.easeOutCubic,
+                              ),
+                            ),
+                        child: child,
+                      ),
+                    ),
+                    child: strategyBannerMessage.isEmpty || !windowVisible
+                        ? const SizedBox.shrink()
+                        : _StrategySearchBanner(
+                            key: ValueKey(strategyBannerMessage),
+                            message: strategyBannerMessage,
+                            transitionNotice: strategyTransitionNotice
+                                .trim()
+                                .isNotEmpty,
+                          ),
+                  ),
+                ),
+              ),
+            ),
+          ),
           if (quitting)
             Positioned.fill(
               child: _QuitProgressOverlay(message: quitProgressMessage),
@@ -5771,25 +5929,59 @@ class _HomeBottomBlocks extends StatelessWidget {
     required this.routes,
     required this.subscription,
     required this.wireGuards,
+    required this.strategyProgress,
   });
 
   final List<RouteService> routes;
   final SubscriptionInfo subscription;
   final List<WireGuardInfo> wireGuards;
+  final Map<String, RouteProbeProgress> strategyProgress;
 
   @override
   Widget build(BuildContext context) {
     final isMobile = _isMobileShell;
-    final bypassRoutes = routes.where(_isBypassRoute).toList(growable: false);
-    final visibleRoutes = bypassRoutes.isEmpty ? routes : bypassRoutes;
+    final bypassRoutes = routes
+        .where(
+          (route) =>
+              _isBypassRoute(route) ||
+              (strategyProgress[route.tag]?.pending ?? false),
+        )
+        .toList(growable: false);
+    final visibleRoutes = List<RouteService>.from(
+      bypassRoutes.isEmpty ? routes : bypassRoutes,
+    );
+    final originalOrder = <String, int>{
+      for (var index = 0; index < visibleRoutes.length; index++)
+        visibleRoutes[index].tag: index,
+    };
+    visibleRoutes.sort((left, right) {
+      final leftActive = strategyProgress[left.tag]?.pending ?? false;
+      final rightActive = strategyProgress[right.tag]?.pending ?? false;
+      if (leftActive != rightActive) {
+        return leftActive ? -1 : 1;
+      }
+      return (originalOrder[left.tag] ?? 0).compareTo(
+        originalOrder[right.tag] ?? 0,
+      );
+    });
     final routeRows = visibleRoutes
         .where((route) => route.name.trim().isNotEmpty)
-        .map(
-          (route) => _HomeInfoRow(
+        .map((route) {
+          final progress = strategyProgress[route.tag];
+          final selecting = progress?.pending ?? false;
+          final attemptLabel = progress == null
+              ? ''
+              : progress.attempt > 0
+              ? ' · попытка ${progress.attempt}${progress.attemptTotal > 0 ? '/${progress.attemptTotal}' : ''}'
+              : '';
+          return _HomeInfoRow(
             label: route.name,
-            value: '${route.method}${_formatRouteDelay(route.delayMs)}',
-          ),
-        )
+            value: selecting
+                ? 'Подбирается$attemptLabel'
+                : '${route.method}${_formatRouteDelay(route.delayMs)}',
+            busy: selecting,
+          );
+        })
         .toList(growable: false);
     final subscriptionRows = subscription.hasSubscription
         ? <Widget>[
@@ -5974,10 +6166,15 @@ class _HomeInfoBlock extends StatelessWidget {
 }
 
 class _HomeInfoRow extends StatelessWidget {
-  const _HomeInfoRow({required this.label, required this.value});
+  const _HomeInfoRow({
+    required this.label,
+    required this.value,
+    this.busy = false,
+  });
 
   final String label;
   final String value;
+  final bool busy;
 
   @override
   Widget build(BuildContext context) {
@@ -5998,14 +6195,25 @@ class _HomeInfoRow extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 8),
+          if (busy) ...[
+            const SizedBox(
+              width: 10,
+              height: 10,
+              child: CircularProgressIndicator(
+                strokeWidth: 1.5,
+                color: Color(0xFFFCD34D),
+              ),
+            ),
+            const SizedBox(width: 5),
+          ],
           Flexible(
             child: Text(
               value,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               textAlign: TextAlign.right,
-              style: const TextStyle(
-                color: Color(0xFFBAF7D0),
+              style: TextStyle(
+                color: busy ? const Color(0xFFFCD34D) : const Color(0xFFBAF7D0),
                 fontSize: 9.5,
                 fontWeight: FontWeight.w400,
               ),
@@ -6414,6 +6622,73 @@ class _ConnectionHint extends StatelessWidget {
   }
 }
 
+class _StrategySearchBanner extends StatelessWidget {
+  const _StrategySearchBanner({
+    super.key,
+    required this.message,
+    required this.transitionNotice,
+  });
+
+  final String message;
+  final bool transitionNotice;
+
+  @override
+  Widget build(BuildContext context) {
+    const accent = Color(0xFFFCD34D);
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 620),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: const Color(0xFF33270E).withValues(alpha: 0.96),
+          borderRadius: BorderRadius.circular(13),
+          border: Border.all(color: accent.withValues(alpha: 0.65)),
+          boxShadow: [
+            BoxShadow(
+              color: const Color(0xFFF59E0B).withValues(alpha: 0.18),
+              blurRadius: 18,
+              spreadRadius: 1,
+            ),
+          ],
+        ),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const SizedBox(
+                width: 17,
+                height: 17,
+                child: CircularProgressIndicator(strokeWidth: 2, color: accent),
+              ),
+              const SizedBox(width: 10),
+              Icon(
+                transitionNotice
+                    ? Icons.swap_horiz_rounded
+                    : Icons.warning_amber_rounded,
+                size: 19,
+                color: accent,
+              ),
+              const SizedBox(width: 8),
+              Flexible(
+                child: Text(
+                  message,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    color: Color(0xFFFFF1C2),
+                    fontSize: 12,
+                    height: 1.25,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _RouteProbePanel extends StatelessWidget {
   const _RouteProbePanel({
     required this.visible,
@@ -6452,6 +6727,13 @@ class _RouteProbePanel extends StatelessWidget {
     final subtitle = total > 0
         ? '$doneCount из $total сервисов готовы'
         : 'Ждём список сервисов от ядра';
+    final sortedItems = List<RouteProbeProgress>.from(items)
+      ..sort((left, right) {
+        if (left.pending != right.pending) {
+          return left.pending ? -1 : 1;
+        }
+        return left.name.compareTo(right.name);
+      });
     final rows = items.isEmpty
         ? const <Widget>[
             _RouteProbeRow(
@@ -6461,7 +6743,7 @@ class _RouteProbePanel extends StatelessWidget {
               color: Color(0xFFF59E0B),
             ),
           ]
-        : items.map(_buildRow).toList(growable: false);
+        : sortedItems.map(_buildRow).toList(growable: false);
 
     return Container(
       width: double.infinity,
@@ -6526,29 +6808,61 @@ class _RouteProbePanel extends StatelessWidget {
         ? const Color(0xFFFCA5A5)
         : item.done
         ? const Color(0xFF86EFAC)
-        : item.status == 'checking'
+        : item.pending
         ? const Color(0xFFFCD34D)
         : const Color(0xFF9CB0AD);
     final icon = item.failed
         ? Icons.close
         : item.done
         ? Icons.check
-        : item.status == 'checking'
+        : item.pending
         ? Icons.sync
         : Icons.more_horiz;
     final detail = item.failed
-        ? (item.error.isEmpty ? 'Стратегия не найдена' : item.error)
+        ? _failedDetail(item)
         : item.done
         ? (item.method.isEmpty ? 'Готово' : item.method)
-        : item.status == 'checking'
-        ? (item.method.isEmpty ? 'Проверяем метод' : 'Проверяем ${item.method}')
+        : item.pending
+        ? _pendingDetail(item)
         : 'Ожидает проверки';
     return _RouteProbeRow(
       icon: icon,
       name: item.name,
       detail: detail,
       color: color,
+      busy: item.pending,
     );
+  }
+
+  String _pendingDetail(RouteProbeProgress item) {
+    final attempt = item.attempt > 0
+        ? 'попытка ${item.attempt}${item.attemptTotal > 0 ? '/${item.attemptTotal}' : ''}'
+        : '';
+    final method = item.method.isEmpty ? 'подбираем стратегию' : item.method;
+    final strategy = item.strategyIndex > 0
+        ? 'стратегия ${item.strategyIndex}${item.strategyTotal > 0 ? '/${item.strategyTotal}' : ''}'
+        : '';
+    if (item.status == 'voice-check') {
+      return [
+        attempt,
+        strategy,
+        'проверяем voice',
+        method,
+      ].where((part) => part.isNotEmpty).join(' · ');
+    }
+    return [
+      attempt,
+      strategy,
+      method,
+    ].where((part) => part.isNotEmpty).join(' · ');
+  }
+
+  String _failedDetail(RouteProbeProgress item) {
+    final attempt = item.attempt > 0
+        ? 'попытка ${item.attempt}${item.attemptTotal > 0 ? '/${item.attemptTotal}' : ''}'
+        : '';
+    final error = item.error.isEmpty ? 'Стратегия не найдена' : item.error;
+    return [attempt, error].where((part) => part.isNotEmpty).join(' · ');
   }
 }
 
@@ -6558,12 +6872,14 @@ class _RouteProbeRow extends StatelessWidget {
     required this.name,
     required this.detail,
     required this.color,
+    this.busy = false,
   });
 
   final IconData icon;
   final String name;
   final String detail;
   final Color color;
+  final bool busy;
 
   @override
   Widget build(BuildContext context) {
@@ -6571,7 +6887,14 @@ class _RouteProbeRow extends StatelessWidget {
       padding: const EdgeInsets.only(bottom: 6),
       child: Row(
         children: [
-          Icon(icon, size: 13, color: color),
+          if (busy)
+            SizedBox(
+              width: 13,
+              height: 13,
+              child: CircularProgressIndicator(strokeWidth: 1.6, color: color),
+            )
+          else
+            Icon(icon, size: 13, color: color),
           const SizedBox(width: 7),
           Expanded(
             child: Text(

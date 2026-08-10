@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:dropo/main.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -358,6 +360,95 @@ void main() {
     },
   );
 
+  testWidgets(
+    'background strategy progress is sorted first and warns without a subscription',
+    (tester) async {
+      tester.view.physicalSize = const Size(1280, 860);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      final bridge = _StrategyProgressBridge();
+      addTearDown(bridge.close);
+      await bridge.setConnected(true);
+      await tester.pumpWidget(MaterialApp(home: DropoHomePage(bridge: bridge)));
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 2));
+
+      bridge.emit('route-probe-start', const {
+        'source': 'background-service-strategy',
+        'serviceCount': 2,
+        'hasSubscription': false,
+        'extended': true,
+        'maxDurationMinutes': 60,
+        'services': [
+          {'tag': 'youtube', 'name': 'YouTube'},
+          {'tag': 'discord', 'name': 'Discord'},
+        ],
+      });
+      bridge.emit('route-probe-candidate', const {
+        'source': 'background-service-strategy',
+        'serviceTag': 'discord',
+        'serviceName': 'Discord',
+        'methodTag': 'discord-native-2',
+        'methodLabel': 'Discord strategy 2',
+        'status': 'voice-check',
+        'attempt': 4,
+        'attemptTotal': 36,
+        'strategyIndex': 1,
+        'strategyTotal': 3,
+        'cycle': 2,
+        'cycleTotal': 12,
+      });
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(
+        find.textContaining(
+          'VPN-подписки нет. Стратегии обхода подбираются в фоне',
+        ),
+        findsOneWidget,
+      );
+      expect(find.text('Подбирается · попытка 4/36'), findsOneWidget);
+      final discordTop = tester.getTopLeft(find.text('Discord').first).dy;
+      final youtubeTop = tester.getTopLeft(find.text('YouTube').first).dy;
+      expect(discordTop, lessThan(youtubeTop));
+
+      bridge.emit('route-probe-service', const {
+        'source': 'background-service-strategy',
+        'tag': 'discord',
+        'name': 'Discord',
+        'methodTag': 'discord-native-2',
+        'methodLabel': 'Discord strategy 2',
+        'success': false,
+        'final': false,
+        'retrying': true,
+        'status': 'retrying',
+        'attempt': 4,
+        'attemptTotal': 36,
+      });
+      bridge.emit('route-probe-candidate', const {
+        'source': 'background-service-strategy',
+        'serviceTag': 'discord',
+        'serviceName': 'Discord',
+        'methodLabel': 'Discord strategy 3',
+        'status': 'voice-check',
+        'attempt': 5,
+        'attemptTotal': 36,
+      });
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(
+        find.textContaining('Discord strategy 2 не сработала'),
+        findsOneWidget,
+      );
+      expect(find.textContaining('попытка 4/36'), findsWidgets);
+      expect(find.text('Подбирается · попытка 5/36'), findsOneWidget);
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pump();
+    },
+  );
+
   testWidgets('autostart prompt: «Нет, не надо» returns false (decline)', (
     tester,
   ) async {
@@ -608,6 +699,48 @@ class _BundledRuntimePreparingBridge extends MockCoreBridge {
         'singboxVersion': '1.13.14',
       },
     });
+  }
+}
+
+class _StrategyProgressBridge extends MockCoreBridge {
+  final StreamController<BridgeEvent> _controller =
+      StreamController<BridgeEvent>.broadcast();
+  int _eventID = 100;
+
+  @override
+  bool get prefersPushEvents => true;
+
+  @override
+  Stream<BridgeEvent> watchEvents() => _controller.stream;
+
+  void emit(String name, Map<String, dynamic> payload) {
+    _controller.add(BridgeEvent(id: _eventID++, name: name, payload: payload));
+  }
+
+  Future<void> close() => _controller.close();
+
+  @override
+  Future<List<RouteService>> routes({bool live = false}) async {
+    return const [
+      RouteService(
+        tag: 'youtube',
+        name: 'YouTube',
+        method: 'Direct strategy',
+        selectedMethod: 'auto',
+        requiresVpn: false,
+        delayMs: 40,
+        domainSuffixes: ['youtube.com'],
+      ),
+      RouteService(
+        tag: 'discord',
+        name: 'Discord',
+        method: 'Direct strategy',
+        selectedMethod: 'auto',
+        requiresVpn: false,
+        delayMs: 55,
+        domainSuffixes: ['discord.com'],
+      ),
+    ];
   }
 }
 

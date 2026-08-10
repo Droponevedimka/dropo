@@ -423,6 +423,14 @@ func routeProbeResultPriority(service FreeAccessService, result routeProbeCandid
 }
 
 func (a *App) probeSingleCandidate(service FreeAccessService, candidate routeProbeCandidate) routeProbeCandidateResult {
+	return a.probeSingleCandidateWithEvents(service, candidate, true)
+}
+
+func (a *App) probeSingleCandidateQuiet(service FreeAccessService, candidate routeProbeCandidate) routeProbeCandidateResult {
+	return a.probeSingleCandidateWithEvents(service, candidate, false)
+}
+
+func (a *App) probeSingleCandidateWithEvents(service FreeAccessService, candidate routeProbeCandidate, emitProgress bool) routeProbeCandidateResult {
 	a.emitRouteProbe("route-probe-log", map[string]interface{}{
 		"message": fmt.Sprintf("%s: probing %s", service.DisplayName, candidate.Label),
 	})
@@ -444,7 +452,9 @@ func (a *App) probeSingleCandidate(service FreeAccessService, candidate routePro
 	}
 	if startErr != nil {
 		item.Error = compactProbeError(startErr)
-		a.emitRouteProbe("route-probe-candidate", item)
+		if emitProgress {
+			a.emitRouteProbe("route-probe-candidate", item)
+		}
 		return item
 	}
 
@@ -462,13 +472,17 @@ func (a *App) probeSingleCandidate(service FreeAccessService, candidate routePro
 		if err != nil {
 			item.Success = false
 			item.Error = fmt.Sprintf("%s: %s", probeTargetLabel(targetURL), compactProbeError(err))
-			a.emitRouteProbe("route-probe-candidate", item)
+			if emitProgress {
+				a.emitRouteProbe("route-probe-candidate", item)
+			}
 			return item
 		}
 	}
 
 	item.Success = true
-	a.emitRouteProbe("route-probe-candidate", item)
+	if emitProgress {
+		a.emitRouteProbe("route-probe-candidate", item)
+	}
 	return item
 }
 
