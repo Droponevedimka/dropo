@@ -25,16 +25,27 @@ const (
 	ActionRepeat          PacketActionKind = "repeat"
 )
 
+// PacketPosition identifies a bounded TCP split point. Absolute positions keep
+// backwards compatibility with the original catalog; TLS anchors let the
+// engine follow the SNI location in modern variable-size ClientHello packets.
+type PacketPosition struct {
+	Absolute int    `json:"absolute,omitempty"`
+	Anchor   string `json:"anchor,omitempty"`
+	Offset   int    `json:"offset,omitempty"`
+}
+
 // PacketAction describes one bounded packet transformation. Fields unused by
 // a particular Kind must remain at their zero value.
 type PacketAction struct {
 	Kind          PacketActionKind `json:"kind"`
 	Position      int              `json:"position,omitempty"`
+	Positions     []PacketPosition `json:"positions,omitempty"`
 	SequenceDelta int              `json:"sequenceDelta,omitempty"`
 	Overlap       int              `json:"overlap,omitempty"`
 	TTL           int              `json:"ttl,omitempty"`
 	Repeats       int              `json:"repeats,omitempty"`
 	Payload       string           `json:"payload,omitempty"`
+	PadTo         int              `json:"padTo,omitempty"`
 	InvalidSum    bool             `json:"invalidChecksum,omitempty"`
 }
 

@@ -2214,6 +2214,69 @@ func TestRouteProbeRequiresEveryProbeTarget(t *testing.T) {
 	}
 }
 
+func TestProbeHTTPThroughClientReadsCompleteBoundedResponse(t *testing.T) {
+	body := strings.Repeat("x", routeProbeValidationBytes)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Range"); got != "bytes=0-65535" {
+			t.Errorf("Range = %q", got)
+		}
+		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+		_, _ = io.WriteString(w, body)
+	}))
+	defer server.Close()
+
+	if _, err := probeHTTPThroughClient(server.Client(), server.URL); err != nil {
+		t.Fatalf("probeHTTPThroughClient() error = %v", err)
+	}
+}
+
+func TestProbeHTTPThroughClientRejectsTruncatedResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Length", "20000")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, strings.Repeat("x", 1024))
+	}))
+	defer server.Close()
+
+	if _, err := probeHTTPThroughClient(server.Client(), server.URL); err == nil || !strings.Contains(err.Error(), "body") {
+		t.Fatalf("probeHTTPThroughClient() error = %v, want truncated body failure", err)
+	}
+}
+
+func TestServiceProbeChecksTargetsConcurrently(t *testing.T) {
+	started := make(chan struct{}, 2)
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		started <- struct{}{}
+		<-release
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	service := FreeAccessService{
+		Tag: "youtube", DisplayName: "YouTube", HealthURL: server.URL + "/one",
+		ProbeURLs: []string{server.URL + "/two"},
+	}
+	result := make(chan routeProbeCandidateResult, 1)
+	go func() {
+		result <- (&App{}).probeSingleCandidateQuiet(service, routeProbeCandidate{
+			Tag: "native", Label: "native", Kind: "transparent", Client: server.Client(), Available: true,
+		})
+	}()
+	for count := 0; count < 2; count++ {
+		select {
+		case <-started:
+		case <-time.After(2 * time.Second):
+			close(release)
+			t.Fatal("service targets were probed sequentially")
+		}
+	}
+	close(release)
+	if got := <-result; !got.Success || got.ProbeCount != 2 {
+		t.Fatalf("concurrent service probe = %+v", got)
+	}
+}
+
 func TestConfigHasVPNProbeCandidatesIgnoresFreeOnlyConfig(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "active_config.json")
 	config := map[string]interface{}{

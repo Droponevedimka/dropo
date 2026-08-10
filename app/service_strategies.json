@@ -1,27 +1,27 @@
 {
-  "version": 8,
-  "updated": "2026-08-07",
+  "version": 9,
+  "updated": "2026-08-10",
   "note": "Per-service native DPI-bypass ladders. blockType: 'dpi' uses the local packet engine; 'vpn' uses the ordered VPN-source fallback. Strategy names describe Dropo's typed packet actions; research provenance is kept in THIRD_PARTY_NOTICES.md.",
   "services": {
     "discord": {
-      "source": "Dropo live-media diagnostics plus the bounded active Discord UDP decoy pattern reviewed against zapret2 and Flowseal ALT12",
+      "source": "Dropo live-media diagnostics plus bounded zapret2/Flowseal 1.10.1 TLS, QUIC, zero and checksum decoy patterns",
       "blockType": "dpi",
       "methods": [
-        { "tag": "discord-active-3", "label": "Discord active decoys x3", "technique": "fake-multisplit", "nativeStrategy": "native-discord-active", "seqovl": 664, "pos": 1, "repeats": 8, "quic": "google" },
-        { "tag": "discord-invalidsum-3", "label": "Discord invalid-checksum decoys x3", "technique": "fake-multisplit", "nativeStrategy": "native-discord-invalidsum", "seqovl": 664, "pos": 1, "repeats": 8, "quic": "google" },
-        { "tag": "discord-low-ttl-3", "label": "Discord low-TTL decoys x3", "technique": "fake-ttl", "nativeStrategy": "native-discord-low-ttl", "ttl": 3, "repeats": 4, "quic": "google" }
+        { "tag": "discord-active-quic-v2", "label": "Discord active QUIC + SNI disorder", "technique": "multidisorder", "nativeStrategy": "native-discord-active-v2", "repeats": 8, "quic": "google" },
+        { "tag": "discord-zero-v2", "label": "Discord zero + SNI split", "technique": "fake-multisplit", "nativeStrategy": "native-discord-zero-v2", "seqovl": 681, "pos": 1, "repeats": 6, "quic": "google" },
+        { "tag": "discord-invalidsum-v2", "label": "Discord invalid-checksum QUIC", "technique": "fake-multisplit", "nativeStrategy": "native-discord-invalidsum-v2", "seqovl": 681, "pos": 1, "repeats": 6, "quic": "google" },
+        { "tag": "discord-low-ttl-v2", "label": "Discord low-TTL QUIC", "technique": "fake-ttl", "nativeStrategy": "native-discord-low-ttl-v2", "ttl": 3, "repeats": 4, "quic": "google" }
       ]
     },
     "youtube": {
-      "source": "Dropo research baseline for Google/HTTP3 traffic",
+      "source": "Dropo typed equivalents of current zapret2 fake-multidisorder, SNI split/disorder, overlap and QUIC test classes",
       "blockType": "dpi",
       "methods": [
-        { "tag": "google-fakemultisplit-681-mod", "label": "Google fake+multisplit 681 ts mod", "technique": "fake-multisplit", "seqovl": 681, "pos": 1, "repeats": 8, "fakeTlsMod": true, "ipIdZero": true, "quic": "google" },
-        { "tag": "google-fakemultisplit-681", "label": "Google fake+multisplit 681 ts", "technique": "fake-multisplit", "seqovl": 681, "pos": 1, "repeats": 8, "ipIdZero": true, "quic": "google" },
-        { "tag": "google-fakemultisplit-664", "label": "Google fake+multisplit 664 ts", "technique": "fake-multisplit", "seqovl": 664, "pos": 1, "repeats": 8, "ipIdZero": true, "quic": "google" },
-        { "tag": "google-multisplit-681", "label": "Google ip-id=zero multisplit 681/1", "technique": "multisplit", "seqovl": 681, "pos": 1, "ipIdZero": true, "quic": "google" },
-        { "tag": "fakedsplit-ts", "label": "Fakedsplit (ts)", "technique": "fakedsplit-ts", "quic": "google" },
-        { "tag": "multidisorder", "label": "Fake+multidisorder", "technique": "multidisorder", "quic": "google" }
+        { "tag": "google-z2-fake-multidisorder", "label": "Google fake x11 + SNI multidisorder", "technique": "multidisorder", "nativeStrategy": "native-zapret2-fake-multidisorder", "repeats": 11, "fakeTlsMod": true, "quic": "google" },
+        { "tag": "google-z2-fake-sni-split", "label": "Google fake x6 + SNI split", "technique": "fake-multisplit", "nativeStrategy": "native-zapret2-fake-sni-split", "seqovl": 681, "pos": 1, "repeats": 6, "quic": "google" },
+        { "tag": "google-z2-sni-disorder", "label": "Google SNI multidisorder", "technique": "multidisorder", "nativeStrategy": "native-zapret2-sni-disorder", "quic": "google" },
+        { "tag": "google-z2-overlap-sni", "label": "Google overlap + SNI split", "technique": "multisplit", "nativeStrategy": "native-zapret2-overlap-sni", "seqovl": 8, "pos": 1, "quic": "google" },
+        { "tag": "google-low-ttl", "label": "Google low-TTL decoy", "technique": "fake-ttl", "nativeStrategy": "native-low-ttl-decoy", "ttl": 3, "repeats": 4, "quic": "google" }
       ]
     },
     "telegram": {

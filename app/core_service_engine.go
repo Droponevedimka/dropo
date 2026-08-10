@@ -30,6 +30,7 @@ const (
 	serviceStrategyFallbackTTL     = 30 * time.Minute
 	serviceStrategyProbeRetryDelay = 300 * time.Millisecond
 	maxAutomaticServiceStrategies  = 3
+	maxNoSubscriptionStrategies    = 5
 	// A subscription gives automatic services a fast, bounded local attempt
 	// before the working VPN fallback. Without a subscription there is no such
 	// fallback, so retry the complete native ladder over a bounded one-hour
@@ -1350,7 +1351,11 @@ func (a *App) firstRunServiceSearch(
 	ladders := make(map[string][]ServiceBypassMethod, len(needSearch))
 	maxRounds := 0
 	for _, tag := range needSearch {
-		ladder := startupServiceSearchLadder(tag, selections[tag].Method)
+		limit := maxAutomaticServiceStrategies
+		if !campaign.HasVPN {
+			limit = maxNoSubscriptionStrategies
+		}
+		ladder := startupServiceSearchLadder(tag, selections[tag].Method, limit)
 		ladders[tag] = ladder
 		if n := len(ladder); n > maxRounds {
 			maxRounds = n
@@ -1537,9 +1542,13 @@ func (a *App) emitBackgroundStrategyFallback(tag, method string, success bool, c
 // startupServiceSearchLadder keeps the current (usually cached) strategy first.
 // If it still works the startup gate never changes it; only a confirmed failure
 // advances through the remaining ranked methods.
-func startupServiceSearchLadder(serviceTag string, current ServiceBypassMethod) []ServiceBypassMethod {
+func startupServiceSearchLadder(serviceTag string, current ServiceBypassMethod, requestedLimit ...int) []ServiceBypassMethod {
 	ranked := rankedMethodsForService(serviceTag)
-	ladder := make([]ServiceBypassMethod, 0, min(len(ranked), maxAutomaticServiceStrategies))
+	limit := maxAutomaticServiceStrategies
+	if len(requestedLimit) > 0 && requestedLimit[0] > 0 {
+		limit = min(requestedLimit[0], maxNoSubscriptionStrategies)
+	}
+	ladder := make([]ServiceBypassMethod, 0, min(len(ranked), limit))
 	if strings.TrimSpace(current.Tag) != "" {
 		ladder = append(ladder, current)
 	}
@@ -1548,7 +1557,7 @@ func startupServiceSearchLadder(serviceTag string, current ServiceBypassMethod) 
 			continue
 		}
 		ladder = append(ladder, method)
-		if len(ladder) == maxAutomaticServiceStrategies {
+		if len(ladder) == limit {
 			break
 		}
 	}

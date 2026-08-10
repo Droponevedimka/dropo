@@ -21,8 +21,10 @@ import (
 )
 
 const (
-	routeProbeHTTPTimeout    = 5 * time.Second
-	routeProbeProxyReadyWait = 5 * time.Second
+	routeProbeHTTPTimeout     = 5 * time.Second
+	routeProbeProxyReadyWait  = 5 * time.Second
+	routeProbeValidationBytes = 64 * 1024
+	routeProbeTargetParallel  = 3
 )
 
 type routeProbeCandidate struct {
@@ -459,24 +461,42 @@ func (a *App) probeSingleCandidateWithEvents(service FreeAccessService, candidat
 	}
 
 	targets := service.ProbeTargets()
-	var totalLatency time.Duration
+	type targetResult struct {
+		latency time.Duration
+		err     error
+	}
+	targetResults := make([]targetResult, len(targets))
+	parallel := make(chan struct{}, routeProbeTargetParallel)
+	var targetWait sync.WaitGroup
 	for index, targetURL := range targets {
 		a.emitRouteProbe("route-probe-log", map[string]interface{}{
 			"message": fmt.Sprintf("%s: %s target %d/%d %s", service.DisplayName, candidate.Label, index+1, len(targets), probeTargetLabel(targetURL)),
 		})
+		targetWait.Add(1)
+		go func(targetIndex int, url string) {
+			defer targetWait.Done()
+			parallel <- struct{}{}
+			defer func() { <-parallel }()
+			targetResults[targetIndex].latency, targetResults[targetIndex].err = probeHTTPThroughClient(candidate.Client, url)
+		}(index, targetURL)
+	}
+	targetWait.Wait()
 
-		latency, err := probeHTTPThroughClient(candidate.Client, targetURL)
-		totalLatency += latency
-		item.ProbeCount = index + 1
-		item.LatencyMS = averageProbeLatency(totalLatency, item.ProbeCount).Milliseconds()
-		if err != nil {
-			item.Success = false
-			item.Error = fmt.Sprintf("%s: %s", probeTargetLabel(targetURL), compactProbeError(err))
-			if emitProgress {
-				a.emitRouteProbe("route-probe-candidate", item)
-			}
-			return item
+	var totalLatency time.Duration
+	item.ProbeCount = len(targets)
+	for index, result := range targetResults {
+		totalLatency += result.latency
+		if result.err != nil && item.Error == "" {
+			item.Error = fmt.Sprintf("%s: %s", probeTargetLabel(targets[index]), compactProbeError(result.err))
 		}
+	}
+	item.LatencyMS = averageProbeLatency(totalLatency, item.ProbeCount).Milliseconds()
+	if item.Error != "" {
+		item.Success = false
+		if emitProgress {
+			a.emitRouteProbe("route-probe-candidate", item)
+		}
+		return item
 	}
 
 	item.Success = true
@@ -881,6 +901,7 @@ func probeHTTPThroughClient(client *http.Client, targetURL string) (time.Duratio
 	}
 	req.Header.Set("User-Agent", "dropo-route-probe/2.0")
 	req.Header.Set("Accept", "*/*")
+	req.Header.Set("Range", fmt.Sprintf("bytes=0-%d", routeProbeValidationBytes-1))
 
 	startedAt := time.Now()
 	resp, err := client.Do(req)
@@ -888,9 +909,19 @@ func probeHTTPThroughClient(client *http.Client, targetURL string) (time.Duratio
 		return 0, err
 	}
 	defer resp.Body.Close()
-	_, _ = io.CopyN(io.Discard, resp.Body, 1024)
+	read, readErr := io.Copy(io.Discard, io.LimitReader(resp.Body, routeProbeValidationBytes))
 
 	latency := time.Since(startedAt)
+	if readErr != nil {
+		return latency, fmt.Errorf("response body validation: %w", readErr)
+	}
+	expected := resp.ContentLength
+	if expected > routeProbeValidationBytes {
+		expected = routeProbeValidationBytes
+	}
+	if expected >= 0 && read != expected {
+		return latency, fmt.Errorf("response body truncated: read %d of %d bytes", read, expected)
+	}
 	if resp.StatusCode >= 500 {
 		return latency, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}

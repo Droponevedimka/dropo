@@ -317,7 +317,7 @@ func TestStartupServiceSearchLadderKeepsWorkingCachedMethodFirst(t *testing.T) {
 		t.Fatalf("Discord strategy ladder is too short: %d", len(ranked))
 	}
 	cached := ranked[2]
-	ladder := startupServiceSearchLadder("discord", cached)
+	ladder := startupServiceSearchLadder("discord", cached, maxNoSubscriptionStrategies)
 	if len(ladder) != len(ranked) || ladder[0].Tag != cached.Tag {
 		t.Fatalf("startup ladder = %#v, want cached method %q first and %d unique methods", ladder, cached.Tag, len(ranked))
 	}
@@ -332,13 +332,17 @@ func TestStartupServiceSearchLadderKeepsWorkingCachedMethodFirst(t *testing.T) {
 
 func TestAutomaticServiceStrategySearchIsBoundedBeforeVPNFallback(t *testing.T) {
 	ranked := rankedMethodsForService("youtube")
-	if len(ranked) != maxAutomaticServiceStrategies {
-		t.Fatalf("YouTube native ladder = %d strategies, want %d after deduplication", len(ranked), maxAutomaticServiceStrategies)
+	if len(ranked) != maxNoSubscriptionStrategies {
+		t.Fatalf("YouTube native ladder = %d strategies, want %d distinct typed plans", len(ranked), maxNoSubscriptionStrategies)
 	}
 	cached := ServiceBypassMethod{Tag: "cached-legacy-method", Label: "Cached legacy method"}
 	startup := startupServiceSearchLadder("youtube", cached)
 	if len(startup) != maxAutomaticServiceStrategies || startup[0].Tag != cached.Tag {
 		t.Fatalf("startup ladder = %#v, want cached first and %d total strategies", startup, maxAutomaticServiceStrategies)
+	}
+	withoutVPN := startupServiceSearchLadder("youtube", cached, maxNoSubscriptionStrategies)
+	if len(withoutVPN) != maxNoSubscriptionStrategies || withoutVPN[0].Tag != cached.Tag {
+		t.Fatalf("no-subscription ladder = %#v, want cached first and %d attempts", withoutVPN, maxNoSubscriptionStrategies)
 	}
 	recovery := recoveryServiceSearchLadder("youtube", cached.Tag)
 	if len(recovery) != maxAutomaticServiceStrategies-1 {

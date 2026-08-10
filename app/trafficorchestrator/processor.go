@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"sort"
 	"sync"
 	"sync/atomic"
 )
@@ -249,7 +250,11 @@ func applyStrategy(parsed parsedPacket, strategy TrafficStrategy) ([][]byte, boo
 			if parsed.network != NetworkTCP {
 				return nil, false, fmt.Errorf("%s applied to non-TCP packet", action.Kind)
 			}
-			segments, err := splitTCPPacket(parsed, action.Position)
+			positions, err := resolvePacketPositions(parsed.payload(), action)
+			if err != nil {
+				return nil, false, err
+			}
+			segments, err := splitTCPPacketAtPositions(parsed, positions)
 			if err != nil {
 				return nil, false, err
 			}
@@ -326,15 +331,26 @@ func makeFakePacket(parsed parsedPacket, action PacketAction, ttl int) ([]byte, 
 	var payload []byte
 	switch action.Payload {
 	case "tls_client_hello":
-		payload = fakeTLSClientHello()
+		payload = fakeTLSClientHelloLike(parsed.payload())
 	case "quic_initial":
 		payload = fakeQUICInitial(parsed.payload())
+	case "quic_decoy":
+		payload = fakeQUICInitial(nil)
 	case "original":
 		payload = append([]byte(nil), parsed.payload()...)
 	case "protocol_decoy":
 		payload = protocolDecoyPayload(parsed)
+	case "zero":
+		payload = make([]byte, action.PadTo)
 	default:
 		return nil, fmt.Errorf("unknown fake payload %q", action.Payload)
+	}
+	if action.PadTo > len(payload) {
+		if action.Payload == "tls_client_hello" {
+			payload = padTLSClientHello(payload, action.PadTo)
+		} else {
+			payload = append(payload, make([]byte, action.PadTo-len(payload))...)
+		}
 	}
 	packet, updated, err := resizePacketPayload(parsed, payload)
 	if err != nil {
@@ -384,13 +400,68 @@ func protocolDecoyPayload(parsed parsedPacket) []byte {
 	return append([]byte(nil), original...)
 }
 
-func splitTCPPacket(parsed parsedPacket, position int) ([][]byte, error) {
-	payload := parsed.payload()
-	if position < 1 || position >= len(payload) {
-		return nil, fmt.Errorf("split position %d is outside payload length %d", position, len(payload))
+func resolvePacketPositions(payload []byte, action PacketAction) ([]int, error) {
+	positions := make([]int, 0, max(1, len(action.Positions)))
+	if action.Position != 0 {
+		positions = append(positions, action.Position)
 	}
-	parts := [][]byte{payload[:position], payload[position:]}
-	segments := make([][]byte, 0, 2)
+	var sniStart, sniEnd int
+	var hasSNI bool
+	for _, position := range action.Positions {
+		resolved := position.Absolute
+		if position.Anchor != "" {
+			if !hasSNI {
+				_, sniStart, sniEnd = locateTLSServerName(payload, true)
+				hasSNI = sniStart > 0 && sniEnd > sniStart
+			}
+			if !hasSNI {
+				return nil, fmt.Errorf("cannot resolve %s without a complete SNI extension", position.Anchor)
+			}
+			switch position.Anchor {
+			case "tls-sni-start":
+				resolved = sniStart
+			case "tls-sni-middle":
+				resolved = sniStart + (sniEnd-sniStart)/2
+			case "tls-sni-end":
+				resolved = sniEnd
+			}
+			resolved += position.Offset
+		}
+		if resolved < 1 || resolved >= len(payload) {
+			return nil, fmt.Errorf("split position %d is outside payload length %d", resolved, len(payload))
+		}
+		positions = append(positions, resolved)
+	}
+	sort.Ints(positions)
+	unique := positions[:0]
+	for _, position := range positions {
+		if len(unique) == 0 || unique[len(unique)-1] != position {
+			unique = append(unique, position)
+		}
+	}
+	return unique, nil
+}
+
+func splitTCPPacket(parsed parsedPacket, position int) ([][]byte, error) {
+	return splitTCPPacketAtPositions(parsed, []int{position})
+}
+
+func splitTCPPacketAtPositions(parsed parsedPacket, positions []int) ([][]byte, error) {
+	payload := parsed.payload()
+	if len(positions) == 0 {
+		return nil, errors.New("no TCP split positions")
+	}
+	parts := make([][]byte, 0, len(positions)+1)
+	previous := 0
+	for _, position := range positions {
+		if position < 1 || position >= len(payload) || position <= previous {
+			return nil, fmt.Errorf("split position %d is invalid for payload length %d", position, len(payload))
+		}
+		parts = append(parts, payload[previous:position])
+		previous = position
+	}
+	parts = append(parts, payload[previous:])
+	segments := make([][]byte, 0, len(parts))
 	offset := 0
 	for index, part := range parts {
 		packet, updated, err := resizePacketPayload(parsed, part)
@@ -451,11 +522,26 @@ func fakeTLSClientHello() []byte {
 }
 
 func fakeTLSClientHelloForServerName(host string) []byte {
+	return fakeTLSClientHelloForServerNameAndSession(host, nil, 0)
+}
+
+func fakeTLSClientHelloLike(original []byte) []byte {
+	seed := byte(len(original))
+	for index, value := range original {
+		seed ^= value + byte(index*17)
+	}
+	return fakeTLSClientHelloForServerNameAndSession("www.google.com", tlsClientHelloSessionID(original), seed)
+}
+
+func fakeTLSClientHelloForServerNameAndSession(host string, sessionID []byte, seed byte) []byte {
+	if len(sessionID) > 32 {
+		sessionID = sessionID[:32]
+	}
 	serverName := []byte(normalizeHost(host))
 	serverNameListLength := 3 + len(serverName)
 	serverNameExtensionLength := 2 + serverNameListLength
 	extensionsLength := 4 + serverNameExtensionLength
-	bodyLength := 2 + 32 + 1 + 2 + 2 + 1 + 1 + 2 + extensionsLength
+	bodyLength := 2 + 32 + 1 + len(sessionID) + 2 + 2 + 1 + 1 + 2 + extensionsLength
 	handshakeLength := 4 + bodyLength
 	payload := make([]byte, 5+handshakeLength)
 	payload[0] = 0x16
@@ -470,11 +556,13 @@ func fakeTLSClientHelloForServerName(host string) []byte {
 	payload[cursor], payload[cursor+1] = 0x03, 0x03
 	cursor += 2
 	for index := 0; index < 32; index++ {
-		payload[cursor+index] = byte(index*17 + 3)
+		payload[cursor+index] = byte(index*17+3) ^ seed
 	}
 	cursor += 32
-	payload[cursor] = 0
+	payload[cursor] = byte(len(sessionID))
 	cursor++
+	copy(payload[cursor:], sessionID)
+	cursor += len(sessionID)
 	binary.BigEndian.PutUint16(payload[cursor:cursor+2], 2)
 	cursor += 2
 	payload[cursor], payload[cursor+1] = 0x13, 0x01
@@ -495,27 +583,92 @@ func fakeTLSClientHelloForServerName(host string) []byte {
 	return payload
 }
 
+func tlsClientHelloSessionID(record []byte) []byte {
+	const sessionLengthOffset = 5 + 4 + 2 + 32
+	if len(record) <= sessionLengthOffset || record[0] != 0x16 || record[5] != 0x01 {
+		return nil
+	}
+	length := int(record[sessionLengthOffset])
+	start := sessionLengthOffset + 1
+	if length > 32 || start+length > len(record) {
+		return nil
+	}
+	return append([]byte(nil), record[start:start+length]...)
+}
+
+func padTLSClientHello(payload []byte, target int) []byte {
+	if target <= len(payload) || len(payload) < 9 || target-len(payload) < 4 {
+		return payload
+	}
+	extensionsLengthOffset, ok := clientHelloExtensionsLengthOffset(payload)
+	if !ok {
+		return payload
+	}
+	paddingLength := target - len(payload) - 4
+	padded := make([]byte, target)
+	copy(padded, payload)
+	cursor := len(payload)
+	binary.BigEndian.PutUint16(padded[cursor:cursor+2], 21) // RFC 7685 padding extension.
+	binary.BigEndian.PutUint16(padded[cursor+2:cursor+4], uint16(paddingLength))
+	extensionsLength := int(binary.BigEndian.Uint16(padded[extensionsLengthOffset : extensionsLengthOffset+2]))
+	binary.BigEndian.PutUint16(padded[extensionsLengthOffset:extensionsLengthOffset+2], uint16(extensionsLength+4+paddingLength))
+	recordLength := len(padded) - 5
+	binary.BigEndian.PutUint16(padded[3:5], uint16(recordLength))
+	handshakeLength := recordLength - 4
+	padded[6], padded[7], padded[8] = byte(handshakeLength>>16), byte(handshakeLength>>8), byte(handshakeLength)
+	return padded
+}
+
+func clientHelloExtensionsLengthOffset(record []byte) (int, bool) {
+	if len(record) < 5+4+2+32+1 || record[0] != 0x16 || record[5] != 0x01 {
+		return 0, false
+	}
+	cursor := 9 + 2 + 32
+	if cursor >= len(record) {
+		return 0, false
+	}
+	sessionLength := int(record[cursor])
+	cursor++
+	if cursor+sessionLength+2 > len(record) {
+		return 0, false
+	}
+	cursor += sessionLength
+	cipherLength := int(binary.BigEndian.Uint16(record[cursor : cursor+2]))
+	cursor += 2
+	if cursor+cipherLength+1 > len(record) {
+		return 0, false
+	}
+	cursor += cipherLength
+	compressionLength := int(record[cursor])
+	cursor++
+	if cursor+compressionLength+2 > len(record) {
+		return 0, false
+	}
+	return cursor + compressionLength, true
+}
+
 func fakeQUICInitial(original []byte) []byte {
-	// QUIC Initial payloads are encrypted. Reusing a bounded prefix with a
-	// deterministic tail preserves the public long-header shape without loading
-	// external binary blobs or parsing secret application data.
-	length := len(original)
-	if length < 64 {
-		length = 64
+	// A QUIC Initial commonly already occupies 1200 bytes. Copying it and only
+	// filling a missing tail therefore emitted an identical packet, not a decoy.
+	// Build a distinct, bounded v1 long-header packet instead. It intentionally
+	// cannot authenticate at the origin but retains the shape inspected by DPI.
+	payload := make([]byte, 1200)
+	payload[0] = 0xc3
+	binary.BigEndian.PutUint32(payload[1:5], 1)
+	payload[5] = 8
+	copy(payload[6:14], []byte{0x83, 0x94, 0xc8, 0xf0, 0x3e, 0x51, 0x57, 0x08})
+	payload[14] = 0 // source connection id length
+	payload[15] = 0 // token length
+	// Two-byte QUIC varint describing the remaining packet number and payload.
+	remaining := len(payload) - 18
+	payload[16] = 0x40 | byte(remaining>>8)
+	payload[17] = byte(remaining)
+	seed := byte(len(original)*31 + 17)
+	for index := 18; index < len(payload); index++ {
+		payload[index] = byte(index*29+11) ^ seed
 	}
-	if length > 1200 {
-		length = 1200
-	}
-	payload := make([]byte, length)
-	copy(payload, original)
-	for index := len(original); index < len(payload); index++ {
-		payload[index] = byte(index*29 + 11)
-	}
-	if len(payload) >= 5 {
-		payload[0] |= 0xc0
-		if binary.BigEndian.Uint32(payload[1:5]) == 0 {
-			binary.BigEndian.PutUint32(payload[1:5], 1)
-		}
+	if len(original) == len(payload) && string(original) == string(payload) {
+		payload[len(payload)-1] ^= 0xff
 	}
 	return payload
 }

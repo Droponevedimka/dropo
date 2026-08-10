@@ -211,99 +211,126 @@ func extractHTTPHost(payload []byte) string {
 }
 
 func extractTLSServerName(payload []byte) string {
+	host, _, _ := locateTLSServerName(payload, true)
+	return host
+}
+
+// locateTLSServerName accepts a truncated TLS record when the complete SNI
+// extension is already present. Current post-quantum ClientHello records can be
+// larger than the first captured TCP segment; rejecting them solely because the
+// declared record continues in a later segment made classified services pass
+// unchanged through the engine.
+func locateTLSServerName(payload []byte, allowTruncated bool) (string, int, int) {
 	if len(payload) < 5 || payload[0] != 0x16 {
-		return ""
+		return "", 0, 0
 	}
 	recordLength := int(binary.BigEndian.Uint16(payload[3:5]))
-	if recordLength < 4 || 5+recordLength > len(payload) {
-		return ""
+	if recordLength < 4 || (!allowTruncated && 5+recordLength > len(payload)) {
+		return "", 0, 0
 	}
-	handshake := payload[5 : 5+recordLength]
+	available := min(len(payload), 5+recordLength)
+	handshake := payload[5:available]
 	if len(handshake) < 4 || handshake[0] != 0x01 {
-		return ""
+		return "", 0, 0
 	}
-	handshakeLength := int(handshake[1])<<16 | int(handshake[2])<<8 | int(handshake[3])
-	if handshakeLength+4 > len(handshake) || handshakeLength < 38 {
-		return ""
+	host, start, end := locateClientHelloServerName(handshake, allowTruncated)
+	if host == "" {
+		return "", 0, 0
 	}
-	return extractClientHelloServerName(handshake[:4+handshakeLength])
+	return host, start + 5, end + 5
 }
 
 // extractClientHelloServerName parses a complete TLS ClientHello handshake
 // without a TLS record wrapper. QUIC carries this form in CRYPTO frames.
 func extractClientHelloServerName(handshake []byte) string {
+	host, _, _ := locateClientHelloServerName(handshake, false)
+	return host
+}
+
+func locateClientHelloServerName(handshake []byte, allowTruncated bool) (string, int, int) {
 	if len(handshake) < 42 || handshake[0] != 0x01 {
-		return ""
+		return "", 0, 0
 	}
 	handshakeLength := int(handshake[1])<<16 | int(handshake[2])<<8 | int(handshake[3])
-	if handshakeLength < 38 || handshakeLength+4 > len(handshake) {
-		return ""
+	if handshakeLength < 38 || (!allowTruncated && handshakeLength+4 > len(handshake)) {
+		return "", 0, 0
 	}
-	body := handshake[4 : 4+handshakeLength]
+	body := handshake[4:min(len(handshake), 4+handshakeLength)]
 	cursor := 2 + 32
 	if cursor >= len(body) {
-		return ""
+		return "", 0, 0
 	}
 	sessionLength := int(body[cursor])
 	cursor++
 	if cursor+sessionLength+2 > len(body) {
-		return ""
+		return "", 0, 0
 	}
 	cursor += sessionLength
 	cipherLength := int(binary.BigEndian.Uint16(body[cursor : cursor+2]))
 	cursor += 2
 	if cursor+cipherLength+1 > len(body) {
-		return ""
+		return "", 0, 0
 	}
 	cursor += cipherLength
 	compressionLength := int(body[cursor])
 	cursor++
 	if cursor+compressionLength+2 > len(body) {
-		return ""
+		return "", 0, 0
 	}
 	cursor += compressionLength
 	extensionsLength := int(binary.BigEndian.Uint16(body[cursor : cursor+2]))
 	cursor += 2
-	if cursor+extensionsLength > len(body) {
-		return ""
+	if !allowTruncated && cursor+extensionsLength > len(body) {
+		return "", 0, 0
 	}
-	extensions := body[cursor : cursor+extensionsLength]
-	for cursor = 0; cursor+4 <= len(extensions); {
-		extensionType := binary.BigEndian.Uint16(extensions[cursor : cursor+2])
-		extensionLength := int(binary.BigEndian.Uint16(extensions[cursor+2 : cursor+4]))
-		cursor += 4
-		if cursor+extensionLength > len(extensions) {
-			return ""
+	extensionsBase := 4 + cursor
+	extensions := body[cursor:min(len(body), cursor+extensionsLength)]
+	for extensionCursor := 0; extensionCursor+4 <= len(extensions); {
+		extensionType := binary.BigEndian.Uint16(extensions[extensionCursor : extensionCursor+2])
+		extensionLength := int(binary.BigEndian.Uint16(extensions[extensionCursor+2 : extensionCursor+4]))
+		extensionCursor += 4
+		if extensionCursor+extensionLength > len(extensions) {
+			return "", 0, 0
 		}
 		if extensionType == 0 {
-			return parseServerNameExtension(extensions[cursor : cursor+extensionLength])
+			host, start, end := locateServerNameExtension(extensions[extensionCursor : extensionCursor+extensionLength])
+			if host == "" {
+				return "", 0, 0
+			}
+			base := extensionsBase + extensionCursor
+			return host, base + start, base + end
 		}
-		cursor += extensionLength
+		extensionCursor += extensionLength
 	}
-	return ""
+	return "", 0, 0
 }
 
 func parseServerNameExtension(extension []byte) string {
+	host, _, _ := locateServerNameExtension(extension)
+	return host
+}
+
+func locateServerNameExtension(extension []byte) (string, int, int) {
 	if len(extension) < 5 {
-		return ""
+		return "", 0, 0
 	}
 	listLength := int(binary.BigEndian.Uint16(extension[:2]))
 	if listLength+2 > len(extension) {
-		return ""
+		return "", 0, 0
 	}
 	for cursor := 2; cursor+3 <= 2+listLength; {
 		nameType := extension[cursor]
 		nameLength := int(binary.BigEndian.Uint16(extension[cursor+1 : cursor+3]))
 		cursor += 3
 		if cursor+nameLength > len(extension) {
-			return ""
+			return "", 0, 0
 		}
 		if nameType == 0 {
-			return normalizeHost(string(extension[cursor : cursor+nameLength]))
+			return normalizeHost(string(extension[cursor : cursor+nameLength])), cursor, cursor + nameLength
 		}
 		cursor += nameLength
 	}
-	return ""
+	return "", 0, 0
 }
 
 func udpFingerprints(payload []byte) []string {

@@ -13,6 +13,8 @@ const (
 	maxSyntheticPackets  = 32
 	maxBufferedFlowBytes = 256 * 1024
 	maxPacketPosition    = 64 * 1024
+	maxPacketPositions   = 6
+	maxSyntheticPayload  = 4096
 )
 
 // ValidatePlan rejects ambiguous or unsafe plans before they reach WinDivert.
@@ -179,10 +181,13 @@ func ValidateStrategy(strategy TrafficStrategy) error {
 func validateAction(network Network, action PacketAction) error {
 	switch action.Kind {
 	case ActionPass:
-		if action.Position != 0 || action.SequenceDelta != 0 || action.Overlap != 0 || action.TTL != 0 || action.Repeats != 0 || action.Payload != "" || action.InvalidSum {
+		if action.Position != 0 || len(action.Positions) != 0 || action.SequenceDelta != 0 || action.Overlap != 0 || action.TTL != 0 || action.Repeats != 0 || action.Payload != "" || action.PadTo != 0 || action.InvalidSum {
 			return errors.New("pass action cannot contain transformation fields")
 		}
 	case ActionFake:
+		if action.Position != 0 || len(action.Positions) != 0 || action.Overlap != 0 || action.TTL != 0 {
+			return errors.New("fake action contains fields for another action kind")
+		}
 		if action.Repeats < 1 || action.Repeats > maxSyntheticPackets {
 			return fmt.Errorf("fake repeats must be within 1..%d", maxSyntheticPackets)
 		}
@@ -190,20 +195,52 @@ func validateAction(network Network, action PacketAction) error {
 			return errors.New("fake payload is required")
 		}
 		switch action.Payload {
-		case "original", "tls_client_hello", "quic_initial", "protocol_decoy":
+		case "original", "tls_client_hello", "quic_initial", "quic_decoy", "protocol_decoy", "zero":
 		default:
 			return fmt.Errorf("unsupported fake payload %q", action.Payload)
+		}
+		if action.PadTo < 0 || action.PadTo > maxSyntheticPayload {
+			return fmt.Errorf("fake padTo must be within 0..%d", maxSyntheticPayload)
+		}
+		if action.Payload == "zero" && action.PadTo == 0 {
+			return errors.New("zero fake payload requires padTo")
+		}
+		if action.SequenceDelta < -maxPacketPosition || action.SequenceDelta > maxPacketPosition {
+			return fmt.Errorf("sequenceDelta must be within %d..%d", -maxPacketPosition, maxPacketPosition)
+		}
+		if network != NetworkTCP && action.SequenceDelta != 0 {
+			return errors.New("sequenceDelta is TCP-only")
 		}
 	case ActionSplit, ActionDisorder:
 		if network != NetworkTCP {
 			return fmt.Errorf("%s is TCP-only", action.Kind)
 		}
-		if action.Position < 1 || action.Position > maxPacketPosition {
+		if action.Position != 0 && len(action.Positions) != 0 {
+			return errors.New("use either position or positions, not both")
+		}
+		if action.Position == 0 && len(action.Positions) == 0 {
+			return errors.New("at least one position is required")
+		}
+		if action.Position < 0 || action.Position > maxPacketPosition {
 			return fmt.Errorf("position must be within 1..%d", maxPacketPosition)
+		}
+		if len(action.Positions) > maxPacketPositions {
+			return fmt.Errorf("at most %d positions are allowed", maxPacketPositions)
+		}
+		for index, position := range action.Positions {
+			if err := validatePacketPosition(position); err != nil {
+				return fmt.Errorf("position %d: %w", index, err)
+			}
+		}
+		if action.SequenceDelta != 0 || action.Overlap != 0 || action.TTL != 0 || action.Repeats != 0 || action.Payload != "" || action.PadTo != 0 || action.InvalidSum {
+			return fmt.Errorf("%s action contains fields for another action kind", action.Kind)
 		}
 	case ActionTTL:
 		if action.TTL < 1 || action.TTL > 255 {
 			return errors.New("ttl must be within 1..255")
+		}
+		if action.Position != 0 || len(action.Positions) != 0 || action.SequenceDelta != 0 || action.Overlap != 0 || action.Repeats != 0 || action.Payload != "" || action.PadTo != 0 || action.InvalidSum {
+			return errors.New("ttl action contains fields for another action kind")
 		}
 	case ActionSequenceOverlap:
 		if network != NetworkTCP {
@@ -212,12 +249,42 @@ func validateAction(network Network, action PacketAction) error {
 		if action.Overlap < 1 || action.Overlap > maxPacketPosition {
 			return fmt.Errorf("overlap must be within 1..%d", maxPacketPosition)
 		}
+		if action.Position != 0 || len(action.Positions) != 0 || action.SequenceDelta != 0 || action.TTL != 0 || action.Repeats != 0 || action.Payload != "" || action.PadTo != 0 || action.InvalidSum {
+			return errors.New("sequence overlap contains fields for another action kind")
+		}
 	case ActionRepeat:
 		if action.Repeats < 1 || action.Repeats > maxSyntheticPackets {
 			return fmt.Errorf("repeats must be within 1..%d", maxSyntheticPackets)
 		}
+		if action.Position != 0 || len(action.Positions) != 0 || action.SequenceDelta != 0 || action.Overlap != 0 || action.TTL != 0 || action.Payload != "" || action.PadTo != 0 || action.InvalidSum {
+			return errors.New("repeat action contains fields for another action kind")
+		}
 	default:
 		return fmt.Errorf("unsupported action kind %q", action.Kind)
+	}
+	return nil
+}
+
+func validatePacketPosition(position PacketPosition) error {
+	if position.Absolute != 0 && strings.TrimSpace(position.Anchor) != "" {
+		return errors.New("absolute and anchor are mutually exclusive")
+	}
+	if position.Absolute != 0 {
+		if position.Absolute < 1 || position.Absolute > maxPacketPosition {
+			return fmt.Errorf("absolute position must be within 1..%d", maxPacketPosition)
+		}
+		if position.Offset != 0 {
+			return errors.New("absolute position cannot have an offset")
+		}
+		return nil
+	}
+	switch position.Anchor {
+	case "tls-sni-start", "tls-sni-middle", "tls-sni-end":
+	default:
+		return fmt.Errorf("unsupported anchor %q", position.Anchor)
+	}
+	if position.Offset < -maxPacketPosition || position.Offset > maxPacketPosition {
+		return fmt.Errorf("anchor offset must be within %d..%d", -maxPacketPosition, maxPacketPosition)
 	}
 	return nil
 }

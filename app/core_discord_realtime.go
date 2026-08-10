@@ -34,7 +34,7 @@ const (
 	// the configured subscription (or direct when no subscription exists).
 	discordRealtimeNoFlowDeadline    = 10 * time.Second
 	discordRealtimeActivityRetention = 45 * time.Second
-	discordRealtimeMaxLocalAttempts  = 3
+	discordRealtimeMaxLocalAttempts  = 4
 	discordRealtimeMinMediaBytes     = 512
 	discordRealtimeMinMediaPolls     = 3
 	discordRealtimeMinUploadBytes    = 64

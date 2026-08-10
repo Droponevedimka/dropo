@@ -161,6 +161,39 @@ func TestValidateStrategyRejectsUnboundedActions(t *testing.T) {
 	if err := ValidateStrategy(strategy); err == nil {
 		t.Fatal("expected UDP split to be rejected")
 	}
+	strategy = testStrategy("bad-anchor", 1)
+	strategy.TCP[1] = PacketAction{Kind: ActionSplit, Positions: []PacketPosition{{Anchor: "unbounded-search"}}}
+	if err := ValidateStrategy(strategy); err == nil {
+		t.Fatal("expected unknown dynamic anchor to be rejected")
+	}
+	strategy = testStrategy("bad-padding", 1)
+	strategy.TCP[0].PadTo = maxSyntheticPayload + 1
+	if err := ValidateStrategy(strategy); err == nil {
+		t.Fatal("expected oversized synthetic payload to be rejected")
+	}
+	strategy = testStrategy("bad-action-fields", 1)
+	strategy.TCP[1].PadTo = 100
+	if err := ValidateStrategy(strategy); err == nil {
+		t.Fatal("expected fields from another action kind to be rejected")
+	}
+	strategy = testStrategy("bad-sequence-delta", 1)
+	strategy.TCP[0].SequenceDelta = maxPacketPosition + 1
+	if err := ValidateStrategy(strategy); err == nil {
+		t.Fatal("expected unbounded sequence delta to be rejected")
+	}
+}
+
+func TestBuiltinStrategiesAreValidAndUnique(t *testing.T) {
+	seen := map[string]bool{}
+	for _, strategy := range BuiltinStrategies() {
+		if seen[strategy.ID] {
+			t.Fatalf("duplicate built-in strategy %q", strategy.ID)
+		}
+		seen[strategy.ID] = true
+		if err := ValidateStrategy(strategy); err != nil {
+			t.Fatalf("ValidateStrategy(%q) error = %v", strategy.ID, err)
+		}
+	}
 }
 
 type fakeSelectorRuntime struct {
@@ -296,6 +329,80 @@ func TestPacketProcessorClassifiesAndSplitsTLS(t *testing.T) {
 	}
 }
 
+func TestPacketProcessorClassifiesTruncatedLargeClientHello(t *testing.T) {
+	packet := testIPv4TCPPacket(t, "discord.com")
+	payload := packet[40:]
+	binary.BigEndian.PutUint16(payload[3:5], 2000)
+	payload[6], payload[7], payload[8] = 0, 7, 204
+	calculateChecksums(packet)
+
+	processor, err := NewProcessor(testPlan())
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision := processor.Process(packet)
+	if decision.ServiceID != "discord" || !decision.Transformed {
+		t.Fatalf("truncated large ClientHello decision = %+v", decision)
+	}
+}
+
+func TestZapret2MultidisorderUsesSNIAnchors(t *testing.T) {
+	var strategy TrafficStrategy
+	for _, candidate := range BuiltinStrategies() {
+		if candidate.ID == "native-zapret2-fake-multidisorder" {
+			strategy = candidate
+			break
+		}
+	}
+	if strategy.ID == "" {
+		t.Fatal("zapret2 multidisorder strategy is missing")
+	}
+	plan := testPlan()
+	plan.Strategies = []TrafficStrategy{strategy}
+	plan.Services[0].CandidateStrategyIDs = []string{strategy.ID}
+	plan.Selections[0].StrategyID = strategy.ID
+	processor, err := NewProcessor(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := testIPv4TCPPacket(t, "discord.com")
+	decision := processor.Process(original)
+	if !decision.Transformed || len(decision.Packets) != 14 {
+		t.Fatalf("multidisorder decision has %d packets: %+v", len(decision.Packets), decision)
+	}
+	joined := make([]byte, 0, len(original)-40)
+	for index := len(decision.Packets) - 1; index >= len(decision.Packets)-3; index-- {
+		parsed, parseErr := parsePacket(decision.Packets[index])
+		if parseErr != nil {
+			t.Fatal(parseErr)
+		}
+		joined = append(joined, parsed.payload()...)
+	}
+	if string(joined) != string(original[40:]) {
+		t.Fatal("SNI-anchored disorder segments do not reconstruct the original ClientHello")
+	}
+}
+
+func TestPaddedTLSAndQUICDecoysAreDistinctAndBounded(t *testing.T) {
+	sessionID := []byte{1, 3, 3, 7, 9}
+	originalTLS := fakeTLSClientHelloForServerNameAndSession("discord.com", sessionID, 4)
+	fakeTLS := fakeTLSClientHelloLike(originalTLS)
+	if got := tlsClientHelloSessionID(fakeTLS); string(got) != string(sessionID) {
+		t.Fatalf("fake TLS session ID = %v, want duplicated %v", got, sessionID)
+	}
+	padded := padTLSClientHello(fakeTLS, 681)
+	if len(padded) != 681 || extractTLSServerName(padded) != "www.google.com" {
+		t.Fatalf("padded ClientHello length=%d SNI=%q", len(padded), extractTLSServerName(padded))
+	}
+	original := make([]byte, 1200)
+	original[0] = 0xc3
+	binary.BigEndian.PutUint32(original[1:5], 1)
+	decoy := fakeQUICInitial(original)
+	if len(decoy) != 1200 || string(decoy) == string(original) {
+		t.Fatalf("QUIC decoy length=%d distinct=%v", len(decoy), string(decoy) != string(original))
+	}
+}
+
 func TestPacketProcessorFailsSafeForMalformedAndUnclassified(t *testing.T) {
 	processor, err := NewProcessor(testPlan())
 	if err != nil {
@@ -425,6 +532,55 @@ func TestDiscordActiveStrategySendsBoundedDiscoveryDecoysBeforeOriginal(t *testi
 	}
 	if string(decision.Packets[3]) != string(packet) {
 		t.Fatal("the original Discord discovery packet was not preserved last")
+	}
+}
+
+func TestDiscordActiveV2SendsDistinctQUICShapedDecoys(t *testing.T) {
+	var active TrafficStrategy
+	for _, strategy := range BuiltinStrategies() {
+		if strategy.ID == "native-discord-active-v2" {
+			active = strategy
+			break
+		}
+	}
+	if active.ID == "" {
+		t.Fatal("Discord active v2 strategy is missing")
+	}
+	plan := TrafficPlan{
+		Revision: 1, CatalogRevision: BuiltinCatalogRevision, Strategies: []TrafficStrategy{active},
+		Services: []ServiceRule{{
+			ID: "discord", DisplayName: "Discord", IPCIDRs: []string{"66.22.192.0/18"},
+			UDPPorts: []int{50000}, Fingerprints: []string{"discord-media"}, CandidateStrategyIDs: []string{active.ID},
+		}},
+		Selections: []ServiceSelection{{ServiceID: "discord", StrategyID: active.ID}},
+	}
+	processor, err := NewProcessor(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	discovery := make([]byte, 74)
+	discovery[1], discovery[3] = 1, 70
+	decision := processor.Process(testIPv4UDPPacket("66.22.200.1", 50000, discovery))
+	if !decision.Transformed || len(decision.Packets) != 7 {
+		t.Fatalf("decision = %#v, want six decoys plus original", decision)
+	}
+	for index := 0; index < 3; index++ {
+		parsed, parseErr := parsePacket(decision.Packets[index])
+		if parseErr != nil {
+			t.Fatal(parseErr)
+		}
+		if len(parsed.payload()) != 1200 || parsed.payload()[0]&0xc0 != 0xc0 || string(parsed.payload()) == string(discovery) {
+			t.Fatalf("decoy %d is not a distinct 1200-byte QUIC-shaped payload", index)
+		}
+	}
+	for index := 3; index < 6; index++ {
+		parsed, parseErr := parsePacket(decision.Packets[index])
+		if parseErr != nil {
+			t.Fatal(parseErr)
+		}
+		if !isDiscordDiscovery(parsed.payload()) || string(parsed.payload()) == string(discovery) {
+			t.Fatalf("decoy %d is not a distinct generated Discord discovery payload", index)
+		}
 	}
 }
 
