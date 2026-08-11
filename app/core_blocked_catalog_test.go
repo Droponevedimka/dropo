@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -39,10 +40,10 @@ func TestLoadBlockedCatalogRejectsPrivateAndNamedEntries(t *testing.T) {
 	}
 }
 
-func TestDirectSteamNamespacesNeverEnterBlockedCatalog(t *testing.T) {
+func TestDirectGameNamespacesNeverEnterBlockedCatalog(t *testing.T) {
 	root := t.TempDir()
 	writeTestBlockedCatalog(t, root,
-		"blocked-a.example\nblocked-b.example\nblocked-c.example\nblocked-d.example\nsteam.com\nstore.steampowered.com\nsteamcommunity.com\n",
+		"blocked-a.example\nblocked-b.example\nblocked-c.example\nblocked-d.example\nsteam.com\nstore.steampowered.com\nsteamcommunity.com\nriotgames.com\nauth.riotgames.com\nru-red.lol.sgp.pvp.net\n",
 		"8.8.8.0/24\n",
 	)
 
@@ -51,8 +52,10 @@ func TestDirectSteamNamespacesNeverEnterBlockedCatalog(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, domain := range catalog.Domains {
-		if domain == "steam.com" || domain == "store.steampowered.com" || domain == "steamcommunity.com" {
-			t.Fatalf("Steam domain leaked into blocked catalog: %s", domain)
+		for _, directSuffix := range []string{"steam.com", "steampowered.com", "steamcommunity.com", "riotgames.com", "pvp.net"} {
+			if domain == directSuffix || strings.HasSuffix(domain, "."+directSuffix) {
+				t.Fatalf("direct game domain leaked into blocked catalog: %s", domain)
+			}
 		}
 	}
 }
@@ -115,5 +118,19 @@ func TestNativePlanIncludesOneCommonBlockedSelection(t *testing.T) {
 	}
 	if len(plan.Selections) != 1 || plan.Selections[0].StrategyID != method.NativeStrategyID {
 		t.Fatalf("selections = %#v", plan.Selections)
+	}
+	if len(plan.DirectRules) != 1 {
+		t.Fatalf("direct rules = %#v", plan.DirectRules)
+	}
+	direct := plan.DirectRules[0]
+	for _, domain := range []string{"riotgames.com", "riotcdn.net", "pvp.net", "leagueoflegends.com"} {
+		if !containsStringValue(direct.DomainSuffixes, domain) {
+			t.Fatalf("native direct domains = %v, missing %s", direct.DomainSuffixes, domain)
+		}
+	}
+	for _, processName := range []string{"RiotClientServices.exe", "LeagueClient.exe", "League of Legends.exe", "vgc.exe"} {
+		if !containsStringValue(direct.ProcessNames, processName) {
+			t.Fatalf("native direct processes = %v, missing %s", direct.ProcessNames, processName)
+		}
 	}
 }

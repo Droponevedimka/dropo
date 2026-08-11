@@ -477,10 +477,39 @@ func TestLatencySensitiveDirectRoutingMigrationGate(t *testing.T) {
 		"dns":   map[string]interface{}{"rules": []interface{}{}},
 	}
 	if !configNeedsLatencySensitiveDirectMigration(stale, RoutingModeExceptRussia) {
-		t.Fatal("except_russia config without Steam/CS2 direct rules did not request migration")
+		t.Fatal("except_russia config without latency-sensitive game direct rules did not request migration")
 	}
 	if configNeedsLatencySensitiveDirectMigration(stale, RoutingModeAllTraffic) {
-		t.Fatal("all_traffic must not require a Steam/CS2 direct carve-out")
+		t.Fatal("all_traffic must not require a latency-sensitive game direct carve-out")
+	}
+	previousRelease := map[string]interface{}{
+		"route": map[string]interface{}{"rules": []interface{}{
+			map[string]interface{}{
+				"domain_suffix": []string{
+					"steam.com", "steampowered.com", "steamcommunity.com", "steamstatic.com",
+					"steamcontent.com", "steamserver.net", "steamgames.com", "steam-chat.com",
+					"valvesoftware.com", "valvesoftware.net", "valvecdn.com", "counter-strike.net",
+				},
+				"action": "route", "outbound": "direct",
+			},
+			map[string]interface{}{
+				"process_name": []string{"steam.exe", "steamservice.exe", "steamwebhelper.exe", "cs2.exe"},
+				"action":       "route", "outbound": "direct",
+			},
+		}},
+		"dns": map[string]interface{}{"rules": []interface{}{
+			map[string]interface{}{
+				"domain_suffix": []string{
+					"steam.com", "steampowered.com", "steamcommunity.com", "steamstatic.com",
+					"steamcontent.com", "steamserver.net", "steamgames.com", "steam-chat.com",
+					"valvesoftware.com", "valvesoftware.net", "valvecdn.com", "counter-strike.net",
+				},
+				"action": "route", "server": "dns-direct",
+			},
+		}},
+	}
+	if !configNeedsLatencySensitiveDirectMigration(previousRelease, RoutingModeExceptRussia) {
+		t.Fatal("pre-Riot split-routing config did not request migration")
 	}
 
 	current := map[string]interface{}{
@@ -494,7 +523,7 @@ func TestLatencySensitiveDirectRoutingMigrationGate(t *testing.T) {
 		}},
 	}
 	if configNeedsLatencySensitiveDirectMigration(current, RoutingModeExceptRussia) {
-		t.Fatal("current Steam/CS2 direct rules unexpectedly requested migration")
+		t.Fatal("current latency-sensitive game direct rules unexpectedly requested migration")
 	}
 }
 

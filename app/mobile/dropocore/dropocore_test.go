@@ -191,6 +191,14 @@ func TestAndroidBlockedOnlyRoutesOnlyBlockedServicesThroughVPN(t *testing.T) {
 	if androidContainsDomainRoute(config, "steam.com", "proxy") || androidContainsDomainRoute(config, "steamcommunity.com", "proxy") {
 		t.Fatal("Steam must keep the blocked-only final direct route on Android")
 	}
+	for _, domain := range []string{"riotgames.com", "riotcdn.net", "pvp.net", "leagueoflegends.com"} {
+		if !androidContainsDomainRoute(config, domain, "direct") || androidContainsDomainRoute(config, domain, "proxy") {
+			t.Fatalf("Riot domain %s must stay direct in Android blocked-only mode", domain)
+		}
+		if !androidContainsDNSServer(config, domain, "dns-direct") {
+			t.Fatalf("Riot domain %s must resolve directly in Android blocked-only mode", domain)
+		}
+	}
 }
 
 func TestAndroidRoutePolicyCanForceBlockedServiceDirect(t *testing.T) {
@@ -213,7 +221,7 @@ func TestAndroidRoutePolicyCanForceBlockedServiceDirect(t *testing.T) {
 	}
 }
 
-func TestAndroidExceptRussiaKeepsSteamOutsideVPN(t *testing.T) {
+func TestAndroidExceptRussiaKeepsLatencySensitiveGamesOutsideVPN(t *testing.T) {
 	mu.Lock()
 	current = defaultState()
 	current.BasePath = t.TempDir()
@@ -234,6 +242,19 @@ func TestAndroidExceptRussiaKeepsSteamOutsideVPN(t *testing.T) {
 	}
 	if !androidContainsDNSServer(config, "steam.com", "dns-direct") {
 		t.Fatal("except_russia must resolve Steam domains directly on Android")
+	}
+	for _, domain := range []string{"riotgames.com", "riotcdn.net", "pvp.net", "leagueoflegends.com"} {
+		if !androidContainsDomainRoute(config, domain, "direct") {
+			t.Fatalf("except_russia must keep Riot domain %s direct on Android", domain)
+		}
+		if !androidContainsDNSServer(config, domain, "dns-direct") {
+			t.Fatalf("except_russia must resolve Riot domain %s directly on Android", domain)
+		}
+	}
+	for _, packageName := range []string{"com.riotgames.league.wildrift", "com.riotgames.league.teamfighttactics"} {
+		if !androidContainsPackageRoute(config, packageName, "direct") {
+			t.Fatalf("except_russia must keep Riot package %s direct on Android", packageName)
+		}
 	}
 }
 

@@ -242,6 +242,22 @@ func TestDefaultBlockedOnlyWithSubscriptionRoutesOnlyBlockedTraffic(t *testing.T
 	if !routeRuleBeforeRuleSet(config, "domain_suffix", "steam.com", "refilter-domains") {
 		t.Fatal("Steam direct rule must precede the blocked-catalog catch-all")
 	}
+	for _, domain := range []string{"riotgames.com", "riotcdn.net", "pvp.net", "leagueoflegends.com"} {
+		if !containsDomainSuffixRouteRule(config, domain, "direct") {
+			t.Fatalf("Riot domain %s must remain direct under the default blocked_only policy", domain)
+		}
+		if !containsDNSDomainSuffixServer(config, domain, "dns-direct") {
+			t.Fatalf("Riot domain %s must resolve directly under the default blocked_only policy", domain)
+		}
+	}
+	for _, processName := range []string{"RiotClientServices.exe", "Riot Client.exe", "LeagueClient.exe", "LeagueClientUxRender.exe", "League of Legends.exe", "vgc.exe"} {
+		if !containsProcessDirectRule(config, processName) {
+			t.Fatalf("Riot process %s must remain direct under the default blocked_only policy", processName)
+		}
+	}
+	if !routeRuleBeforeRuleSet(config, "domain_suffix", "riotgames.com", "refilter-domains") {
+		t.Fatal("Riot direct rule must precede the blocked-catalog catch-all")
+	}
 }
 
 func TestDiscordRealtimeAlwaysUsesRuntimeSelector(t *testing.T) {
@@ -471,18 +487,26 @@ func TestFilterActiveFreeAccessOutboundsUsesDirectWhenDeepWindowsAvailable(t *te
 	}
 }
 
-func TestSteamAndCS2DirectRulesPrecedeBlockedCatalog(t *testing.T) {
+func TestLatencySensitiveGameDirectRulesPrecedeBlockedCatalog(t *testing.T) {
 	rules := buildDirectServiceRules()
 	if len(rules) < 2 {
 		t.Fatalf("direct rules = %#v", rules)
 	}
 	domainRule, ok := rules[0].(map[string]interface{})
-	if !ok || domainRule["outbound"] != "direct" || !containsStringValue(interfaceStringSlice(domainRule["domain_suffix"]), "steam.com") || !containsStringValue(interfaceStringSlice(domainRule["domain_suffix"]), "steamcommunity.com") {
-		t.Fatalf("Steam direct domain rule = %#v", rules[0])
+	if !ok || domainRule["outbound"] != "direct" ||
+		!containsStringValue(interfaceStringSlice(domainRule["domain_suffix"]), "steam.com") ||
+		!containsStringValue(interfaceStringSlice(domainRule["domain_suffix"]), "steamcommunity.com") ||
+		!containsStringValue(interfaceStringSlice(domainRule["domain_suffix"]), "riotgames.com") ||
+		!containsStringValue(interfaceStringSlice(domainRule["domain_suffix"]), "pvp.net") {
+		t.Fatalf("latency-sensitive direct domain rule = %#v", rules[0])
 	}
 	processRule := rules[len(rules)-1].(map[string]interface{})
-	if processRule["outbound"] != "direct" || !containsStringValue(interfaceStringSlice(processRule["process_name"]), "steam.exe") || !containsStringValue(interfaceStringSlice(processRule["process_name"]), "cs2.exe") {
-		t.Fatalf("Steam/CS2 direct process rule = %#v", processRule)
+	if processRule["outbound"] != "direct" ||
+		!containsStringValue(interfaceStringSlice(processRule["process_name"]), "steam.exe") ||
+		!containsStringValue(interfaceStringSlice(processRule["process_name"]), "cs2.exe") ||
+		!containsStringValue(interfaceStringSlice(processRule["process_name"]), "League of Legends.exe") ||
+		!containsStringValue(interfaceStringSlice(processRule["process_name"]), "RiotClientServices.exe") {
+		t.Fatalf("latency-sensitive direct process rule = %#v", processRule)
 	}
 }
 
@@ -2004,6 +2028,19 @@ func TestExceptRussiaUsesBypassForForeignTraffic(t *testing.T) {
 	}
 	if !containsDNSDomainSuffixServer(config, "steam.com", "dns-direct") {
 		t.Fatal("except_russia must resolve Steam domains directly")
+	}
+	for _, domain := range []string{"riotgames.com", "riotcdn.net", "pvp.net", "leagueoflegends.com"} {
+		if !containsDomainSuffixRouteRule(config, domain, "direct") {
+			t.Fatalf("except_russia must keep Riot domain %s outside the foreign-traffic VPN catch-all", domain)
+		}
+		if !containsDNSDomainSuffixServer(config, domain, "dns-direct") {
+			t.Fatalf("except_russia must resolve Riot domain %s directly", domain)
+		}
+	}
+	for _, processName := range []string{"RiotClientServices.exe", "Riot Client.exe", "LeagueClient.exe", "LeagueClientUxRender.exe", "League of Legends.exe", "vgc.exe"} {
+		if !containsProcessDirectRule(config, processName) {
+			t.Fatalf("except_russia must keep Riot process %s direct", processName)
+		}
 	}
 	if containsDomainSuffixRouteRule(config, "telegram.org", "direct") {
 		t.Fatal("telegram.org must not be routed direct in except_russia")

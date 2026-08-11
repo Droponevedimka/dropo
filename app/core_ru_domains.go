@@ -75,13 +75,14 @@ var RuDomainKeywords = []string{
 
 // DirectDomainSuffixes are latency-sensitive services that must stay outside
 // VPN and free-access catch-alls in every split-routing mode. Re-filter can
-// contain isolated Steam web domains even though Steam/CS2 itself is not a
-// Dropo blocked service; keeping the whole owned namespace direct prevents a
-// catalog or routing-mode change from affecting the game or its control plane.
+// contain isolated game-service web domains even though the games themselves
+// are not Dropo blocked services; keeping the owned namespaces direct prevents
+// a catalog or routing-mode change from affecting the game or its control plane.
 var DirectDomainSuffixes = []string{
 	"steam.com", "steampowered.com", "steamcommunity.com", "steamstatic.com",
 	"steamcontent.com", "steamserver.net", "steamgames.com", "steam-chat.com",
 	"valvesoftware.com", "valvesoftware.net", "valvecdn.com", "counter-strike.net",
+	"riotgames.com", "riotcdn.net", "pvp.net", "leagueoflegends.com",
 }
 
 // DirectIPCIDRs are non-blocked service IP ranges that are commonly used
@@ -92,4 +93,8 @@ var DirectIPCIDRs = []string{}
 // unless the user explicitly selects the all-traffic mode.
 var DirectProcessNames = []string{
 	"steam.exe", "steamservice.exe", "steamwebhelper.exe", "cs2.exe",
+	"RiotClientServices.exe", "Riot Client.exe",
+	"RiotClientUx.exe", "RiotClientUxRender.exe", "RiotClientUxRenderer.exe",
+	"LeagueClient.exe", "LeagueClientUx.exe", "LeagueClientUxRender.exe", "LeagueClientUxRenderer.exe",
+	"League of Legends.exe", "vgc.exe", "vgm.exe",
 }

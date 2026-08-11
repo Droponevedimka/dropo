@@ -580,6 +580,7 @@ func androidLatencySensitiveDirectDomainSuffixes() []string {
 		"steam.com", "steampowered.com", "steamcommunity.com", "steamstatic.com",
 		"steamcontent.com", "steamserver.net", "steamgames.com", "steam-chat.com",
 		"valvesoftware.com", "valvesoftware.net", "valvecdn.com", "counter-strike.net",
+		"riotgames.com", "riotcdn.net", "pvp.net", "leagueoflegends.com",
 	}
 }
 
@@ -587,13 +588,15 @@ func androidLatencySensitiveDirectPackageNames() []string {
 	return []string{
 		"com.valvesoftware.android.steam.community",
 		"com.valvesoftware.steamlink",
+		"com.riotgames.league.wildrift",
+		"com.riotgames.league.teamfighttactics",
 	}
 }
 
 func androidConfigSignature(subscription string, enableLogging bool, logLevel, routingMode string, hideRuTraffic bool, ruProxyAddress string, routePolicies map[string]string) string {
 	parts := []string{
 		"singbox=" + androidSingBoxVersion,
-		"schema=android-package-routing-v5",
+		"schema=android-package-routing-v6",
 		"subscription=" + strings.TrimSpace(subscription),
 		"log=" + effectiveAndroidLogLevel(enableLogging, logLevel),
 		"routing=" + normalizeAndroidRoutingMode(routingMode),

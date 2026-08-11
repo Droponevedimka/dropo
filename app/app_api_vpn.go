@@ -886,7 +886,7 @@ func (a *App) ensureActiveConfigForStart() error {
 			needsRebuild = true
 		}
 		if !needsRebuild && configNeedsLatencySensitiveDirectMigration(config, appSettings.RoutingMode) {
-			a.writeLog("Active config predates latency-sensitive Steam/CS2 direct routing; rebuilding before start")
+			a.writeLog("Active config predates latency-sensitive game direct routing; rebuilding before start")
 			needsRebuild = true
 		}
 		if !needsRebuild && subscriptionURL != "" {
