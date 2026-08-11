@@ -747,6 +747,8 @@ func (b *ConfigBuilder) applyRoutingMode(template map[string]interface{}) {
 	}
 }
 
+const blockedOnlyKnownDomainRegex = "^.+$"
+
 // applyBlockedOnlyMode configures routing for blocked sites only.
 // Uses Re:filter and community rule-sets to route only blocked traffic through VPN.
 func (b *ConfigBuilder) applyBlockedOnlyMode(route map[string]interface{}, existingRules, existingRuleSets []interface{}) {
@@ -809,25 +811,7 @@ func (b *ConfigBuilder) applyBlockedOnlyMode(route map[string]interface{}, exist
 	// This is handled separately by WireGuard integration, not here
 	// Internal networks go through WireGuard tunnel directly
 
-	// 6. Blocked + throttled sites via proxy (combined rule_sets)
-	// Re:filter includes: RKN-blocked domains/IPs + community list (OpenAI, YouTube, etc.)
-	// Discord IPs added separately as they're not in Re:filter
-	blockedRuleSetTags := availableRuleSetTags(filterRuleSets,
-		"refilter-domains",
-		"refilter-ips",
-		"community-domains",
-		"community-ips",
-		"discord-ips",
-	)
-	if len(blockedRuleSetTags) > 0 {
-		newRules = append(newRules, map[string]interface{}{
-			"rule_set": blockedRuleSetTags,
-			"action":   "route",
-			"outbound": "proxy",
-		})
-	}
-
-	// 7. Additional throttled services NOT in community.lst (YouTube video CDN)
+	// 6. Additional throttled services NOT in community.lst (YouTube video CDN)
 	// YouTube is in community.lst but googlevideo.com CDN sometimes missing
 	newRules = append(newRules, map[string]interface{}{
 		"domain_suffix": []string{
@@ -837,6 +821,16 @@ func (b *ConfigBuilder) applyBlockedOnlyMode(route map[string]interface{}, exist
 		"action":   "route",
 		"outbound": "proxy",
 	})
+
+	// 7. Match blocked domains before the known-domain direct boundary. Generic
+	// IP catalogs are evaluated only after that boundary, so an ordinary domain
+	// hosted on an address shared with a blocked tenant cannot be captured.
+	newRules = append(newRules, buildBlockedCatalogRouteRules(
+		filterRuleSets,
+		"proxy",
+		[]string{"refilter-domains", "community-domains"},
+		[]string{"refilter-ips", "community-ips"},
+	)...)
 
 	route["rules"] = newRules
 
@@ -863,6 +857,39 @@ func availableRuleSetTags(configs []map[string]interface{}, allowed ...string) [
 		}
 	}
 	return tags
+}
+
+// buildBlockedCatalogRouteRules keeps domain and IP evidence separate. A
+// positively matched blocked domain is routed first. Any other known domain is
+// then committed to direct, leaving the IP catalog as a fallback only for
+// genuinely IP-only traffic. Service-specific media IP sources must never be
+// passed here: they belong to their service process/domain policy.
+func buildBlockedCatalogRouteRules(configs []map[string]interface{}, outbound string, domainTags, ipTags []string) []interface{} {
+	domainRuleSets := availableRuleSetTags(configs, domainTags...)
+	ipRuleSets := availableRuleSetTags(configs, ipTags...)
+	rules := make([]interface{}, 0, 3)
+	if len(domainRuleSets) > 0 {
+		rules = append(rules, map[string]interface{}{
+			"rule_set": domainRuleSets,
+			"action":   "route",
+			"outbound": outbound,
+		})
+	}
+	if len(ipRuleSets) > 0 {
+		rules = append(rules,
+			map[string]interface{}{
+				"domain_regex": []string{blockedOnlyKnownDomainRegex},
+				"action":       "route",
+				"outbound":     "direct",
+			},
+			map[string]interface{}{
+				"rule_set": ipRuleSets,
+				"action":   "route",
+				"outbound": outbound,
+			},
+		)
+	}
+	return rules
 }
 
 // applyAllTrafficMode configures routing for all traffic through VPN.

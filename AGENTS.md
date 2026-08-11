@@ -28,6 +28,10 @@ commit workflow.
 - New packet actions must be typed, bounded, fail-safe and covered by parser,
   fixture and plan-validation tests. Unknown or weakly classified traffic must
   pass unchanged.
+- Service-specific or shared-provider IP sources must never participate in a
+  global blocked-traffic catch-all. Scope them to verified service process,
+  domain, or media evidence. In blocked-only mode, a known domain not present
+  in blocked domain catalogs must take direct precedence over generic IP lists.
 - Work-network/WireGuard overlay rules have priority over service strategies.
   Do not allow private destinations to fall through to a public VPN source.
 - A strategy selector must validate every required TCP, UDP and web target

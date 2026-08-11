@@ -889,6 +889,10 @@ func (a *App) ensureActiveConfigForStart() error {
 			a.writeLog("Active config predates final-direct blocked-only routing; rebuilding before start")
 			needsRebuild = true
 		}
+		if !needsRebuild && configNeedsScopedBlockedCatalogMigration(config, appSettings.RoutingMode) {
+			a.writeLog("Active config predates domain-first blocked catalog routing; rebuilding before start")
+			needsRebuild = true
+		}
 		if !needsRebuild && configNeedsLatencySensitiveDirectMigration(config, appSettings.RoutingMode) {
 			a.writeLog("Active config predates latency-sensitive game direct routing; rebuilding before start")
 			needsRebuild = true
@@ -974,6 +978,54 @@ func configNeedsBlockedOnlyContractMigration(config map[string]interface{}, rout
 	}
 	dns, ok := config["dns"].(map[string]interface{})
 	return !ok || dns["final"] != "dns-direct"
+}
+
+func configNeedsScopedBlockedCatalogMigration(config map[string]interface{}, routingMode RoutingMode) bool {
+	if NormalizeRoutingMode(routingMode) == RoutingModeAllTraffic {
+		return false
+	}
+	route, ok := config["route"].(map[string]interface{})
+	if !ok {
+		return true
+	}
+	rules, ok := route["rules"].([]interface{})
+	if !ok {
+		return true
+	}
+	domainRuleIndex := -1
+	ipRuleIndex := -1
+	knownDomainDirectIndex := -1
+	for index, raw := range rules {
+		rule, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		ruleSets := interfaceStringSlice(rule["rule_set"])
+		if stringSliceContains(ruleSets, "discord-ips") {
+			return true
+		}
+		hasDomainCatalog := stringSliceContains(ruleSets, "refilter-domains")
+		hasIPCatalog := stringSliceContains(ruleSets, "refilter-ips")
+		if hasDomainCatalog && hasIPCatalog {
+			return true
+		}
+		if hasDomainCatalog && domainRuleIndex == -1 {
+			domainRuleIndex = index
+		}
+		if hasIPCatalog && ipRuleIndex == -1 {
+			ipRuleIndex = index
+		}
+		if rule["outbound"] == "direct" && stringSliceContains(interfaceStringSlice(rule["domain_regex"]), blockedOnlyKnownDomainRegex) {
+			knownDomainDirectIndex = index
+		}
+	}
+	if ipRuleIndex == -1 {
+		return false
+	}
+	if knownDomainDirectIndex == -1 || knownDomainDirectIndex >= ipRuleIndex {
+		return true
+	}
+	return domainRuleIndex >= 0 && domainRuleIndex >= knownDomainDirectIndex
 }
 
 func configNeedsLatencySensitiveDirectMigration(config map[string]interface{}, routingMode RoutingMode) bool {

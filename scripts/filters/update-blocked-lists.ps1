@@ -156,7 +156,11 @@ function Test-CurrentBundle {
     } catch {
         return $false
     }
-    if ([int]$version.schema_version -lt 3 -or [int]$version.routing_policy.max_ip_host_bits -ne 4) {
+    $specificIPRuleSets = @($version.routing_policy.specific_ip_rule_sets)
+    if ([int]$version.schema_version -lt 4 -or
+        [int]$version.routing_policy.max_ip_host_bits -ne 4 -or
+        $specificIPRuleSets -notcontains "refilter_ips" -or
+        $specificIPRuleSets -notcontains "discord_ips") {
         return $false
     }
     if ([string]$version.filters_version -ne $LatestTag) {
@@ -228,12 +232,13 @@ try {
     }
 
     $rawRefilterIPs = @(Read-NormalizedList (Join-Path $temporaryDirectory "ipsum.lst") "IP")
+    $rawDiscordIPs = @(Read-NormalizedList (Join-Path $temporaryDirectory "discord_ips.lst") "IP")
     $lists = [ordered]@{
         refilter_domains  = @(Read-NormalizedList (Join-Path $temporaryDirectory "domains_all.lst") "Domain")
         refilter_ips      = @($rawRefilterIPs | Where-Object { Test-SpecificBlockedPrefix $_ })
         community_domains = @(Read-NormalizedList (Join-Path $temporaryDirectory "community_domains.lst") "Domain")
         community_ips     = @(Read-NormalizedList (Join-Path $temporaryDirectory "community_ips.lst") "IP")
-        discord_ips       = @(Read-NormalizedList (Join-Path $temporaryDirectory "discord_ips.lst") "IP")
+        discord_ips       = @($rawDiscordIPs | Where-Object { Test-SpecificBlockedPrefix $_ })
     }
     if ($lists.refilter_domains.Count -lt 1000 -or $lists.refilter_ips.Count -lt 1000) {
         throw "Upstream blocked lists are unexpectedly small."
@@ -275,15 +280,16 @@ try {
         $fileMetadata[$key] = $entry
     }
     $versionPayload = [ordered]@{
-        schema_version  = 3
+        schema_version  = 4
         filters_version = $latestTag
         updated_at      = ([DateTime]$latest.published_at).ToUniversalTime().ToString("o")
         source          = "https://github.com/1andrevich/Re-filter-lists"
         release_url     = [string]$latest.html_url
         max_age_days    = 30
         routing_policy  = [ordered]@{
-            max_ip_host_bits = 4
-            rationale        = "Only specific blocked IP ranges are routed; broad shared provider ranges pass directly."
+            max_ip_host_bits     = 4
+            specific_ip_rule_sets = @("refilter_ips", "discord_ips")
+            rationale            = "Only specific blocked IP ranges are compiled; broad shared provider ranges pass directly."
         }
         files           = $fileMetadata
     }
@@ -293,7 +299,7 @@ try {
     foreach ($name in @($RequiredFiles + "version.json")) {
         Copy-Item -LiteralPath (Join-Path $temporaryDirectory $name) -Destination (Join-Path $FiltersDirectory $name) -Force
     }
-    Write-Host "[FILTERS] Updated bundled blocked lists to $latestTag ($($lists.refilter_domains.Count) domains, $($lists.refilter_ips.Count) specific networks from $($rawRefilterIPs.Count) source networks)." -ForegroundColor Green
+    Write-Host "[FILTERS] Updated bundled blocked lists to $latestTag ($($lists.refilter_domains.Count) domains, $($lists.refilter_ips.Count)/$($rawRefilterIPs.Count) RKN IPs, $($lists.discord_ips.Count)/$($rawDiscordIPs.Count) scoped Discord IPs)." -ForegroundColor Green
 } finally {
     Remove-Item -LiteralPath $temporaryDirectory -Recurse -Force -ErrorAction SilentlyContinue
 }

@@ -1,5 +1,5 @@
 {
-    "schema_version":  3,
+    "schema_version":  4,
     "filters_version":  "01082026",
     "updated_at":  "2026-08-04T09:26:19.0000000Z",
     "source":  "https://github.com/1andrevich/Re-filter-lists",
@@ -7,7 +7,11 @@
     "max_age_days":  30,
     "routing_policy":  {
                            "max_ip_host_bits":  4,
-                           "rationale":  "Only specific blocked IP ranges are routed; broad shared provider ranges pass directly."
+                           "specific_ip_rule_sets":  [
+                                                         "refilter_ips",
+                                                         "discord_ips"
+                                                     ],
+                           "rationale":  "Only specific blocked IP ranges are compiled; broad shared provider ranges pass directly."
                        },
     "files":  {
                   "domains_all":  {
@@ -49,8 +53,8 @@
                   "discord_ips":  {
                                       "file":  "discord_ips.srs",
                                       "source_url":  "https://raw.githubusercontent.com/1andrevich/Re-filter-lists/main/discord_ips.lst",
-                                      "sha256":  "ecaabec71ed4a54d9254e3613c0a0486126ecbfa8c072a13d20e9a35dcdf1345",
-                                      "entries":  2322
+                                      "sha256":  "e1a1c2749e5627311ee81ad69928a354fe79cda781fc3bbe30e4715945b2b6e9",
+                                      "entries":  2321
                                   }
               }
 }

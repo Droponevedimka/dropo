@@ -123,5 +123,5 @@ It does not target other VPN applications.
 1. Без VPN-ключа: включить `Бесплатный доступ`, оставить сервисы включенными, запустить приложение и проверить `check-services.ps1 -Phase2Only`.
 2. С VPN-подпиской: добавить подписку в UI, подключиться, проверить `check-services.ps1`.
 3. С WireGuard: добавить рабочую сеть, подключиться, затем проверить корпоративные домены и маршруты через `check-routes.ps1`.
-4. В режиме `Только заблокированные` проверить `route.final=direct`: обход/VPN получают только именованные заблокированные сервисы и точные записи bundled-каталога. Широкие сети общих CDN не должны перехватывать обычный трафик.
+4. В режиме `Только заблокированные` проверить `route.final=direct`: blocked-domain правила идут до known-domain `direct`, generic blocked-IP правила — после него, а service-specific IP-списки не входят в global catch-all. Широкие сети общих CDN не должны перехватывать обычный трафик.
 5. AI services: без подписки `openai.com`, `api.openai.com`, Copilot/Cursor endpoints должны идти direct/pass-through; с подпиской должен появиться `bypass-openai` с единственным кандидатом `auto-select`.

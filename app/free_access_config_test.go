@@ -243,6 +243,18 @@ func TestDefaultBlockedOnlyWithSubscriptionRoutesOnlyBlockedTraffic(t *testing.T
 	if outbound := routeRuleSetOutbound(config, "refilter-domains"); outbound != SmartBypassGroupTag {
 		t.Fatalf("blocked catalog outbound = %q, want %q", outbound, SmartBypassGroupTag)
 	}
+	if outbound := routeRuleSetOutbound(config, "refilter-ips"); outbound != SmartBypassGroupTag {
+		t.Fatalf("blocked IP catalog outbound = %q, want %q", outbound, SmartBypassGroupTag)
+	}
+	if containsRouteRuleSet(config, "discord-ips") {
+		t.Fatal("service-specific Discord IP data must not participate in the global blocked catch-all")
+	}
+	domainIndex := routeRuleSetIndex(config, "refilter-domains")
+	knownDomainDirectIndex := routeRuleIndex(config, "domain_regex", blockedOnlyKnownDomainRegex, "direct")
+	ipIndex := routeRuleSetIndex(config, "refilter-ips")
+	if domainIndex < 0 || knownDomainDirectIndex <= domainIndex || ipIndex <= knownDomainDirectIndex {
+		t.Fatalf("blocked catalog order domain/direct/IP = %d/%d/%d, want domain < direct < IP", domainIndex, knownDomainDirectIndex, ipIndex)
+	}
 
 	smartCandidates := getOutboundCandidates(config, SmartBypassGroupTag)
 	youtubeCandidates := getOutboundCandidates(config, ServiceBypassGroupTag("youtube"))
@@ -2695,6 +2707,30 @@ func routeRuleSetOutbound(config map[string]interface{}, ruleSetTag string) stri
 		return outbound
 	}
 	return ""
+}
+
+func routeRuleSetIndex(config map[string]interface{}, ruleSetTag string) int {
+	route, _ := config["route"].(map[string]interface{})
+	rules, _ := route["rules"].([]interface{})
+	for index, raw := range rules {
+		rule, ok := raw.(map[string]interface{})
+		if ok && valuesContain(rule["rule_set"], ruleSetTag) {
+			return index
+		}
+	}
+	return -1
+}
+
+func routeRuleIndex(config map[string]interface{}, key, value, outbound string) int {
+	route, _ := config["route"].(map[string]interface{})
+	rules, _ := route["rules"].([]interface{})
+	for index, raw := range rules {
+		rule, ok := raw.(map[string]interface{})
+		if ok && rule["outbound"] == outbound && valuesContain(rule[key], value) {
+			return index
+		}
+	}
+	return -1
 }
 
 func getDNSFinal(config map[string]interface{}) string {

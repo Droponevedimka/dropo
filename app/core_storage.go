@@ -2543,22 +2543,16 @@ func (b *ConfigBuilderForStorage) applyBlockedOnlyMode(route map[string]interfac
 	// 7. Named free-access services: smart-bypass (toggle on) or vpn-or-direct (toggle off)
 	newRules = append(newRules, b.buildFreeAccessRules(settings, hasVPNProxy)...)
 
-	// 8. Everything else blocked by RKN filters. Community rule-sets are too
-	// broad for blocked_only mode and can catch ordinary traffic such as
-	// Microsoft Edge update hosts; geo/AI/YouTube services are covered by the
-	// named free-access rules above.
-	blockedRuleSetTags := availableRuleSetTags(filterRuleSets,
-		"refilter-domains",
-		"refilter-ips",
-		"discord-ips",
-	)
-	if len(blockedRuleSetTags) > 0 {
-		newRules = append(newRules, map[string]interface{}{
-			"rule_set": blockedRuleSetTags,
-			"action":   "route",
-			"outbound": b.blockedCatchAllOutbound(settings, hasVPNProxy),
-		})
-	}
+	// 8. Everything else positively classified by the RKN catalogs. Domain
+	// evidence is evaluated before a known-domain direct boundary; the IP list
+	// is only a fallback for IP-only traffic. Community and service-specific IP
+	// sources are deliberately excluded from this global catch-all.
+	newRules = append(newRules, buildBlockedCatalogRouteRules(
+		filterRuleSets,
+		b.blockedCatchAllOutbound(settings, hasVPNProxy),
+		[]string{"refilter-domains"},
+		[]string{"refilter-ips"},
+	)...)
 
 	route["rules"] = newRules
 	route["final"] = "direct"

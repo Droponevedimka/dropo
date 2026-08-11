@@ -547,6 +547,34 @@ func TestBlockedOnlyContractMigrationGate(t *testing.T) {
 	}
 }
 
+func TestScopedBlockedCatalogMigrationGate(t *testing.T) {
+	staleCombined := map[string]interface{}{
+		"route": map[string]interface{}{"rules": []interface{}{
+			map[string]interface{}{
+				"rule_set": []interface{}{"refilter-domains", "refilter-ips", "discord-ips"},
+				"outbound": SmartBypassGroupTag,
+			},
+		}},
+	}
+	if !configNeedsScopedBlockedCatalogMigration(staleCombined, RoutingModeBlockedOnly) {
+		t.Fatal("combined/service-specific IP catch-all did not request migration")
+	}
+
+	current := map[string]interface{}{
+		"route": map[string]interface{}{"rules": []interface{}{
+			map[string]interface{}{"rule_set": []interface{}{"refilter-domains"}, "outbound": SmartBypassGroupTag},
+			map[string]interface{}{"domain_regex": []interface{}{blockedOnlyKnownDomainRegex}, "outbound": "direct"},
+			map[string]interface{}{"rule_set": []interface{}{"refilter-ips"}, "outbound": SmartBypassGroupTag},
+		}},
+	}
+	if configNeedsScopedBlockedCatalogMigration(current, RoutingModeBlockedOnly) {
+		t.Fatal("domain-first blocked catalog config unexpectedly requested migration")
+	}
+	if configNeedsScopedBlockedCatalogMigration(staleCombined, RoutingModeAllTraffic) {
+		t.Fatal("explicit all_traffic config must remain authoritative")
+	}
+}
+
 func TestDefenderDegradedModePinsBlockedServicesToSubscription(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "active.json")
 	config := map[string]interface{}{
