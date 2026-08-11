@@ -56,10 +56,7 @@ func (a *App) buildDeepWindowsRoutePlan(configPath string) DeepWindowsRoutePlan 
 }
 
 func buildDeepWindowsRoutePlanForSettings(settings GlobalAppSettings, hasVPNCandidates, hasTransparent, hasFreeProxy bool) DeepWindowsRoutePlan {
-	mode := settings.RoutingMode
-	if mode == "" {
-		mode = DefaultRoutingMode
-	}
+	mode := NormalizeRoutingMode(settings.RoutingMode)
 
 	plan := DeepWindowsRoutePlan{
 		RoutingMode:        mode,
@@ -76,10 +73,6 @@ func buildDeepWindowsRoutePlanForSettings(settings GlobalAppSettings, hasVPNCand
 	}
 
 	switch mode {
-	case RoutingModeExceptRussia:
-		plan.ForeignTraffic = DeepWindowsTrafficProxy
-		plan.DefaultTraffic = DeepWindowsTrafficProxy
-		plan.requireProxy("foreign traffic routing is enabled")
 	case RoutingModeAllTraffic:
 		plan.RUTraffic = DeepWindowsTrafficProxy
 		plan.ForeignTraffic = DeepWindowsTrafficProxy

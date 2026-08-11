@@ -293,18 +293,12 @@ func (a *App) GetRoutingMode() map[string]interface{} {
 	}
 
 	settings := a.storage.GetAppSettings()
-	mode := settings.RoutingMode
-
-	// Default to blocked_only if empty
-	if mode == "" {
-		mode = DefaultRoutingMode
-	}
+	mode := NormalizeRoutingMode(settings.RoutingMode)
 
 	// Get mode descriptions for UI
 	modeDescriptions := map[string]string{
-		string(RoutingModeBlockedOnly):  "Только заблокированные",
-		string(RoutingModeExceptRussia): "Всё кроме России",
-		string(RoutingModeAllTraffic):   "Весь трафик",
+		string(RoutingModeBlockedOnly): "Только заблокированные",
+		string(RoutingModeAllTraffic):  "Весь трафик",
 	}
 
 	return map[string]interface{}{
@@ -313,7 +307,6 @@ func (a *App) GetRoutingMode() map[string]interface{} {
 		"description": modeDescriptions[string(mode)],
 		"modes": []map[string]string{
 			{"value": string(RoutingModeBlockedOnly), "label": "Только заблокированные", "description": "Через VPN идут только заблокированные сайты (РКН + сервисы, блокирующие РФ). Минимальная нагрузка на VPN."},
-			{"value": string(RoutingModeExceptRussia), "label": "Всё кроме России", "description": "Весь зарубежный трафик через VPN, российские сайты напрямую."},
 			{"value": string(RoutingModeAllTraffic), "label": "Весь трафик", "description": "Весь трафик через VPN. Максимальная приватность, высокая нагрузка."},
 		},
 	}
@@ -333,8 +326,11 @@ func (a *App) SetRoutingMode(mode string) map[string]interface{} {
 	// Validate mode
 	routingMode := RoutingMode(mode)
 	switch routingMode {
-	case RoutingModeBlockedOnly, RoutingModeExceptRussia, RoutingModeAllTraffic:
+	case RoutingModeBlockedOnly, RoutingModeAllTraffic:
 		// Valid mode
+	case RoutingModeExceptRussia:
+		// Compatibility with older UI/state: broad foreign routing is retired.
+		routingMode = RoutingModeBlockedOnly
 	default:
 		return map[string]interface{}{
 			"success": false,

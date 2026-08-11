@@ -1,10 +1,14 @@
 {
-    "schema_version":  2,
+    "schema_version":  3,
     "filters_version":  "01082026",
     "updated_at":  "2026-08-04T09:26:19.0000000Z",
     "source":  "https://github.com/1andrevich/Re-filter-lists",
     "release_url":  "https://github.com/1andrevich/Re-filter-lists/releases/tag/01082026",
     "max_age_days":  30,
+    "routing_policy":  {
+                           "max_ip_host_bits":  4,
+                           "rationale":  "Only specific blocked IP ranges are routed; broad shared provider ranges pass directly."
+                       },
     "files":  {
                   "domains_all":  {
                                       "file":  "domains_all.lst",
@@ -27,8 +31,8 @@
                   "refilter_ips":  {
                                        "file":  "refilter_ips.srs",
                                        "source_url":  "https://github.com/1andrevich/Re-filter-lists/releases/download/01082026/ipsum.lst",
-                                       "sha256":  "bd326d79baeef8b182604cf97dafdc924767401c241bf924b1380b651615990c",
-                                       "entries":  27115
+                                       "sha256":  "2074a2edb0c0d31d1367359ff61c64e5691deac55334ec702c4e95d2aeeda3e6",
+                                       "entries":  25332
                                    },
                   "community_domains":  {
                                             "file":  "community_domains.srs",

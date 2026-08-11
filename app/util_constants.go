@@ -218,8 +218,9 @@ const (
 	// This is the default mode - minimal VPN usage, optimal performance.
 	RoutingModeBlockedOnly RoutingMode = "blocked_only"
 
-	// RoutingModeExceptRussia routes all foreign traffic through VPN.
-	// Russian sites go direct, everything else through VPN.
+	// RoutingModeExceptRussia is retained only to migrate settings written by
+	// older clients. It is normalized to RoutingModeBlockedOnly so ordinary
+	// foreign traffic cannot be captured by a broad fallback.
 	RoutingModeExceptRussia RoutingMode = "except_russia"
 
 	// RoutingModeAllTraffic routes all traffic through VPN.
@@ -229,6 +230,19 @@ const (
 
 // DefaultRoutingMode is the default routing mode.
 const DefaultRoutingMode = RoutingModeBlockedOnly
+
+// NormalizeRoutingMode enforces the product routing contract: only positively
+// classified blocked traffic is eligible for bypass/VPN by default. Users may
+// still explicitly request the all-traffic privacy mode. The legacy
+// except_russia mode is deliberately migrated to blocked_only.
+func NormalizeRoutingMode(mode RoutingMode) RoutingMode {
+	switch mode {
+	case RoutingModeAllTraffic:
+		return RoutingModeAllTraffic
+	default:
+		return RoutingModeBlockedOnly
+	}
+}
 
 // NetworkMode defines the Windows network engine strategy.
 type NetworkMode string

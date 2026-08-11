@@ -885,6 +885,10 @@ func (a *App) ensureActiveConfigForStart() error {
 			a.writeLog("Active config predates Discord realtime routing; rebuilding before start")
 			needsRebuild = true
 		}
+		if !needsRebuild && configNeedsBlockedOnlyContractMigration(config, appSettings.RoutingMode) {
+			a.writeLog("Active config predates final-direct blocked-only routing; rebuilding before start")
+			needsRebuild = true
+		}
 		if !needsRebuild && configNeedsLatencySensitiveDirectMigration(config, appSettings.RoutingMode) {
 			a.writeLog("Active config predates latency-sensitive game direct routing; rebuilding before start")
 			needsRebuild = true
@@ -960,8 +964,20 @@ func configSupportsDiscordRealtimeRouting(config map[string]interface{}) bool {
 	return hasUDPProcessRule && hasVoiceGatewayRule
 }
 
+func configNeedsBlockedOnlyContractMigration(config map[string]interface{}, routingMode RoutingMode) bool {
+	if NormalizeRoutingMode(routingMode) == RoutingModeAllTraffic {
+		return false
+	}
+	route, ok := config["route"].(map[string]interface{})
+	if !ok || route["final"] != "direct" {
+		return true
+	}
+	dns, ok := config["dns"].(map[string]interface{})
+	return !ok || dns["final"] != "dns-direct"
+}
+
 func configNeedsLatencySensitiveDirectMigration(config map[string]interface{}, routingMode RoutingMode) bool {
-	if routingMode == RoutingModeAllTraffic {
+	if NormalizeRoutingMode(routingMode) == RoutingModeAllTraffic {
 		return false
 	}
 

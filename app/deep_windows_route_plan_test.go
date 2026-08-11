@@ -50,20 +50,17 @@ func TestDeepWindowsRoutePlanStartsLocalProxyForSubscriptionFallback(t *testing.
 	}
 }
 
-func TestDeepWindowsRoutePlanExceptRussiaDoesNotSwitchEngine(t *testing.T) {
+func TestDeepWindowsRoutePlanMigratesLegacyExceptRussiaToBlockedOnly(t *testing.T) {
 	settings := defaultDeepWindowsPlanSettings()
 	settings.RoutingMode = RoutingModeExceptRussia
 
 	plan := buildDeepWindowsRoutePlanForSettings(settings, true, true, true)
 
-	if plan.ForeignTraffic != DeepWindowsTrafficProxy || plan.DefaultTraffic != DeepWindowsTrafficProxy {
-		t.Fatalf("foreign/default = %s/%s, want proxy/proxy", plan.ForeignTraffic, plan.DefaultTraffic)
+	if plan.RoutingMode != RoutingModeBlockedOnly || plan.ForeignTraffic != DeepWindowsTrafficDirect || plan.DefaultTraffic != DeepWindowsTrafficDirect {
+		t.Fatalf("legacy route plan = %+v, want blocked_only with direct foreign/default", plan)
 	}
 	if plan.RUTraffic != DeepWindowsTrafficDirect {
 		t.Fatalf("RU traffic = %s, want direct", plan.RUTraffic)
-	}
-	if !plan.RequiresSingBoxProxy || !plan.RequiresRedirector {
-		t.Fatalf("except-russia must use local proxy endpoint under Deep Windows, not TUN: %+v", plan)
 	}
 	if !planContainsString(plan.TransparentServices, "youtube") {
 		t.Fatalf("blocked services should still prefer zapret before proxy fallback, got %v", plan.TransparentServices)

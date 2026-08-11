@@ -93,6 +93,7 @@ void main() {
 
     expect(find.text('Настройки приложения'), findsOneWidget);
     expect(find.text('Встроенный runtime'), findsOneWidget);
+    expect(find.text('Всё кроме России'), findsNothing);
     expect(tester.takeException(), isNull);
   });
 

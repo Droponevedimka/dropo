@@ -527,6 +527,26 @@ func TestLatencySensitiveDirectRoutingMigrationGate(t *testing.T) {
 	}
 }
 
+func TestBlockedOnlyContractMigrationGate(t *testing.T) {
+	legacyWide := map[string]interface{}{
+		"route": map[string]interface{}{"final": SmartBypassGroupTag},
+		"dns":   map[string]interface{}{"final": "dns-remote"},
+	}
+	if !configNeedsBlockedOnlyContractMigration(legacyWide, RoutingModeExceptRussia) {
+		t.Fatal("legacy broad foreign routing did not request a blocked_only rebuild")
+	}
+	current := map[string]interface{}{
+		"route": map[string]interface{}{"final": "direct"},
+		"dns":   map[string]interface{}{"final": "dns-direct"},
+	}
+	if configNeedsBlockedOnlyContractMigration(current, RoutingModeBlockedOnly) {
+		t.Fatal("current blocked_only config unexpectedly requested migration")
+	}
+	if configNeedsBlockedOnlyContractMigration(legacyWide, RoutingModeAllTraffic) {
+		t.Fatal("explicit all_traffic config must remain authoritative")
+	}
+}
+
 func TestDefenderDegradedModePinsBlockedServicesToSubscription(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "active.json")
 	config := map[string]interface{}{

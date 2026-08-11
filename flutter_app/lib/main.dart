@@ -10847,29 +10847,12 @@ class _SettingsDialogState extends State<_SettingsDialog> {
               stacked: true,
               options: const {
                 'blocked_only': 'Только заблокированные',
-                'except_russia': 'Всё кроме России',
                 'all_traffic': 'Весь трафик',
               },
               onChanged: canChangeRuntime
                   ? (value) => _applySpecial(
                       () => widget.bridge.setRoutingMode(value),
                       config.copyWith(routingMode: value),
-                    )
-                  : null,
-            ),
-            _SwitchSetting(
-              title: 'Открывать все иностранные сайты через VPN/обход',
-              description:
-                  'RU-сервисы остаются напрямую, остальное идёт через обход.',
-              value: config.routingMode == 'except_russia',
-              onChanged: canChangeRuntime
-                  ? (value) => _applySpecial(
-                      () => widget.bridge.setRoutingMode(
-                        value ? 'except_russia' : 'blocked_only',
-                      ),
-                      config.copyWith(
-                        routingMode: value ? 'except_russia' : 'blocked_only',
-                      ),
                     )
                   : null,
             ),
@@ -13099,8 +13082,6 @@ InputDecoration _fieldDecoration({
 
 String _routingModeDescription(String mode) {
   return switch (mode) {
-    'except_russia' =>
-      'Весь зарубежный трафик через VPN, российские сайты напрямую.',
     'all_traffic' =>
       'Весь трафик через VPN. Максимальная приватность, высокая нагрузка.',
     _ =>

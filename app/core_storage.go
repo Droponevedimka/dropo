@@ -54,7 +54,7 @@ type GlobalAppSettings struct {
 	Language Language `json:"language"`
 
 	// Routing settings
-	RoutingMode RoutingMode `json:"routing_mode"` // How traffic is routed: blocked_only, except_russia, all_traffic
+	RoutingMode RoutingMode `json:"routing_mode"` // blocked_only by default; all_traffic is explicit opt-in
 	NetworkMode NetworkMode `json:"network_mode"` // Windows desktop always migrates to windows_unified
 
 	// Free access settings — opening blocked-in-RF
@@ -277,9 +277,7 @@ func (s *Storage) normalizeAppSettings() {
 	if !validLanguage(app.Language) {
 		app.Language = LangRussian
 	}
-	if app.RoutingMode != RoutingModeBlockedOnly && app.RoutingMode != RoutingModeExceptRussia && app.RoutingMode != RoutingModeAllTraffic {
-		app.RoutingMode = DefaultRoutingMode
-	}
+	app.RoutingMode = NormalizeRoutingMode(app.RoutingMode)
 	app.NetworkMode = NormalizeNetworkMode(app.NetworkMode)
 	if app.SubUpdateInterval <= 0 || app.SubUpdateInterval > 24*30 {
 		app.SubUpdateInterval = 24
@@ -366,6 +364,7 @@ func (s *Storage) UpdateAppSettings(settings GlobalAppSettings) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	previous := s.data.App
+	settings.RoutingMode = NormalizeRoutingMode(settings.RoutingMode)
 	s.data.App = cloneGlobalAppSettings(settings)
 	if err := s.saveInternal(); err != nil {
 		s.data.App = previous
@@ -1309,7 +1308,7 @@ func NewConfigBuilderForStorageWithRuntime(storage *Storage, runtimeBasePath str
 
 // SetRoutingMode sets the routing mode for config generation
 func (b *ConfigBuilderForStorage) SetRoutingMode(mode RoutingMode) {
-	b.routingMode = mode
+	b.routingMode = NormalizeRoutingMode(mode)
 }
 
 // GetRoutingMode returns current routing mode
@@ -1843,6 +1842,7 @@ func (b *ConfigBuilderForStorage) addExperimentalAPI(template map[string]interfa
 
 // applyRoutingMode applies routing rules based on the selected routing mode.
 func (b *ConfigBuilderForStorage) applyRoutingMode(template map[string]interface{}) {
+	b.routingMode = NormalizeRoutingMode(b.routingMode)
 	route, ok := template["route"].(map[string]interface{})
 	if !ok {
 		route = map[string]interface{}{}
@@ -2480,8 +2480,7 @@ func (b *ConfigBuilderForStorage) applyBlockedOnlyMode(route map[string]interfac
 	// Get local filter rule_sets
 	filterRuleSets := b.filterManager.GetRuleSetConfigs()
 	if len(filterRuleSets) == 0 {
-		fmt.Printf("[applyRoutingMode] WARNING: No filter files found, falling back to except_russia\n")
-		return
+		fmt.Printf("[applyRoutingMode] WARNING: No filter files found; unclassified traffic remains direct\n")
 	}
 
 	// Build new rule_set array with only local filters
@@ -2548,15 +2547,18 @@ func (b *ConfigBuilderForStorage) applyBlockedOnlyMode(route map[string]interfac
 	// broad for blocked_only mode and can catch ordinary traffic such as
 	// Microsoft Edge update hosts; geo/AI/YouTube services are covered by the
 	// named free-access rules above.
-	newRules = append(newRules, map[string]interface{}{
-		"rule_set": []string{
-			"refilter-domains", // RKN blocked domains
-			"refilter-ips",     // RKN blocked IPs
-			"discord-ips",      // Discord voice/media IPs
-		},
-		"action":   "route",
-		"outbound": b.blockedCatchAllOutbound(settings, hasVPNProxy),
-	})
+	blockedRuleSetTags := availableRuleSetTags(filterRuleSets,
+		"refilter-domains",
+		"refilter-ips",
+		"discord-ips",
+	)
+	if len(blockedRuleSetTags) > 0 {
+		newRules = append(newRules, map[string]interface{}{
+			"rule_set": blockedRuleSetTags,
+			"action":   "route",
+			"outbound": b.blockedCatchAllOutbound(settings, hasVPNProxy),
+		})
+	}
 
 	route["rules"] = newRules
 	route["final"] = "direct"

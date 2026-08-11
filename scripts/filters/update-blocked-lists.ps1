@@ -86,6 +86,23 @@ function Write-Utf8Lines {
     [System.IO.File]::WriteAllLines($Path, $Lines, [System.Text.UTF8Encoding]::new($false))
 }
 
+function Test-SpecificBlockedPrefix {
+    param([string]$Value)
+
+    $parts = @($Value -split '/', 2)
+    $parsed = $null
+    $prefixLength = 0
+    if ($parts.Count -ne 2 -or
+        -not [System.Net.IPAddress]::TryParse($parts[0], [ref]$parsed) -or
+        -not [int]::TryParse($parts[1], [ref]$prefixLength)) {
+        return $false
+    }
+    $maximumPrefixLength = if ($parsed.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork) { 32 } else { 128 }
+    # A broad shared-hosting/CDN range is not sufficient evidence that all of
+    # its tenants are blocked. Keep only ranges containing at most 16 addresses.
+    return ($maximumPrefixLength - $prefixLength) -le 4
+}
+
 function Compile-RuleSet {
     param(
         [string[]]$Items,
@@ -137,6 +154,9 @@ function Test-CurrentBundle {
     try {
         $version = Get-Content -LiteralPath $VersionPath -Raw -Encoding UTF8 | ConvertFrom-Json
     } catch {
+        return $false
+    }
+    if ([int]$version.schema_version -lt 3 -or [int]$version.routing_policy.max_ip_host_bits -ne 4) {
         return $false
     }
     if ([string]$version.filters_version -ne $LatestTag) {
@@ -207,9 +227,10 @@ try {
         Invoke-Download -Url $entry.Value -Destination (Join-Path $temporaryDirectory $entry.Key)
     }
 
+    $rawRefilterIPs = @(Read-NormalizedList (Join-Path $temporaryDirectory "ipsum.lst") "IP")
     $lists = [ordered]@{
         refilter_domains  = @(Read-NormalizedList (Join-Path $temporaryDirectory "domains_all.lst") "Domain")
-        refilter_ips      = @(Read-NormalizedList (Join-Path $temporaryDirectory "ipsum.lst") "IP")
+        refilter_ips      = @($rawRefilterIPs | Where-Object { Test-SpecificBlockedPrefix $_ })
         community_domains = @(Read-NormalizedList (Join-Path $temporaryDirectory "community_domains.lst") "Domain")
         community_ips     = @(Read-NormalizedList (Join-Path $temporaryDirectory "community_ips.lst") "IP")
         discord_ips       = @(Read-NormalizedList (Join-Path $temporaryDirectory "discord_ips.lst") "IP")
@@ -219,7 +240,7 @@ try {
     }
 
     Write-Utf8Lines (Join-Path $temporaryDirectory "domains_all.lst") $lists.refilter_domains
-    Write-Utf8Lines (Join-Path $temporaryDirectory "ipsum.lst") $lists.refilter_ips
+    Write-Utf8Lines (Join-Path $temporaryDirectory "ipsum.lst") $rawRefilterIPs
     Compile-RuleSet $lists.refilter_domains "Domain" (Join-Path $temporaryDirectory "refilter_domains.srs") $temporaryDirectory
     Compile-RuleSet $lists.refilter_ips "IP" (Join-Path $temporaryDirectory "refilter_ips.srs") $temporaryDirectory
     Compile-RuleSet $lists.community_domains "Domain" (Join-Path $temporaryDirectory "community_domains.srs") $temporaryDirectory
@@ -249,17 +270,21 @@ try {
         } elseif ($key -eq "domains_all") {
             $entry.entries = $lists.refilter_domains.Count
         } elseif ($key -eq "ipsum") {
-            $entry.entries = $lists.refilter_ips.Count
+            $entry.entries = $rawRefilterIPs.Count
         }
         $fileMetadata[$key] = $entry
     }
     $versionPayload = [ordered]@{
-        schema_version  = 2
+        schema_version  = 3
         filters_version = $latestTag
         updated_at      = ([DateTime]$latest.published_at).ToUniversalTime().ToString("o")
         source          = "https://github.com/1andrevich/Re-filter-lists"
         release_url     = [string]$latest.html_url
         max_age_days    = 30
+        routing_policy  = [ordered]@{
+            max_ip_host_bits = 4
+            rationale        = "Only specific blocked IP ranges are routed; broad shared provider ranges pass directly."
+        }
         files           = $fileMetadata
     }
     [System.IO.File]::WriteAllText((Join-Path $temporaryDirectory "version.json"), ($versionPayload | ConvertTo-Json -Depth 10), [System.Text.UTF8Encoding]::new($false))
@@ -268,7 +293,7 @@ try {
     foreach ($name in @($RequiredFiles + "version.json")) {
         Copy-Item -LiteralPath (Join-Path $temporaryDirectory $name) -Destination (Join-Path $FiltersDirectory $name) -Force
     }
-    Write-Host "[FILTERS] Updated bundled blocked lists to $latestTag ($($lists.refilter_domains.Count) domains, $($lists.refilter_ips.Count) networks)." -ForegroundColor Green
+    Write-Host "[FILTERS] Updated bundled blocked lists to $latestTag ($($lists.refilter_domains.Count) domains, $($lists.refilter_ips.Count) specific networks from $($rawRefilterIPs.Count) source networks)." -ForegroundColor Green
 } finally {
     Remove-Item -LiteralPath $temporaryDirectory -Recurse -Force -ErrorAction SilentlyContinue
 }

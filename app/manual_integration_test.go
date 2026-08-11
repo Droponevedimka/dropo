@@ -672,13 +672,13 @@ func assertDeepWindowsSettingsMatrix(t *testing.T, app *App, subscriptionURL str
 		assertPlan func(DeepWindowsRoutePlan)
 	}{
 		{
-			name: "except-russia",
+			name: "legacy-except-russia",
 			configure: func(settings *GlobalAppSettings) {
 				settings.RoutingMode = RoutingModeExceptRussia
 			},
 			assertPlan: func(plan DeepWindowsRoutePlan) {
-				if plan.RUTraffic != DeepWindowsTrafficDirect || plan.ForeignTraffic != DeepWindowsTrafficProxy || plan.DefaultTraffic != DeepWindowsTrafficProxy {
-					t.Fatalf("except-russia plan = %+v", plan)
+				if plan.RoutingMode != RoutingModeBlockedOnly || plan.RUTraffic != DeepWindowsTrafficDirect || plan.ForeignTraffic != DeepWindowsTrafficDirect || plan.DefaultTraffic != DeepWindowsTrafficDirect {
+					t.Fatalf("legacy mode was not normalized to blocked_only: %+v", plan)
 				}
 			},
 		},

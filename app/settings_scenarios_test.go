@@ -36,23 +36,23 @@ func TestDefaultStorageSettingsMatchCurrentNetworkPolicy(t *testing.T) {
 	}
 }
 
-func TestSettingsAPIsPersistRoutingAndNetworkMode(t *testing.T) {
+func TestSettingsAPIsMigrateLegacyRoutingAndPersistNetworkMode(t *testing.T) {
 	app := newInitializedSettingsScenarioApp(t)
 
 	result := app.SetRoutingMode(string(RoutingModeExceptRussia))
 	requireAPISuccess(t, result)
 	settings := app.storage.GetAppSettings()
-	if settings.RoutingMode != RoutingModeExceptRussia {
-		t.Fatalf("stored routing mode = %q, want except_russia", settings.RoutingMode)
+	if settings.RoutingMode != RoutingModeBlockedOnly {
+		t.Fatalf("stored routing mode = %q, want legacy mode migrated to blocked_only", settings.RoutingMode)
 	}
-	if app.configBuilder.GetRoutingMode() != RoutingModeExceptRussia {
-		t.Fatalf("builder routing mode = %q, want except_russia", app.configBuilder.GetRoutingMode())
+	if app.configBuilder.GetRoutingMode() != RoutingModeBlockedOnly {
+		t.Fatalf("builder routing mode = %q, want blocked_only", app.configBuilder.GetRoutingMode())
 	}
 
 	configPath := writeActiveScenarioConfig(t, app)
 	plan := app.buildDeepWindowsRoutePlan(configPath)
-	if plan.RUTraffic != DeepWindowsTrafficDirect || plan.ForeignTraffic != DeepWindowsTrafficProxy || plan.DefaultTraffic != DeepWindowsTrafficProxy {
-		t.Fatalf("except-russia plan ru/foreign/default = %s/%s/%s, want direct/proxy/proxy", plan.RUTraffic, plan.ForeignTraffic, plan.DefaultTraffic)
+	if plan.RUTraffic != DeepWindowsTrafficDirect || plan.ForeignTraffic != DeepWindowsTrafficDirect || plan.DefaultTraffic != DeepWindowsTrafficDirect {
+		t.Fatalf("migrated plan ru/foreign/default = %s/%s/%s, want direct/direct/direct", plan.RUTraffic, plan.ForeignTraffic, plan.DefaultTraffic)
 	}
 
 	networkResult := app.SetNetworkMode(string(NetworkModeCompatTun))

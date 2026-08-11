@@ -20,6 +20,10 @@ const (
 	blockedIPsFileName      = "ipsum.lst"
 	commonBlockedProbeCount = 4
 	maxBlockedCatalogItems  = 250_000
+	// Broad provider/CDN ranges are weak evidence that every address inside the
+	// range is blocked. Route at most 16-address prefixes automatically; named
+	// services keep their separately reviewed CIDRs.
+	maxBlockedCatalogHostBits = 4
 )
 
 type blockedCatalog struct {
@@ -120,7 +124,7 @@ func readBlockedCatalogLines(path string, domains bool) ([]string, error) {
 				return nil, fmt.Errorf("invalid CIDR %q in %s: %w", value, filepath.Base(path), parseErr)
 			}
 			prefix = prefix.Masked()
-			if !publicCatalogPrefix(prefix) {
+			if !publicCatalogPrefix(prefix) || !specificBlockedCatalogPrefix(prefix) {
 				continue
 			}
 			value = prefix.String()
@@ -142,6 +146,13 @@ func readBlockedCatalogLines(path string, domains bool) ([]string, error) {
 	}
 	sort.Strings(items)
 	return items, nil
+}
+
+func specificBlockedCatalogPrefix(prefix netip.Prefix) bool {
+	if !prefix.IsValid() {
+		return false
+	}
+	return prefix.Addr().BitLen()-prefix.Bits() <= maxBlockedCatalogHostBits
 }
 
 func validCatalogDomain(value string) bool {

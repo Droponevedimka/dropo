@@ -31,6 +31,9 @@ OutputBaseFilename={#SetupBaseName}
 SetupIconFile={#SetupIconFile}
 UninstallDisplayIcon={app}\dropo.exe
 Compression=lzma2/normal
+; Keep the LZMA match finder single-threaded so the release gate can compare
+; independent installer builds byte-for-byte on machines with different load.
+CompressionThreads=1
 SolidCompression=yes
 WizardStyle=modern
 PrivilegesRequired=admin

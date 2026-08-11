@@ -25,7 +25,7 @@ func TestLoadBlockedCatalogRejectsPrivateAndNamedEntries(t *testing.T) {
 	root := t.TempDir()
 	writeTestBlockedCatalog(t, root,
 		"blocked-a.example\nblocked-b.example\nblocked-c.example\nblocked-d.example\ndiscord.com\ncdn.discord.com\nsteam.com\nstore.steampowered.com\n",
-		"8.8.8.0/24\n10.0.0.0/8\n127.0.0.0/8\n",
+		"8.8.8.0/28\n10.0.0.0/8\n127.0.0.0/8\n104.16.0.0/12\n",
 	)
 
 	catalog, err := loadBlockedCatalog(root)
@@ -35,8 +35,8 @@ func TestLoadBlockedCatalogRejectsPrivateAndNamedEntries(t *testing.T) {
 	if len(catalog.Domains) != 4 {
 		t.Fatalf("domains = %v, want the four non-named entries", catalog.Domains)
 	}
-	if len(catalog.IPCIDRs) != 1 || catalog.IPCIDRs[0] != "8.8.8.0/24" {
-		t.Fatalf("CIDRs = %v, want only the public test network", catalog.IPCIDRs)
+	if len(catalog.IPCIDRs) != 1 || catalog.IPCIDRs[0] != "8.8.8.0/28" {
+		t.Fatalf("CIDRs = %v, want only the specific public test network", catalog.IPCIDRs)
 	}
 }
 
@@ -44,7 +44,7 @@ func TestDirectGameNamespacesNeverEnterBlockedCatalog(t *testing.T) {
 	root := t.TempDir()
 	writeTestBlockedCatalog(t, root,
 		"blocked-a.example\nblocked-b.example\nblocked-c.example\nblocked-d.example\nsteam.com\nstore.steampowered.com\nsteamcommunity.com\nriotgames.com\nauth.riotgames.com\nru-red.lol.sgp.pvp.net\n",
-		"8.8.8.0/24\n",
+		"8.8.8.0/28\n",
 	)
 
 	catalog, err := loadBlockedCatalog(root)
@@ -64,7 +64,7 @@ func TestBlockedCatalogCacheIsImmutableAcrossPlanRevisions(t *testing.T) {
 	root := t.TempDir()
 	writeTestBlockedCatalog(t, root,
 		"blocked-a.example\nblocked-b.example\nblocked-c.example\nblocked-d.example\n",
-		"8.8.8.0/24\n",
+		"8.8.8.0/28\n",
 	)
 	app := &App{basePath: root}
 	first, err := app.loadBlockedCatalogCached()
@@ -103,7 +103,7 @@ func TestNativePlanIncludesOneCommonBlockedSelection(t *testing.T) {
 	root := t.TempDir()
 	writeTestBlockedCatalog(t, root,
 		"blocked-a.example\nblocked-b.example\nblocked-c.example\nblocked-d.example\n",
-		"8.8.8.0/24\n",
+		"8.8.8.0/28\n",
 	)
 	method := commonBlockedMethods()[0]
 	app := &App{basePath: root}

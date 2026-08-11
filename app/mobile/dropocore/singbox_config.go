@@ -18,7 +18,7 @@ func BuildSingBoxConfig() string {
 	subscription := strings.TrimSpace(current.Subscription)
 	enableLogging := current.Config.EnableLogging
 	logLevel := effectiveAndroidLogLevel(enableLogging, current.Config.LogLevel)
-	routingMode := strings.TrimSpace(current.Config.RoutingMode)
+	routingMode := normalizeAndroidRoutingMode(current.Config.RoutingMode)
 	hideRuTraffic := current.Config.HideRuTraffic
 	ruProxyAddress := strings.TrimSpace(current.Config.RuProxyAddress)
 	autoUpdateSub := current.Config.AutoUpdateSub
@@ -540,7 +540,7 @@ func buildAndroidRouteRules(routingMode string, hideRuTraffic bool, ruOutbound s
 
 func androidFinalOutbound(routingMode string) string {
 	switch routingMode {
-	case "all_traffic", "except_russia":
+	case "all_traffic":
 		return "proxy"
 	default:
 		return "direct"

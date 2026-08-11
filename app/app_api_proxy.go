@@ -427,10 +427,7 @@ func (a *App) GetBypassRouteSummary() map[string]interface{} {
 		settings = a.storage.GetAppSettings()
 	}
 
-	mode := settings.RoutingMode
-	if mode == "" {
-		mode = DefaultRoutingMode
-	}
+	mode := NormalizeRoutingMode(settings.RoutingMode)
 
 	if !a.isVPNRunning() {
 		return map[string]interface{}{

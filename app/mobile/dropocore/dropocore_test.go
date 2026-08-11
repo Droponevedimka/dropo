@@ -221,7 +221,7 @@ func TestAndroidRoutePolicyCanForceBlockedServiceDirect(t *testing.T) {
 	}
 }
 
-func TestAndroidExceptRussiaKeepsLatencySensitiveGamesOutsideVPN(t *testing.T) {
+func TestAndroidLegacyExceptRussiaMigratesToBlockedOnly(t *testing.T) {
 	mu.Lock()
 	current = defaultState()
 	current.BasePath = t.TempDir()
@@ -231,29 +231,29 @@ func TestAndroidExceptRussiaKeepsLatencySensitiveGamesOutsideVPN(t *testing.T) {
 
 	config := buildConfigForTest(t)
 	route := config["route"].(map[string]interface{})
-	if route["final"] != "proxy" {
-		t.Fatalf("except_russia final = %v, want proxy", route["final"])
+	if route["final"] != "direct" {
+		t.Fatalf("legacy except_russia final = %v, want direct after migration", route["final"])
 	}
 	if !androidContainsDomainRoute(config, "steam.com", "direct") {
-		t.Fatal("except_russia must keep Steam domains direct on Android")
+		t.Fatal("migrated blocked_only must keep Steam domains direct on Android")
 	}
 	if !androidContainsPackageRoute(config, "com.valvesoftware.android.steam.community", "direct") {
-		t.Fatal("except_russia must keep the Steam package direct on Android")
+		t.Fatal("migrated blocked_only must keep the Steam package direct on Android")
 	}
 	if !androidContainsDNSServer(config, "steam.com", "dns-direct") {
-		t.Fatal("except_russia must resolve Steam domains directly on Android")
+		t.Fatal("migrated blocked_only must resolve Steam domains directly on Android")
 	}
 	for _, domain := range []string{"riotgames.com", "riotcdn.net", "pvp.net", "leagueoflegends.com"} {
 		if !androidContainsDomainRoute(config, domain, "direct") {
-			t.Fatalf("except_russia must keep Riot domain %s direct on Android", domain)
+			t.Fatalf("migrated blocked_only must keep Riot domain %s direct on Android", domain)
 		}
 		if !androidContainsDNSServer(config, domain, "dns-direct") {
-			t.Fatalf("except_russia must resolve Riot domain %s directly on Android", domain)
+			t.Fatalf("migrated blocked_only must resolve Riot domain %s directly on Android", domain)
 		}
 	}
 	for _, packageName := range []string{"com.riotgames.league.wildrift", "com.riotgames.league.teamfighttactics"} {
 		if !androidContainsPackageRoute(config, packageName, "direct") {
-			t.Fatalf("except_russia must keep Riot package %s direct on Android", packageName)
+			t.Fatalf("migrated blocked_only must keep Riot package %s direct on Android", packageName)
 		}
 	}
 }

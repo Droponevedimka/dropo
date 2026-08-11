@@ -178,12 +178,6 @@ func TestDeepWindowsFallsBackToTunForAdvancedRoutingSettings(t *testing.T) {
 			},
 		},
 		{
-			name: "except Russia",
-			mutate: func(settings *GlobalAppSettings) {
-				settings.RoutingMode = RoutingModeExceptRussia
-			},
-		},
-		{
 			name: "hide RU traffic",
 			mutate: func(settings *GlobalAppSettings) {
 				settings.HideRuTraffic = true
@@ -345,13 +339,16 @@ func TestDeepWindowsStartFallsBackToTunWhenProxyRedirectorRequired(t *testing.T)
 			map[string]interface{}{"type": "selector", "tag": discordVPNGroupTag, "outbounds": []interface{}{"vless-fast"}, "default": "vless-fast"},
 			map[string]interface{}{"type": "selector", "tag": discordRealtimeGroupTag, "outbounds": []interface{}{"direct", discordVPNGroupTag}, "default": "direct"},
 		},
-		"route": map[string]interface{}{"rules": append(buildDirectServiceRules(),
-			map[string]interface{}{"process_name": []interface{}{"Discord.exe"}, "network": "udp", "outbound": discordRealtimeGroupTag},
-			map[string]interface{}{"domain_suffix": []interface{}{"discord.media"}, "network": "tcp", "outbound": discordRealtimeGroupTag},
-		)},
+		"route": map[string]interface{}{
+			"rules": append(buildDirectServiceRules(),
+				map[string]interface{}{"process_name": []interface{}{"Discord.exe"}, "network": "udp", "outbound": discordRealtimeGroupTag},
+				map[string]interface{}{"domain_suffix": []interface{}{"discord.media"}, "network": "tcp", "outbound": discordRealtimeGroupTag},
+			),
+			"final": "direct",
+		},
 		"dns": map[string]interface{}{"rules": []interface{}{
 			map[string]interface{}{"domain_suffix": DirectDomainSuffixes, "server": "dns-direct"},
-		}},
+		}, "final": "dns-direct"},
 	}
 	app, _ := newDeepWindowsTestApp(t, config)
 	app.configBuilder = NewConfigBuilderForStorage(app.storage)

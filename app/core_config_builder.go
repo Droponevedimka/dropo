@@ -76,7 +76,7 @@ func (b *ConfigBuilder) GetActiveProfileID() int {
 
 // SetRoutingMode sets the routing mode for config generation
 func (b *ConfigBuilder) SetRoutingMode(mode RoutingMode) {
-	b.routingMode = mode
+	b.routingMode = NormalizeRoutingMode(mode)
 }
 
 // GetRoutingMode returns current routing mode
@@ -713,6 +713,7 @@ func (b *ConfigBuilder) addExperimentalAPI(template map[string]interface{}) erro
 // applyRoutingMode applies routing rules based on the selected routing mode.
 // This modifies the route section of the config.
 func (b *ConfigBuilder) applyRoutingMode(template map[string]interface{}) {
+	b.routingMode = NormalizeRoutingMode(b.routingMode)
 	route, ok := template["route"].(map[string]interface{})
 	if !ok {
 		route = map[string]interface{}{}
@@ -754,8 +755,7 @@ func (b *ConfigBuilder) applyBlockedOnlyMode(route map[string]interface{}, exist
 	// Get local filter rule_sets
 	filterRuleSets := b.filterManager.GetRuleSetConfigs()
 	if len(filterRuleSets) == 0 {
-		fmt.Printf("[applyRoutingMode] WARNING: No filter files found, falling back to except_russia\n")
-		return
+		fmt.Printf("[applyRoutingMode] WARNING: No filter files found; unclassified traffic remains direct\n")
 	}
 
 	// Build new rule_set array with only local filters (remove geosite-ru etc.)
@@ -812,17 +812,20 @@ func (b *ConfigBuilder) applyBlockedOnlyMode(route map[string]interface{}, exist
 	// 6. Blocked + throttled sites via proxy (combined rule_sets)
 	// Re:filter includes: RKN-blocked domains/IPs + community list (OpenAI, YouTube, etc.)
 	// Discord IPs added separately as they're not in Re:filter
-	newRules = append(newRules, map[string]interface{}{
-		"rule_set": []string{
-			"refilter-domains",  // RKN blocked domains
-			"refilter-ips",      // RKN blocked IPs
-			"community-domains", // Throttled/geo-blocked: OpenAI, YouTube, etc.
-			"community-ips",     // Community IPs
-			"discord-ips",       // Discord voice/media IPs
-		},
-		"action":   "route",
-		"outbound": "proxy",
-	})
+	blockedRuleSetTags := availableRuleSetTags(filterRuleSets,
+		"refilter-domains",
+		"refilter-ips",
+		"community-domains",
+		"community-ips",
+		"discord-ips",
+	)
+	if len(blockedRuleSetTags) > 0 {
+		newRules = append(newRules, map[string]interface{}{
+			"rule_set": blockedRuleSetTags,
+			"action":   "route",
+			"outbound": "proxy",
+		})
+	}
 
 	// 7. Additional throttled services NOT in community.lst (YouTube video CDN)
 	// YouTube is in community.lst but googlevideo.com CDN sometimes missing
@@ -842,6 +845,24 @@ func (b *ConfigBuilder) applyBlockedOnlyMode(route map[string]interface{}, exist
 
 	fmt.Printf("[applyRoutingMode] Applied blocked_only: %d rule_sets, %d rules, final=direct\n",
 		len(newRuleSets), len(newRules))
+}
+
+func availableRuleSetTags(configs []map[string]interface{}, allowed ...string) []string {
+	available := make(map[string]struct{}, len(configs))
+	for _, config := range configs {
+		tag, _ := config["tag"].(string)
+		if tag != "" {
+			available[tag] = struct{}{}
+		}
+	}
+
+	tags := make([]string, 0, len(allowed))
+	for _, tag := range allowed {
+		if _, ok := available[tag]; ok {
+			tags = append(tags, tag)
+		}
+	}
+	return tags
 }
 
 // applyAllTrafficMode configures routing for all traffic through VPN.

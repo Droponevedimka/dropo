@@ -794,10 +794,8 @@ func appConfigFromArgsLocked(args []interface{}) (appConfig, error) {
 
 func normalizeAndroidRoutingMode(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "", "blocked_only":
+	case "", "blocked_only", "except_russia":
 		return "blocked_only"
-	case "except_russia":
-		return "except_russia"
 	case "all_traffic":
 		return "all_traffic"
 	default:
@@ -1048,8 +1046,11 @@ func normalizeLoadedAppConfigLocked() {
 	if current.Config.SubUpdateInterval < 1 || current.Config.SubUpdateInterval > 24*30 {
 		current.Config.SubUpdateInterval = defaults.SubUpdateInterval
 	}
-	if normalizeAndroidRoutingMode(current.Config.RoutingMode) == "" {
+	normalizedRoutingMode := normalizeAndroidRoutingMode(current.Config.RoutingMode)
+	if normalizedRoutingMode == "" {
 		current.Config.RoutingMode = defaults.RoutingMode
+	} else {
+		current.Config.RoutingMode = normalizedRoutingMode
 	}
 	current.Config.NetworkMode = "android_vpn"
 	if current.Config.GithubRepo == "" {

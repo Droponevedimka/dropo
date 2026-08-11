@@ -165,6 +165,40 @@ func TestBuildConfigWithoutSubscriptionUsesFreeAccess(t *testing.T) {
 	}
 }
 
+func TestBlockedOnlyWithoutFilterFilesFailsSafeDirect(t *testing.T) {
+	basePath := t.TempDir()
+	storage := NewStorage(basePath)
+	if err := storage.Init(); err != nil {
+		t.Fatalf("storage init failed: %v", err)
+	}
+
+	builder := NewConfigBuilderForStorage(storage)
+	link := "vless://11111111-1111-1111-1111-111111111111@198.51.100.10:443?security=tls&type=ws&path=%2Fws&host=example.com&sni=example.com&fp=chrome#missing-filters"
+	if err := builder.BuildConfig(link); err != nil {
+		t.Fatalf("BuildConfig without filters failed: %v", err)
+	}
+	profile, err := storage.GetActiveProfile()
+	if err != nil {
+		t.Fatalf("get active profile failed: %v", err)
+	}
+	config, err := storage.GetProfileConfig(profile.ID)
+	if err != nil {
+		t.Fatalf("get profile config failed: %v", err)
+	}
+
+	if final := getRouteFinal(config); final != "direct" {
+		t.Fatalf("route final without filters = %q, want direct", final)
+	}
+	if final := getDNSFinal(config); final != "dns-direct" {
+		t.Fatalf("DNS final without filters = %q, want dns-direct", final)
+	}
+	for _, tag := range []string{"refilter-domains", "refilter-ips", "discord-ips"} {
+		if containsRouteRuleSet(config, tag) {
+			t.Fatalf("route references unavailable rule-set %q", tag)
+		}
+	}
+}
+
 func TestDefaultBlockedOnlyWithSubscriptionRoutesOnlyBlockedTraffic(t *testing.T) {
 	basePath := t.TempDir()
 	storage := NewStorage(basePath)
@@ -1985,7 +2019,7 @@ func TestDisableFreeAccessUsesVPNOnlyServiceGroups(t *testing.T) {
 	}
 }
 
-func TestExceptRussiaUsesBypassForForeignTraffic(t *testing.T) {
+func TestLegacyExceptRussiaBuildsBlockedOnlyFinalDirect(t *testing.T) {
 	basePath := t.TempDir()
 	storage := NewStorage(basePath)
 	if err := storage.Init(); err != nil {
@@ -1998,11 +2032,20 @@ func TestExceptRussiaUsesBypassForForeignTraffic(t *testing.T) {
 	if err := storage.UpdateAppSettings(settings); err != nil {
 		t.Fatalf("update app settings failed: %v", err)
 	}
+	filtersPath := filepath.Join(basePath, "bin", FiltersFolder)
+	if err := os.MkdirAll(filtersPath, 0755); err != nil {
+		t.Fatalf("create filters dir failed: %v", err)
+	}
+	for _, filter := range FilterFiles {
+		if err := os.WriteFile(filepath.Join(filtersPath, filter.Name), []byte("test"), 0644); err != nil {
+			t.Fatalf("write filter %s failed: %v", filter.Name, err)
+		}
+	}
 
 	builder := NewConfigBuilderForStorage(storage)
 	builder.SetRoutingMode(RoutingModeExceptRussia)
 	if err := builder.BuildConfig(""); err != nil {
-		t.Fatalf("BuildConfig except_russia failed: %v", err)
+		t.Fatalf("BuildConfig legacy except_russia failed: %v", err)
 	}
 
 	profile, err := storage.GetActiveProfile()
@@ -2014,36 +2057,33 @@ func TestExceptRussiaUsesBypassForForeignTraffic(t *testing.T) {
 		t.Fatalf("get profile config failed: %v", err)
 	}
 
-	if final := getRouteFinal(config); final != SmartBypassGroupTag {
-		t.Fatalf("route final = %q, want %q for foreign traffic bypass", final, SmartBypassGroupTag)
+	if final := getRouteFinal(config); final != "direct" {
+		t.Fatalf("route final = %q, want direct after legacy mode migration", final)
 	}
 	if !containsDomainSuffixRouteRule(config, "yandex.ru", "direct") {
-		t.Fatal("except_russia must keep yandex.ru direct")
+		t.Fatal("migrated blocked_only must keep yandex.ru direct")
 	}
 	if !containsDomainSuffixRouteRule(config, "steam.com", "direct") {
-		t.Fatal("except_russia must keep Steam domains outside the foreign-traffic VPN catch-all")
+		t.Fatal("migrated blocked_only must keep Steam domains direct")
 	}
 	if !containsProcessDirectRule(config, "cs2.exe") || !containsProcessDirectRule(config, "steam.exe") {
-		t.Fatal("except_russia must keep Steam and CS2 process traffic direct")
+		t.Fatal("migrated blocked_only must keep Steam and CS2 process traffic direct")
 	}
 	if !containsDNSDomainSuffixServer(config, "steam.com", "dns-direct") {
-		t.Fatal("except_russia must resolve Steam domains directly")
+		t.Fatal("migrated blocked_only must resolve Steam domains directly")
 	}
 	for _, domain := range []string{"riotgames.com", "riotcdn.net", "pvp.net", "leagueoflegends.com"} {
 		if !containsDomainSuffixRouteRule(config, domain, "direct") {
-			t.Fatalf("except_russia must keep Riot domain %s outside the foreign-traffic VPN catch-all", domain)
+			t.Fatalf("migrated blocked_only must keep Riot domain %s direct", domain)
 		}
 		if !containsDNSDomainSuffixServer(config, domain, "dns-direct") {
-			t.Fatalf("except_russia must resolve Riot domain %s directly", domain)
+			t.Fatalf("migrated blocked_only must resolve Riot domain %s directly", domain)
 		}
 	}
 	for _, processName := range []string{"RiotClientServices.exe", "Riot Client.exe", "LeagueClient.exe", "LeagueClientUxRender.exe", "League of Legends.exe", "vgc.exe"} {
 		if !containsProcessDirectRule(config, processName) {
-			t.Fatalf("except_russia must keep Riot process %s direct", processName)
+			t.Fatalf("migrated blocked_only must keep Riot process %s direct", processName)
 		}
-	}
-	if containsDomainSuffixRouteRule(config, "telegram.org", "direct") {
-		t.Fatal("telegram.org must not be routed direct in except_russia")
 	}
 	if containsDomainSuffixRouteRule(config, "telegram.org", ServiceBypassGroupTag("telegram")) {
 		t.Fatal("telegram.org must not use a fake Telegram bypass group without subscription")
