@@ -102,6 +102,21 @@ type ProbeTarget struct {
 	Optional  bool          `json:"optional,omitempty"`
 }
 
+// IPMatchPolicy defines when an IP/CIDR match is strong enough to identify a
+// service. IP addresses are frequently shared by unrelated CDN tenants, so a
+// service rule must opt into one of the bounded policies instead of treating a
+// CIDR hit as service identity by default.
+type IPMatchPolicy string
+
+const (
+	// IPMatchRequireContext uses the CIDR only together with a matching host,
+	// process or service-specific protocol fingerprint.
+	IPMatchRequireContext IPMatchPolicy = "require_context"
+	// IPMatchHostless allows a generic blocked-IP catalog to classify traffic
+	// only when no HTTP Host, TLS SNI or QUIC server name was recovered.
+	IPMatchHostless IPMatchPolicy = "hostless_only"
+)
+
 // ServiceRule identifies one service across web, desktop and mobile traffic.
 type ServiceRule struct {
 	ID                   string        `json:"id"`
@@ -109,6 +124,7 @@ type ServiceRule struct {
 	ExactHosts           []string      `json:"exactHosts,omitempty"`
 	DomainSuffixes       []string      `json:"domainSuffixes,omitempty"`
 	IPCIDRs              []string      `json:"ipCidrs,omitempty"`
+	IPMatchPolicy        IPMatchPolicy `json:"ipMatchPolicy,omitempty"`
 	ProcessNames         []string      `json:"processNames,omitempty"`
 	TCPPorts             []int         `json:"tcpPorts,omitempty"`
 	UDPPorts             []int         `json:"udpPorts,omitempty"`

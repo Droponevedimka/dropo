@@ -575,6 +575,41 @@ func TestScopedBlockedCatalogMigrationGate(t *testing.T) {
 	}
 }
 
+func TestIdentityScopedServiceIPMigrationGate(t *testing.T) {
+	stale := map[string]interface{}{
+		"route": map[string]interface{}{"rules": []interface{}{
+			map[string]interface{}{
+				"ip_cidr": []interface{}{"66.22.192.0/18"},
+				"action":  "route", "outbound": ServiceBypassGroupTag("discord"),
+			},
+		}},
+	}
+	if !configNeedsIdentityScopedServiceIPMigration(stale) {
+		t.Fatal("standalone named-service CIDR did not request config migration")
+	}
+
+	scoped := map[string]interface{}{
+		"route": map[string]interface{}{"rules": []interface{}{
+			map[string]interface{}{
+				"ip_cidr": []interface{}{"66.22.192.0/18"}, "process_name": []interface{}{"Discord.exe"},
+				"action": "route", "outbound": ServiceBypassGroupTag("discord"),
+			},
+		}},
+	}
+	if configNeedsIdentityScopedServiceIPMigration(scoped) {
+		t.Fatal("CIDR+process service rule unexpectedly requested migration")
+	}
+
+	unrelatedWorkRule := map[string]interface{}{
+		"route": map[string]interface{}{"rules": []interface{}{
+			map[string]interface{}{"ip_cidr": []interface{}{"10.10.0.0/16"}, "outbound": "wireguard-work-1"},
+		}},
+	}
+	if configNeedsIdentityScopedServiceIPMigration(unrelatedWorkRule) {
+		t.Fatal("work-network CIDR must not be mistaken for a stale service route")
+	}
+}
+
 func TestDefenderDegradedModePinsBlockedServicesToSubscription(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "active.json")
 	config := map[string]interface{}{

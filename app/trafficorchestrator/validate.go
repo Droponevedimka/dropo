@@ -309,6 +309,21 @@ func validateServiceRule(service ServiceRule, strategies map[string]TrafficStrat
 			return fmt.Errorf("invalid CIDR %q: %w", cidr, err)
 		}
 	}
+	if len(service.IPCIDRs) == 0 {
+		if service.IPMatchPolicy != "" {
+			return errors.New("ipMatchPolicy requires at least one CIDR")
+		}
+	} else {
+		switch service.IPMatchPolicy {
+		case IPMatchRequireContext:
+			if len(service.ExactHosts)+len(service.DomainSuffixes)+len(service.ProcessNames)+len(service.Fingerprints) == 0 {
+				return errors.New("require_context IP policy requires host, process or fingerprint evidence")
+			}
+		case IPMatchHostless:
+		default:
+			return fmt.Errorf("unsupported ipMatchPolicy %q", service.IPMatchPolicy)
+		}
+	}
 	if err := validatePorts(NetworkTCP, service.TCPPorts); err != nil {
 		return err
 	}

@@ -191,6 +191,15 @@ func TestAndroidBlockedOnlyRoutesOnlyBlockedServicesThroughVPN(t *testing.T) {
 	if androidContainsDomainRoute(config, "steam.com", "proxy") || androidContainsDomainRoute(config, "steamcommunity.com", "proxy") {
 		t.Fatal("Steam must keep the blocked-only final direct route on Android")
 	}
+	for _, raw := range route["rules"].([]interface{}) {
+		rule := raw.(map[string]interface{})
+		if _, hasCIDRs := rule["ip_cidr"]; rule["outbound"] == "proxy" && hasCIDRs {
+			t.Fatalf("Android service CIDR must not be an unscoped VPN rule: %#v", rule)
+		}
+	}
+	if !androidContainsDomainRegexRoute(config, androidKnownDomainRegex, "direct") {
+		t.Fatal("Android blocked-only routes require a terminal known-domain direct boundary")
+	}
 	for _, domain := range []string{"riotgames.com", "riotcdn.net", "pvp.net", "leagueoflegends.com"} {
 		if !androidContainsDomainRoute(config, domain, "direct") || androidContainsDomainRoute(config, domain, "proxy") {
 			t.Fatalf("Riot domain %s must stay direct in Android blocked-only mode", domain)
@@ -387,6 +396,35 @@ func TestAndroidAutoUpdateDisabledReusesMatchingCache(t *testing.T) {
 	}
 	if response["config"] != `{"cached":true}` {
 		t.Fatalf("config = %v, want cached config", response["config"])
+	}
+}
+
+func TestAndroidDirectFirstSchemaInvalidatesPriorCachedConfig(t *testing.T) {
+	mu.Lock()
+	current = defaultState()
+	current.BasePath = t.TempDir()
+	current.Subscription = "vless://00000000-0000-0000-0000-000000000000@example.com:443?security=tls&type=ws&path=%2Fws&host=example.com&sni=example.com&fp=chrome#demo"
+	current.Config.AutoUpdateSub = false
+	current.CachedSingBoxConfig = `{"staleIpOnlyRouting":true}`
+	current.CachedProxyCount = 1
+	current.CachedConfigSubscription = current.Subscription
+	current.CachedConfigSignature = strings.Replace(
+		androidConfigSignature(current.Subscription, current.Config.EnableLogging, current.Config.LogLevel, current.Config.RoutingMode, current.Config.HideRuTraffic, current.Config.RuProxyAddress, nil),
+		androidConfigSchema,
+		"android-package-routing-v6",
+		1,
+	)
+	mu.Unlock()
+
+	var response map[string]interface{}
+	if err := json.Unmarshal([]byte(BuildSingBoxConfig()), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response["success"] != true || response["cached"] == true {
+		t.Fatalf("response = %#v, want a rebuilt direct-first config", response)
+	}
+	if strings.Contains(response["config"].(string), "staleIpOnlyRouting") {
+		t.Fatal("prior Android routing schema was reused")
 	}
 }
 
@@ -779,6 +817,17 @@ func androidContainsPackageRoute(config map[string]interface{}, packageName, out
 			continue
 		}
 		if stringListContains(rule["package_name"], packageName) {
+			return true
+		}
+	}
+	return false
+}
+
+func androidContainsDomainRegexRoute(config map[string]interface{}, expression, outbound string) bool {
+	route := config["route"].(map[string]interface{})
+	for _, raw := range route["rules"].([]interface{}) {
+		rule := raw.(map[string]interface{})
+		if rule["outbound"] == outbound && stringListContains(rule["domain_regex"], expression) {
 			return true
 		}
 	}

@@ -2069,10 +2069,9 @@ func buildFreeAccessProcessRules(settings GlobalAppSettings) []interface{} {
 		processNames = append(processNames, freeAccessProcessNames()...)
 	}
 	// Telegram MTProto sidecar egress: route DIRECT (its WS obfuscation works on
-	// the direct path — free) UNLESS Telegram is forced to the VPN, in which case
-	// we omit it so its DC-bound traffic falls through to the telegram ip_cidr
-	// rule → bypass-telegram → VPN. This lets Telegram ride the subscription
-	// through the already-saved local proxy without the user removing it.
+	// the direct path - free) UNLESS Telegram is forced to the VPN. In that case
+	// the identity-scoped Telegram CIDR rule below binds the sidecar process and
+	// destination together before sending it to bypass-telegram.
 	if FreeAccessServiceMethod(settings, "telegram") != FreeAccessMethodVPN {
 		processNames = append(processNames, TgWsProxyProcessName)
 	}
@@ -2173,9 +2172,12 @@ func insertAfterFirstRouteRule(rules []interface{}, extra []interface{}) []inter
 	return result
 }
 
-// buildFreeAccessRules returns route rules sending each catalogued service to
-// its own latency-tested bypass group (toggle on) or vpn-or-direct group
-// (toggle off). Same rule set regardless of routing mode.
+// buildFreeAccessRules returns identity-scoped route rules sending each
+// catalogued service to its own latency-tested bypass group (toggle on) or
+// vpn-or-direct group (toggle off). A service CIDR is intentionally not emitted
+// as a standalone sing-box rule: shared addresses cannot prove which service
+// owns a flow. Domain reverse mapping and process rules cover desktop and
+// IP-only app traffic without capturing an unrelated game on the same address.
 func (b *ConfigBuilderForStorage) buildFreeAccessRules(settings GlobalAppSettings, hasVPNProxy bool) []interface{} {
 	rules := make([]interface{}, 0, len(DefaultFreeAccessServices)+1)
 	rules = append(rules, buildDiscordRealtimeRules(settings, hasVPNProxy)...)
@@ -2193,16 +2195,22 @@ func (b *ConfigBuilderForStorage) buildFreeAccessRules(settings GlobalAppSetting
 				"outbound":      outbound,
 			})
 		}
-		if len(svc.IPCIDRs) > 0 {
-			rules = append(rules, map[string]interface{}{
-				"ip_cidr":  svc.IPCIDRs,
-				"action":   "route",
-				"outbound": outbound,
-			})
-		}
 		if len(svc.ProcessNames) > 0 {
 			rules = append(rules, map[string]interface{}{
 				"process_name": svc.ProcessNames,
+				"action":       "route",
+				"outbound":     outbound,
+			})
+		}
+		ipProcesses := append([]string(nil), svc.ProcessNames...)
+		if svc.Tag == "telegram" && FreeAccessServiceMethod(settings, svc.Tag) == FreeAccessMethodVPN {
+			ipProcesses = append(ipProcesses, TgWsProxyProcessName)
+		}
+		ipProcesses = uniqueStrings(ipProcesses)
+		if len(svc.IPCIDRs) > 0 && len(ipProcesses) > 0 {
+			rules = append(rules, map[string]interface{}{
+				"ip_cidr":      svc.IPCIDRs,
+				"process_name": ipProcesses,
 				"action":       "route",
 				"outbound":     outbound,
 			})

@@ -9,6 +9,11 @@ import (
 	"time"
 )
 
+const (
+	androidKnownDomainRegex = "^.+$"
+	androidConfigSchema     = "android-package-routing-v7"
+)
+
 const androidSingBoxVersion = "1.13.14"
 
 var safeTagChars = regexp.MustCompile(`[^a-zA-Z0-9_-]+`)
@@ -518,13 +523,6 @@ func buildAndroidRouteRules(routingMode string, hideRuTraffic bool, ruOutbound s
 			"outbound":     "proxy",
 		})
 	}
-	if vpnIPs := androidServiceIPCIDRsByPolicy(routePolicies, androidRoutePolicyVPN); len(vpnIPs) > 0 {
-		rules = append(rules, map[string]interface{}{
-			"ip_cidr":  vpnIPs,
-			"action":   "route",
-			"outbound": "proxy",
-		})
-	}
 	if routingMode != "all_traffic" {
 		ruRouteOutbound := "direct"
 		if hideRuTraffic {
@@ -533,6 +531,10 @@ func buildAndroidRouteRules(routingMode string, hideRuTraffic bool, ruOutbound s
 		rules = append(rules,
 			map[string]interface{}{"domain_suffix": androidDirectDomainSuffixes(), "action": "route", "outbound": ruRouteOutbound},
 			map[string]interface{}{"domain_keyword": androidDirectDomainKeywords(), "action": "route", "outbound": ruRouteOutbound},
+			// Terminal boundary for every hostname not positively identified by a
+			// blocked-service domain or package rule above. Service IP ranges are
+			// metadata/diagnostics only and must never capture another application.
+			map[string]interface{}{"domain_regex": []string{androidKnownDomainRegex}, "action": "route", "outbound": "direct"},
 		)
 	}
 	return rules
@@ -596,7 +598,7 @@ func androidLatencySensitiveDirectPackageNames() []string {
 func androidConfigSignature(subscription string, enableLogging bool, logLevel, routingMode string, hideRuTraffic bool, ruProxyAddress string, routePolicies map[string]string) string {
 	parts := []string{
 		"singbox=" + androidSingBoxVersion,
-		"schema=android-package-routing-v6",
+		"schema=" + androidConfigSchema,
 		"subscription=" + strings.TrimSpace(subscription),
 		"log=" + effectiveAndroidLogLevel(enableLogging, logLevel),
 		"routing=" + normalizeAndroidRoutingMode(routingMode),

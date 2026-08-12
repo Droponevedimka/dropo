@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	traffic "dropo/trafficorchestrator"
 )
 
 func writeTestBlockedCatalog(t *testing.T, root string, domains, cidrs string) {
@@ -116,6 +118,9 @@ func TestNativePlanIncludesOneCommonBlockedSelection(t *testing.T) {
 	if len(plan.Services) != 1 || plan.Services[0].ID != commonBlockedServiceTag {
 		t.Fatalf("services = %#v", plan.Services)
 	}
+	if plan.Services[0].IPMatchPolicy != traffic.IPMatchHostless {
+		t.Fatalf("blocked catalog IP policy = %q, want hostless-only", plan.Services[0].IPMatchPolicy)
+	}
 	if len(plan.Selections) != 1 || plan.Selections[0].StrategyID != method.NativeStrategyID {
 		t.Fatalf("selections = %#v", plan.Selections)
 	}
@@ -128,9 +133,7 @@ func TestNativePlanIncludesOneCommonBlockedSelection(t *testing.T) {
 			t.Fatalf("native direct domains = %v, missing %s", direct.DomainSuffixes, domain)
 		}
 	}
-	for _, processName := range []string{"RiotClientServices.exe", "LeagueClient.exe", "League of Legends.exe", "vgc.exe"} {
-		if !containsStringValue(direct.ProcessNames, processName) {
-			t.Fatalf("native direct processes = %v, missing %s", direct.ProcessNames, processName)
-		}
+	if len(direct.ProcessNames) != 0 {
+		t.Fatalf("network-layer plan cannot observe process names, got %v", direct.ProcessNames)
 	}
 }

@@ -893,6 +893,10 @@ func (a *App) ensureActiveConfigForStart() error {
 			a.writeLog("Active config predates domain-first blocked catalog routing; rebuilding before start")
 			needsRebuild = true
 		}
+		if !needsRebuild && configNeedsIdentityScopedServiceIPMigration(config) {
+			a.writeLog("Active config contains an unscoped service IP route; rebuilding before start")
+			needsRebuild = true
+		}
 		if !needsRebuild && configNeedsLatencySensitiveDirectMigration(config, appSettings.RoutingMode) {
 			a.writeLog("Active config predates latency-sensitive game direct routing; rebuilding before start")
 			needsRebuild = true
@@ -1026,6 +1030,40 @@ func configNeedsScopedBlockedCatalogMigration(config map[string]interface{}, rou
 		return true
 	}
 	return domainRuleIndex >= 0 && domainRuleIndex >= knownDomainDirectIndex
+}
+
+// configNeedsIdentityScopedServiceIPMigration rejects cached configurations
+// from releases that emitted a named service CIDR as an independent route.
+// Profile configs survive upgrades, so without this structural gate an updated
+// binary could keep routing an unrelated game on a shared address through a
+// stale bypass/VPN rule indefinitely.
+func configNeedsIdentityScopedServiceIPMigration(config map[string]interface{}) bool {
+	route, ok := config["route"].(map[string]interface{})
+	if !ok {
+		return true
+	}
+	rules, ok := route["rules"].([]interface{})
+	if !ok {
+		return true
+	}
+	for _, raw := range rules {
+		rule, ok := raw.(map[string]interface{})
+		if !ok || len(interfaceStringSlice(rule["ip_cidr"])) == 0 || len(interfaceStringSlice(rule["process_name"])) > 0 {
+			continue
+		}
+		outbound, _ := rule["outbound"].(string)
+		for _, service := range DefaultFreeAccessServices {
+			if outbound != "direct" && outbound != "auto-select" && outbound != VpnOrDirectGroupTag && outbound != ServiceBypassGroupTag(service.Tag) {
+				continue
+			}
+			for _, cidr := range service.IPCIDRs {
+				if stringSliceContains(interfaceStringSlice(rule["ip_cidr"]), cidr) {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 func configNeedsLatencySensitiveDirectMigration(config map[string]interface{}, routingMode RoutingMode) bool {

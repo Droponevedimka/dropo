@@ -38,6 +38,10 @@
 - immutable `TrafficPlan` меняется атомарно без запуска скриптов и внешнего anti-DPI-процесса;
 - классификатор использует домены, CIDR, TCP/UDP-порты, protocol fingerprints
   и SNI из TLS либо QUIC v1/v2 Initial;
+- CIDR никогда не считается самостоятельным доказательством конкретного
+  сервиса: для сервисных диапазонов требуется домен, процесс или media
+  fingerprint, а общий blocked-IP каталог применяется только без известного
+  hostname;
 - непрозрачный или неуверенно распознанный трафик проходит без изменения;
 - ошибка преобразования fail-safe возвращает исходный пакет;
 - рабочие WireGuard-сети применяются раньше сервисного direct/VPN fallback.
@@ -106,7 +110,8 @@ Dropo Space создаёт отдельный рабочий профиль дл
 
 ## Разработка и проверка
 
-Детальный Windows-first план и критерии готовности находятся в
+Контракт direct-first и воспроизводимый тест общей IP-площадки описаны в
+[ROUTING_CONTRACT.md](ROUTING_CONTRACT.md). Детальный Windows-first план находится в
 [WINDOWS_TRAFFIC_ORCHESTRATOR_IMPLEMENTATION_PLAN.md](WINDOWS_TRAFFIC_ORCHESTRATOR_IMPLEMENTATION_PLAN.md).
 Основные release gates: Go unit/cross-compile, Flutter analyze/tests, проверка
 runtime manifest, self-extraction smoke, Authenticode и Windows lifecycle smoke.

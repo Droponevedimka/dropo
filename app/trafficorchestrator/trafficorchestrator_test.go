@@ -33,6 +33,7 @@ func testPlan() TrafficPlan {
 			DisplayName:          "Discord",
 			DomainSuffixes:       []string{"discord.com", "discord.media"},
 			IPCIDRs:              []string{"66.22.192.0/18"},
+			IPMatchPolicy:        IPMatchRequireContext,
 			ProcessNames:         []string{"Discord.exe"},
 			TCPPorts:             []int{443},
 			UDPPorts:             []int{3478, 50000},
@@ -127,6 +128,77 @@ func TestDirectRuleWinsBeforeBlockedCatalogIP(t *testing.T) {
 	}
 }
 
+func TestKnownUnblockedHostWinsOverSharedServiceIP(t *testing.T) {
+	plan := testPlan()
+	classifier, err := NewClassifier(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	classification := classifier.Classify(FlowEvidence{
+		Network: NetworkTCP, Destination: "66.22.200.1", Port: 443, Host: "api.epicgames.dev",
+	})
+	if classification.Matched || classification.Direct || classification.WorkNetwork {
+		t.Fatalf("classification = %+v, want fail-safe pass for the known unrelated host", classification)
+	}
+}
+
+func TestHostlessServiceIPRequiresCorroboratingEvidence(t *testing.T) {
+	plan := testPlan()
+	classifier, err := NewClassifier(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unknown := classifier.Classify(FlowEvidence{
+		Network: NetworkUDP, Destination: "66.22.200.1", Port: 50000,
+	})
+	if unknown.Matched {
+		t.Fatalf("unidentified shared-IP flow must pass unchanged: %+v", unknown)
+	}
+	media := classifier.Classify(FlowEvidence{
+		Network: NetworkUDP, Destination: "66.22.200.1", Port: 50000, Fingerprints: []string{"discord-media"},
+	})
+	if !media.Matched || media.ServiceID != "discord" {
+		t.Fatalf("corroborated Discord media classification = %+v", media)
+	}
+}
+
+func TestGenericBlockedIPMatchesOnlyWithoutKnownHost(t *testing.T) {
+	plan := testPlan()
+	plan.Services[0].IPMatchPolicy = IPMatchHostless
+	classifier, err := NewClassifier(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := classifier.Classify(FlowEvidence{Network: NetworkUDP, Destination: "66.22.200.1", Port: 50000}); !got.Matched {
+		t.Fatalf("hostless blocked-IP flow = %+v, want catalog fallback", got)
+	}
+	if got := classifier.Classify(FlowEvidence{Network: NetworkTCP, Destination: "66.22.200.1", Port: 443, Host: "accounts.ea.com"}); got.Matched {
+		t.Fatalf("known EA host on the same IP = %+v, want unchanged pass", got)
+	}
+}
+
+func TestProcessorSharedAddressEmulationKeepsUnblockedTLSDirect(t *testing.T) {
+	processor, err := NewProcessor(testPlan())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	blockedPacket := testIPv4TCPPacketTo(t, "66.22.200.1", "gateway.discord.com")
+	blockedDecision := processor.Process(blockedPacket)
+	if !blockedDecision.Transformed || blockedDecision.ServiceID != "discord" {
+		t.Fatalf("blocked service decision = %+v, want selected strategy", blockedDecision)
+	}
+
+	directPacket := testIPv4TCPPacketTo(t, "66.22.200.1", "accounts.ea.com")
+	directDecision := processor.Process(directPacket)
+	if directDecision.Transformed || directDecision.ServiceID != "" || len(directDecision.Packets) != 1 {
+		t.Fatalf("unblocked service decision = %+v, want one unchanged packet", directDecision)
+	}
+	if string(directDecision.Packets[0]) != string(directPacket) {
+		t.Fatal("direct-first decision changed the emulated EA packet")
+	}
+}
+
 func TestDirectProcessWinsBeforeBroadBlockedCIDR(t *testing.T) {
 	plan := testPlan()
 	plan.DirectRules = []DirectRule{{ID: "steam-direct", ProcessNames: []string{"steam.exe", "cs2.exe"}}}
@@ -147,6 +219,30 @@ func TestSelectionMustUseServiceCandidate(t *testing.T) {
 	plan.Selections[0].StrategyID = "strong"
 	if err := ValidatePlan(plan); err == nil {
 		t.Fatal("non-candidate service selection was accepted")
+	}
+}
+
+func TestServiceCIDRRequiresExplicitSafeMatchPolicy(t *testing.T) {
+	plan := testPlan()
+	plan.Services[0].IPMatchPolicy = ""
+	if err := ValidatePlan(plan); err == nil {
+		t.Fatal("service CIDR without an explicit match policy was accepted")
+	}
+
+	plan = testPlan()
+	plan.Services[0].IPMatchPolicy = IPMatchPolicy("always")
+	if err := ValidatePlan(plan); err == nil {
+		t.Fatal("unsupported service IP match policy was accepted")
+	}
+
+	plan = testPlan()
+	plan.Services[0].IPMatchPolicy = IPMatchRequireContext
+	plan.Services[0].ExactHosts = nil
+	plan.Services[0].DomainSuffixes = nil
+	plan.Services[0].ProcessNames = nil
+	plan.Services[0].Fingerprints = nil
+	if err := ValidatePlan(plan); err == nil {
+		t.Fatal("context-required service CIDR without corroborating evidence was accepted")
 	}
 }
 
@@ -469,7 +565,8 @@ func TestProcessorDoesNotTransformUnrecognizedEncryptedMedia(t *testing.T) {
 		Strategies: strategies,
 		Services: []ServiceRule{{
 			ID: "discord", DisplayName: "Discord", IPCIDRs: []string{"66.22.192.0/18"},
-			UDPPorts: []int{50000}, CandidateStrategyIDs: []string{strategies[0].ID},
+			IPMatchPolicy: IPMatchRequireContext,
+			UDPPorts:      []int{50000}, Fingerprints: []string{"discord-media"}, CandidateStrategyIDs: []string{strategies[0].ID},
 		}},
 		Selections: []ServiceSelection{{ServiceID: "discord", StrategyID: strategies[0].ID}},
 	}
@@ -500,7 +597,8 @@ func TestDiscordActiveStrategySendsBoundedDiscoveryDecoysBeforeOriginal(t *testi
 		Strategies: []TrafficStrategy{active},
 		Services: []ServiceRule{{
 			ID: "discord", DisplayName: "Discord", IPCIDRs: []string{"66.22.192.0/18"},
-			UDPPorts: []int{50000}, Fingerprints: []string{"discord-media"}, CandidateStrategyIDs: []string{active.ID},
+			IPMatchPolicy: IPMatchRequireContext,
+			UDPPorts:      []int{50000}, Fingerprints: []string{"discord-media"}, CandidateStrategyIDs: []string{active.ID},
 		}},
 		Selections: []ServiceSelection{{ServiceID: "discord", StrategyID: active.ID}},
 	}
@@ -550,7 +648,8 @@ func TestDiscordActiveV2SendsDistinctQUICShapedDecoys(t *testing.T) {
 		Revision: 1, CatalogRevision: BuiltinCatalogRevision, Strategies: []TrafficStrategy{active},
 		Services: []ServiceRule{{
 			ID: "discord", DisplayName: "Discord", IPCIDRs: []string{"66.22.192.0/18"},
-			UDPPorts: []int{50000}, Fingerprints: []string{"discord-media"}, CandidateStrategyIDs: []string{active.ID},
+			IPMatchPolicy: IPMatchRequireContext,
+			UDPPorts:      []int{50000}, Fingerprints: []string{"discord-media"}, CandidateStrategyIDs: []string{active.ID},
 		}},
 		Selections: []ServiceSelection{{ServiceID: "discord", StrategyID: active.ID}},
 	}
@@ -730,6 +829,10 @@ func TestEngineOwnsOneBackendLoopAndReinjectsDecision(t *testing.T) {
 }
 
 func testIPv4TCPPacket(t *testing.T, host string) []byte {
+	return testIPv4TCPPacketTo(t, "1.1.1.1", host)
+}
+
+func testIPv4TCPPacketTo(t *testing.T, destination, host string) []byte {
 	t.Helper()
 	payload := fakeTLSClientHelloForServerName(host)
 	packet := make([]byte, 20+20+len(payload))
@@ -737,7 +840,8 @@ func testIPv4TCPPacket(t *testing.T, host string) []byte {
 	packet[8] = 64
 	packet[9] = 6
 	packet[12], packet[13], packet[14], packet[15] = 10, 0, 0, 1
-	packet[16], packet[17], packet[18], packet[19] = 1, 1, 1, 1
+	destinationBytes := netip.MustParseAddr(destination).As4()
+	copy(packet[16:20], destinationBytes[:])
 	binary.BigEndian.PutUint16(packet[2:4], uint16(len(packet)))
 	binary.BigEndian.PutUint16(packet[20:22], 50000)
 	binary.BigEndian.PutUint16(packet[22:24], 443)

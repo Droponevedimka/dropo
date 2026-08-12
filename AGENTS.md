@@ -32,6 +32,14 @@ commit workflow.
   global blocked-traffic catch-all. Scope them to verified service process,
   domain, or media evidence. In blocked-only mode, a known domain not present
   in blocked domain catalogs must take direct precedence over generic IP lists.
+- Every `ServiceRule` containing `IPCIDRs` must declare an `IPMatchPolicy`.
+  Named services and dynamic endpoints use `require_context`; only the generic
+  signed blocked-IP catalog may use `hostless_only`. A sing-box service CIDR
+  rule must include a process/package identity, never an IP match by itself.
+- Preserve the shared-address regression: the same destination IP with a
+  blocked service SNI may be transformed, while an unrelated SNI must be passed
+  byte-for-byte unchanged. Keep the Windows packet emulation and Android route
+  ordering tests in the release gate whenever classification changes.
 - Work-network/WireGuard overlay rules have priority over service strategies.
   Do not allow private destinations to fall through to a public VPN source.
 - A strategy selector must validate every required TCP, UDP and web target

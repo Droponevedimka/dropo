@@ -24,7 +24,6 @@ func (a *App) buildNativeTrafficPlan(selections map[string]serviceWinwsSelection
 			ID:             "latency-sensitive-direct",
 			DomainSuffixes: append([]string(nil), DirectDomainSuffixes...),
 			IPCIDRs:        append([]string(nil), DirectIPCIDRs...),
-			ProcessNames:   append([]string(nil), DirectProcessNames...),
 		}},
 	}
 	if a != nil && a.trafficEngine != nil {
@@ -93,7 +92,8 @@ func (a *App) buildNativeTrafficPlan(selections map[string]serviceWinwsSelection
 		plan.Services = append(plan.Services, traffic.ServiceRule{
 			ID: commonBlockedServiceTag, DisplayName: "Bundled blocked catalog",
 			DomainSuffixes: catalog.Domains, IPCIDRs: catalog.IPCIDRs,
-			TCPPorts: []int{80, 443}, UDPPorts: []int{443},
+			IPMatchPolicy: traffic.IPMatchHostless,
+			TCPPorts:      []int{80, 443}, UDPPorts: []int{443},
 			CandidateStrategyIDs: commonCandidateIDs,
 			AllowVPNFallback:     true, AllowDirectFallback: true,
 		})
@@ -113,12 +113,14 @@ func nativeServiceRule(service FreeAccessService, strategyIDs []string) traffic.
 		ID: service.Tag, DisplayName: service.DisplayName,
 		DomainSuffixes:       append([]string(nil), service.DomainSuffixes...),
 		IPCIDRs:              append([]string(nil), service.IPCIDRs...),
-		ProcessNames:         append([]string(nil), service.ProcessNames...),
 		TCPPorts:             []int{80, 443},
 		UDPPorts:             []int{443},
 		CandidateStrategyIDs: append([]string(nil), strategyIDs...),
 		AllowVPNFallback:     true,
 		AllowDirectFallback:  true,
+	}
+	if len(rule.IPCIDRs) > 0 {
+		rule.IPMatchPolicy = traffic.IPMatchRequireContext
 	}
 	if service.Tag == "discord" {
 		rule.TCPPorts = append(rule.TCPPorts, normalizedDiscordTCPPorts(nil)...)
@@ -187,6 +189,7 @@ func (a *App) addNativeWireGuardRules(plan *traffic.TrafficPlan) {
 		plan.Services = append(plan.Services, traffic.ServiceRule{
 			ID: id, DisplayName: "WireGuard handshake " + endpoint.Tag,
 			IPCIDRs: cidrs, UDPPorts: []int{endpoint.Port},
+			IPMatchPolicy:        traffic.IPMatchRequireContext,
 			Fingerprints:         []string{"wireguard-initiation", "wireguard-cookie"},
 			CandidateStrategyIDs: []string{"native-decoy-split"},
 			AllowDirectFallback:  true,

@@ -112,8 +112,11 @@ func TestBuildConfigWithoutSubscriptionUsesFreeAccess(t *testing.T) {
 			t.Fatalf("generated config does not resolve %s through dns-remote", domain)
 		}
 	}
-	if !containsIPRouteRule(config, "66.22.192.0/18", ServiceBypassGroupTag("discord")) {
-		t.Fatal("generated config does not route Discord voice/media IP range through Discord bypass group")
+	if !containsScopedIPProcessRoute(config, "66.22.192.0/18", "Discord.exe", ServiceBypassGroupTag("discord")) {
+		t.Fatal("generated config must scope the Discord media range to the Discord process")
+	}
+	if !containsProcessRouteRule(config, "Discord.exe", discordRealtimeGroupTag) {
+		t.Fatal("generated config must scope Discord voice/media routing to the Discord process")
 	}
 	if containsIPRouteRule(config, "185.76.151.0/24", ServiceBypassGroupTag("telegram")) {
 		t.Fatal("generated config without subscription must not route current Telegram IPv4 range through Telegram bypass group")
@@ -328,6 +331,35 @@ func TestDiscordRealtimeAlwaysUsesRuntimeSelector(t *testing.T) {
 	rule = findProcessNetworkRule(rules, "Discord.exe", "udp")
 	if rule == nil || rule["outbound"] != discordRealtimeGroupTag {
 		t.Fatalf("explicit VPN must still use the runtime selector, got %v", rule)
+	}
+}
+
+func TestNamedServiceCIDRsNeverBecomeStandaloneSingBoxRoutes(t *testing.T) {
+	rules := (&ConfigBuilderForStorage{}).buildFreeAccessRules(GlobalAppSettings{}, true)
+	for _, raw := range rules {
+		rule, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if cidrs := interfaceStringSlice(rule["ip_cidr"]); len(cidrs) > 0 && len(interfaceStringSlice(rule["process_name"])) == 0 {
+			t.Fatalf("service route uses CIDR without process identity evidence: %#v", rule)
+		}
+	}
+
+	vpnSettings := GlobalAppSettings{FreeAccessMethods: map[string]string{"telegram": FreeAccessMethodVPN}}
+	rules = (&ConfigBuilderForStorage{}).buildFreeAccessRules(vpnSettings, true)
+	foundTelegramSidecar := false
+	for _, raw := range rules {
+		rule, ok := raw.(map[string]interface{})
+		if !ok || rule["outbound"] != ServiceBypassGroupTag("telegram") {
+			continue
+		}
+		if valuesContain(rule["ip_cidr"], "149.154.160.0/20") && valuesContain(rule["process_name"], TgWsProxyProcessName) {
+			foundTelegramSidecar = true
+		}
+	}
+	if !foundTelegramSidecar {
+		t.Fatal("forced Telegram VPN must use a CIDR+sidecar-process conjunction")
 	}
 }
 
@@ -2624,6 +2656,21 @@ func containsIPRouteRule(config map[string]interface{}, ipCIDR, outboundTag stri
 			continue
 		}
 		if valuesContain(ruleMap["ip_cidr"], ipCIDR) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsScopedIPProcessRoute(config map[string]interface{}, ipCIDR, processName, outboundTag string) bool {
+	route, _ := config["route"].(map[string]interface{})
+	rules, _ := route["rules"].([]interface{})
+	for _, rule := range rules {
+		ruleMap, ok := rule.(map[string]interface{})
+		if !ok || ruleMap["outbound"] != outboundTag {
+			continue
+		}
+		if valuesContain(ruleMap["ip_cidr"], ipCIDR) && valuesContain(ruleMap["process_name"], processName) {
 			return true
 		}
 	}

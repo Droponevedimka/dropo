@@ -168,30 +168,28 @@ func (r compiledServiceRule) score(host string, address netip.Addr, hasAddress b
 	score := 0
 	primary := false
 	evidence := make([]string, 0, 5)
+	hostMatched := false
+	fingerprintMatched := false
+	processMatched := false
 	if _, ok := r.exactHosts[host]; ok && host != "" {
 		score += 120
 		primary = true
+		hostMatched = true
 		evidence = append(evidence, "exact-host")
 	}
 	if host != "" {
 		if suffix, matched := longestDomainSuffix(host, r.suffixes); matched {
 			score += 90 + min(len(strings.Split(suffix, ".")), 9)
 			primary = true
+			hostMatched = true
 			evidence = append(evidence, "domain-suffix")
-		}
-	}
-	if hasAddress {
-		bestBits := longestIPPrefixBits(address, r.prefixes)
-		if bestBits >= 0 {
-			score += 65 + min(bestBits/8, 20)
-			primary = true
-			evidence = append(evidence, "destination-cidr")
 		}
 	}
 	for fingerprint := range fingerprints {
 		if _, ok := r.fingerprints[fingerprint]; ok {
 			score += 110
 			primary = true
+			fingerprintMatched = true
 			evidence = append(evidence, "protocol-fingerprint")
 			break
 		}
@@ -199,7 +197,25 @@ func (r compiledServiceRule) score(host string, address netip.Addr, hasAddress b
 	if processName != "" {
 		if _, ok := r.processNames[processName]; ok {
 			score += 10
+			processMatched = true
 			evidence = append(evidence, "process")
+		}
+	}
+	if hasAddress {
+		bestBits := longestIPPrefixBits(address, r.prefixes)
+		if bestBits >= 0 {
+			allowIP := false
+			switch r.rule.IPMatchPolicy {
+			case IPMatchRequireContext:
+				allowIP = hostMatched || fingerprintMatched || processMatched
+			case IPMatchHostless:
+				allowIP = host == ""
+			}
+			if allowIP {
+				score += 65 + min(bestBits/8, 20)
+				primary = true
+				evidence = append(evidence, "destination-cidr")
+			}
 		}
 	}
 	if primary {
