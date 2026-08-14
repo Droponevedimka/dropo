@@ -42,32 +42,25 @@ func writeServiceStrategyCacheForTest(t *testing.T, app *App, entries map[string
 	}
 }
 
-func TestServiceFallbackCacheExpiresAndRetries(t *testing.T) {
+func TestServiceFallbackCacheKeepsCursorForNextSession(t *testing.T) {
 	app := newServiceEngineTestApp(t)
 	now := time.Now()
 	writeServiceStrategyCacheForTest(t, app, map[string]serviceStrategyCacheEntry{
 		"youtube": {
 			MethodTag:          FreeAccessMethodDirect,
 			State:              serviceStrategyStateFallback,
-			UpdatedAt:          now.Add(-serviceStrategyFallbackTTL),
-			RetryAfter:         now.Add(-time.Second),
+			UpdatedAt:          now.Add(-time.Hour),
 			NetworkFingerprint: currentNetworkFingerprint(),
+			NextStrategyIndex:  3,
 		},
 	})
 
-	if cache := app.loadServiceStrategyCache(); cache["youtube"].MethodTag != "" {
-		t.Fatalf("expired negative result remained cached: %+v", cache["youtube"])
+	cache := app.loadServiceStrategyCache()
+	if cache["youtube"].MethodTag != FreeAccessMethodDirect || cache["youtube"].NextStrategyIndex != 3 {
+		t.Fatalf("fallback cursor was not retained: %+v", cache["youtube"])
 	}
-	selections, needSearch := app.resolveServiceSelections(app.serviceHostlistDir(), app.loadServiceStrategyCache())
-	if _, ok := selections["youtube"]; !ok {
-		t.Fatal("expired fallback must return YouTube to the composed engine")
-	}
-	if !containsString(needSearch, "youtube") {
-		t.Fatalf("expired fallback must queue a new first-success search, got %v", needSearch)
-	}
-	due := app.serviceStrategiesDueForRetry(now, currentNetworkFingerprint())
-	if !containsString(due, "youtube") {
-		t.Fatalf("active-session retry timer did not see expired fallback: %v", due)
+	if indexes := serviceStrategyBatchStartIndexes(cache, []string{"youtube"}); indexes["youtube"] != 3 {
+		t.Fatalf("retry start indexes = %v, want youtube=3", indexes)
 	}
 }
 
@@ -82,7 +75,7 @@ func TestNetworkPrefixIgnoresTemporaryIPv6InterfaceIdentifier(t *testing.T) {
 	}
 }
 
-func TestServiceFallbackCacheIsTemporaryOnCurrentNetwork(t *testing.T) {
+func TestServiceFallbackCacheIsFixedUntilNextConnectedSessionValidation(t *testing.T) {
 	app := newServiceEngineTestApp(t)
 	now := time.Now()
 	writeServiceStrategyCacheForTest(t, app, map[string]serviceStrategyCacheEntry{
@@ -90,7 +83,6 @@ func TestServiceFallbackCacheIsTemporaryOnCurrentNetwork(t *testing.T) {
 			MethodTag:          FreeAccessMethodVPN,
 			State:              serviceStrategyStateFallback,
 			UpdatedAt:          now,
-			RetryAfter:         now.Add(serviceStrategyFallbackTTL),
 			NetworkFingerprint: currentNetworkFingerprint(),
 		},
 	})
@@ -318,8 +310,9 @@ func TestStartupServiceSearchLadderKeepsWorkingCachedMethodFirst(t *testing.T) {
 	}
 	cached := ranked[2]
 	ladder := startupServiceSearchLadder("discord", cached, maxNoSubscriptionStrategies)
-	if len(ladder) != len(ranked) || ladder[0].Tag != cached.Tag {
-		t.Fatalf("startup ladder = %#v, want cached method %q first and %d unique methods", ladder, cached.Tag, len(ranked))
+	wantLen := min(len(ranked), maxAutomaticServiceStrategies)
+	if len(ladder) != wantLen || ladder[0].Tag != cached.Tag {
+		t.Fatalf("startup ladder = %#v, want cached method %q first and %d unique methods", ladder, cached.Tag, wantLen)
 	}
 	seen := map[string]bool{}
 	for _, method := range ladder {
@@ -332,10 +325,10 @@ func TestStartupServiceSearchLadderKeepsWorkingCachedMethodFirst(t *testing.T) {
 
 func TestAutomaticServiceStrategySearchIsBoundedBeforeVPNFallback(t *testing.T) {
 	ranked := rankedMethodsForService("youtube")
-	if len(ranked) != maxNoSubscriptionStrategies {
-		t.Fatalf("YouTube native ladder = %d strategies, want %d distinct typed plans", len(ranked), maxNoSubscriptionStrategies)
+	if len(ranked) < maxAutomaticServiceStrategies {
+		t.Fatalf("YouTube native ladder = %d strategies, want at least %d distinct typed plans", len(ranked), maxAutomaticServiceStrategies)
 	}
-	cached := ServiceBypassMethod{Tag: "cached-legacy-method", Label: "Cached legacy method"}
+	cached := ranked[2]
 	startup := startupServiceSearchLadder("youtube", cached)
 	if len(startup) != maxAutomaticServiceStrategies || startup[0].Tag != cached.Tag {
 		t.Fatalf("startup ladder = %#v, want cached first and %d total strategies", startup, maxAutomaticServiceStrategies)
@@ -355,23 +348,34 @@ func TestAutomaticServiceStrategySearchIsBoundedBeforeVPNFallback(t *testing.T) 
 	}
 }
 
-func TestNoSubscriptionStrategyCampaignIsExtendedButBounded(t *testing.T) {
-	campaign := serviceStrategySearchCampaign{
-		Cycle:      serviceStrategyExtendedCycles,
-		CycleTotal: serviceStrategyExtendedCycles,
-		HasVPN:     false,
+func TestServiceStrategyBatchIsFourAndNextSessionAdvances(t *testing.T) {
+	ranked := rankedMethodsForService("youtube")
+	first := startupServiceSearchLadder("youtube", ranked[0], maxAutomaticServiceStrategies, 0)
+	if len(first) != maxAutomaticServiceStrategies {
+		t.Fatalf("first batch has %d strategies, want %d", len(first), maxAutomaticServiceStrategies)
 	}
-	attempt, total := backgroundStrategyAttempt(maxAutomaticServiceStrategies-1, maxAutomaticServiceStrategies, campaign)
-	wantTotal := serviceStrategyExtendedCycles * maxAutomaticServiceStrategies
-	if attempt != wantTotal || total != wantTotal {
-		t.Fatalf("last extended attempt = %d/%d, want %d/%d", attempt, total, wantTotal, wantTotal)
+	next := nextServiceStrategyIndexAfterLadder("youtube", first)
+	second := startupServiceSearchLadder("youtube", ranked[next], maxAutomaticServiceStrategies, next)
+	if second[0].Tag != ranked[next].Tag {
+		t.Fatalf("second batch starts with %q, want next catalog strategy %q", second[0].Tag, ranked[next].Tag)
 	}
-	if total <= maxAutomaticServiceStrategies {
-		t.Fatalf("no-subscription campaign has only %d attempts, want more than the fast VPN ladder", total)
+	attempt, total := backgroundStrategyAttempt(maxAutomaticServiceStrategies-1, maxAutomaticServiceStrategies)
+	if attempt != maxAutomaticServiceStrategies || total != maxAutomaticServiceStrategies {
+		t.Fatalf("bounded batch progress = %d/%d, want %d/%d", attempt, total, maxAutomaticServiceStrategies, maxAutomaticServiceStrategies)
 	}
-	waitBudget := time.Duration(serviceStrategyExtendedCycles-1) * serviceStrategyExtendedRetryInterval
-	if waitBudget >= serviceStrategyExtendedMaxDuration {
-		t.Fatalf("retry waits consume %s, want room for probes inside %s", waitBudget, serviceStrategyExtendedMaxDuration)
+}
+
+func TestNativeCandidateOrderStartsAtPersistedSessionCursor(t *testing.T) {
+	source := []string{"first", "second", "third"}
+	got := rotateStringValues(source, "second")
+	want := []string{"second", "third", "first"}
+	for index := range want {
+		if got[index] != want[index] {
+			t.Fatalf("rotated candidates = %v, want %v", got, want)
+		}
+	}
+	if source[0] != "first" {
+		t.Fatalf("candidate rotation mutated source: %v", source)
 	}
 }
 

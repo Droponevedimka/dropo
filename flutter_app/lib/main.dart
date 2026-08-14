@@ -1748,8 +1748,10 @@ class MockCoreBridge implements CoreBridge {
           )
           .toList(growable: false),
       'methodOptions': const [
+        {'tag': 'auto', 'label': 'Авто'},
         {'tag': 'direct', 'label': 'Напрямую'},
         {'tag': 'vpn', 'label': 'Через VPN'},
+        {'tag': 'zapret', 'label': 'Обход (Zapret)'},
       ],
       'methodCache': const {
         'openai': 'vpn',
@@ -1775,6 +1777,7 @@ class MockCoreBridge implements CoreBridge {
     final normalized = switch (method.trim().toLowerCase()) {
       'direct' => 'direct',
       'vpn' => 'vpn',
+      'zapret' => 'zapret',
       _ => 'auto',
     };
     _routeMethods[tag] = normalized;
@@ -2592,6 +2595,7 @@ class RouteService {
     required this.delayMs,
     this.domainSuffixes = const [],
     this.ipCidrs = const [],
+    this.zapretSupported = false,
   });
 
   final String tag;
@@ -2602,6 +2606,7 @@ class RouteService {
   final int delayMs;
   final List<String> domainSuffixes;
   final List<String> ipCidrs;
+  final bool zapretSupported;
 
   factory RouteService.fromFreeAccessJson(Map<String, dynamic> json) {
     return RouteService(
@@ -2618,6 +2623,7 @@ class RouteService {
         json['domainSuffixes'] ?? json['domain_suffixes'],
       ),
       ipCidrs: _asStringList(json['ipCidrs'] ?? json['ip_cidrs']),
+      zapretSupported: json['zapretSupported'] == true,
       delayMs: _asInt(json['delay']) == 0
           ? _asInt(
               json['delayMs'] ??
@@ -2647,6 +2653,7 @@ class RouteService {
         json['domainSuffixes'] ?? json['domain_suffixes'],
       ),
       ipCidrs: _asStringList(json['ipCidrs'] ?? json['ip_cidrs']),
+      zapretSupported: json['zapretSupported'] == true,
       delayMs: _asInt(json['delay']) == 0
           ? _asInt(
               json['delayMs'] ??
@@ -2667,6 +2674,7 @@ class RouteService {
     int? delayMs,
     List<String>? domainSuffixes,
     List<String>? ipCidrs,
+    bool? zapretSupported,
   }) {
     return RouteService(
       tag: tag ?? this.tag,
@@ -2677,6 +2685,7 @@ class RouteService {
       delayMs: delayMs ?? this.delayMs,
       domainSuffixes: domainSuffixes ?? this.domainSuffixes,
       ipCidrs: ipCidrs ?? this.ipCidrs,
+      zapretSupported: zapretSupported ?? this.zapretSupported,
     );
   }
 }
@@ -3182,9 +3191,6 @@ class _DropoHomePageState extends State<DropoHomePage>
   bool routeProbeActive = false;
   bool routeProbeFailed = false;
   int routeProbeExpectedCount = 0;
-  bool routeProbeExtended = false;
-  bool routeProbeHasSubscription = true;
-  int routeProbeMaxDurationMinutes = 0;
   bool windowVisible = true;
   String strategyTransitionNotice = '';
   bool depsFailureDialogShowing = false;
@@ -3690,15 +3696,8 @@ class _DropoHomePageState extends State<DropoHomePage>
         routeProbeFailed = false;
         connectionHintDanger = false;
         routeProbeExpectedCount = _asInt(event.payload['serviceCount']);
-        routeProbeExtended = event.payload['extended'] == true;
-        routeProbeHasSubscription = event.payload['hasSubscription'] != false;
-        routeProbeMaxDurationMinutes = _asInt(
-          event.payload['maxDurationMinutes'],
-        );
         routeProbeProgress = _routeProbeStartItems(event.payload['services']);
-        routeHint = routeProbeExtended && !routeProbeHasSubscription
-            ? 'Подбираем стратегии обхода в фоне; без VPN-подписки это может занять до часа.'
-            : 'Подбираем рабочие методы обхода для сервисов...';
+        routeHint = 'Подбираем рабочие методы обхода для сервисов...';
         break;
       case 'route-probe-service':
         _updateRouteProbeService(event.payload);
@@ -5080,16 +5079,8 @@ class _DropoHomePageState extends State<DropoHomePage>
         ? connectionHint
         : depsProgress;
     final useMobileNavigation = _isMobileShell;
-    final showExtendedStrategyWarning =
-        windowVisible &&
-        status.connected &&
-        routeProbeActive &&
-        routeProbeExtended &&
-        !routeProbeHasSubscription;
     final strategyBannerMessage = strategyTransitionNotice.trim().isNotEmpty
         ? strategyTransitionNotice.trim()
-        : showExtendedStrategyWarning
-        ? 'VPN-подписки нет. Стратегии обхода подбираются в фоне и для сложной сети это может занять до ${routeProbeMaxDurationMinutes > 0 ? routeProbeMaxDurationMinutes : 60} минут.'
         : '';
     return Scaffold(
       body: Stack(
@@ -10906,13 +10897,13 @@ class _SettingsDialogState extends State<_SettingsDialog> {
                 icon: Icons.route,
                 title: 'Маршрутизация',
                 body:
-                    'На Android сервисы идут только напрямую или через VPN-подписку.',
+                    'На Android доступны Авто, Напрямую и Через VPN. Обход Zapret выполняется только встроенным Windows-движком.',
               )
             else
               _SwitchSetting(
                 title: 'Не использовать бесплатные методы',
                 description:
-                    'Если включено, для обхода блокировок потребуется рабочая VPN/подписка.',
+                    'Только для режима «Авто»: пропустить подбор Zapret и сразу использовать VPN, а без подписки — прямой маршрут. Явный «Обход (Zapret)» не отключается.',
                 value: config.disableFreeAccess,
                 onChanged: canChangeRuntime
                     ? (value) => _applySpecial(
@@ -10927,7 +10918,7 @@ class _SettingsDialogState extends State<_SettingsDialog> {
               loading: serviceCatalogLoading,
               error: serviceCatalogError,
               policyEditingEnabled: !saving && (!isMobile || !vpnRunning),
-              allowAutomaticPolicy: !isMobile,
+              allowAutomaticPolicy: true,
               onPolicyChanged: (service, policy) =>
                   unawaited(_setServiceRoutePolicy(service, policy)),
             ),
@@ -11243,14 +11234,17 @@ class _ServiceCatalogRow extends StatelessWidget {
         ? 'IP: CDN/динамические'
         : 'IP: ${_compactTargets(service.ipCidrs)}';
     final selectedMethod = service.selectedMethod.trim().toLowerCase();
-    final routeValue = allowAutomaticPolicy && selectedMethod == 'auto'
-        ? 'auto'
-        : selectedMethod == 'vpn' ||
-              (selectedMethod.isEmpty &&
-                  (service.requiresVpn ||
-                      service.method.toLowerCase().contains('vpn')))
-        ? 'vpn'
-        : 'direct';
+    final routeValue = switch (selectedMethod) {
+      'auto' when allowAutomaticPolicy => 'auto',
+      'vpn' => 'vpn',
+      'zapret' when service.zapretSupported => 'zapret',
+      'direct' => 'direct',
+      _
+          when service.requiresVpn ||
+              service.method.toLowerCase().contains('vpn') =>
+        'vpn',
+      _ => 'direct',
+    };
     final pingText = service.delayMs > 0
         ? 'ping ${service.delayMs} ms'
         : 'ping -';
@@ -11320,64 +11314,6 @@ class _ServiceCatalogRow extends StatelessWidget {
                         ),
                       ),
                     ),
-                    const SizedBox(width: 8),
-                    SizedBox(
-                      width: 122,
-                      child: DropdownButtonFormField<String>(
-                        key: ValueKey(
-                          'service-route-${service.tag}-$routeValue',
-                        ),
-                        initialValue: routeValue,
-                        isExpanded: true,
-                        isDense: true,
-                        dropdownColor: const Color(0xFF14211F),
-                        iconEnabledColor: const Color(0xFFCDE7DE),
-                        iconDisabledColor: const Color(0xFF82958F),
-                        style: TextStyle(
-                          color: enabled
-                              ? const Color(0xFFE8F3EF)
-                              : const Color(0xFFA3B5AF),
-                          fontSize: 12,
-                          fontWeight: FontWeight.w700,
-                        ),
-                        decoration: _fieldDecoration(enabled: enabled),
-                        items: [
-                          if (allowAutomaticPolicy)
-                            const DropdownMenuItem(
-                              value: 'auto',
-                              child: Text(
-                                'Авто',
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ),
-                          DropdownMenuItem(
-                            value: 'direct',
-                            child: Text(
-                              'Напрямую',
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                          DropdownMenuItem(
-                            value: 'vpn',
-                            child: Text(
-                              'Через VPN',
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                        ],
-                        onChanged: enabled && onPolicyChanged != null
-                            ? (value) {
-                                if (value == null || value == routeValue) {
-                                  return;
-                                }
-                                onPolicyChanged?.call(service, value);
-                              }
-                            : null,
-                      ),
-                    ),
                   ],
                 ),
                 const SizedBox(height: 3),
@@ -11401,6 +11337,48 @@ class _ServiceCatalogRow extends StatelessWidget {
                     height: 1.25,
                   ),
                 ),
+                const SizedBox(height: 7),
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  children: [
+                    if (allowAutomaticPolicy)
+                      _ServiceRoutePolicyButton(
+                        key: ValueKey('service-route-${service.tag}-auto'),
+                        label: 'Авто',
+                        selected: routeValue == 'auto',
+                        enabled: enabled,
+                        onPressed: () => onPolicyChanged?.call(service, 'auto'),
+                      ),
+                    _ServiceRoutePolicyButton(
+                      key: ValueKey('service-route-${service.tag}-direct'),
+                      label: 'Напрямую',
+                      selected: routeValue == 'direct',
+                      enabled: enabled,
+                      onPressed: () => onPolicyChanged?.call(service, 'direct'),
+                    ),
+                    _ServiceRoutePolicyButton(
+                      key: ValueKey('service-route-${service.tag}-vpn'),
+                      label: 'Через VPN',
+                      selected: routeValue == 'vpn',
+                      enabled: enabled,
+                      onPressed: () => onPolicyChanged?.call(service, 'vpn'),
+                    ),
+                    Tooltip(
+                      message: service.zapretSupported
+                          ? 'Использовать только встроенный обход Zapret'
+                          : 'Zapret доступен для этого сервиса только в Windows',
+                      child: _ServiceRoutePolicyButton(
+                        key: ValueKey('service-route-${service.tag}-zapret'),
+                        label: 'Обход (Zapret)',
+                        selected: routeValue == 'zapret',
+                        enabled: enabled && service.zapretSupported,
+                        onPressed: () =>
+                            onPolicyChanged?.call(service, 'zapret'),
+                      ),
+                    ),
+                  ],
+                ),
               ],
             ),
           ),
@@ -11420,6 +11398,61 @@ class _ServiceCatalogRow extends StatelessWidget {
       return visible;
     }
     return '$visible +$extra';
+  }
+}
+
+class _ServiceRoutePolicyButton extends StatelessWidget {
+  const _ServiceRoutePolicyButton({
+    super.key,
+    required this.label,
+    required this.selected,
+    required this.enabled,
+    required this.onPressed,
+  });
+
+  final String label;
+  final bool selected;
+  final bool enabled;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final foreground = selected
+        ? const Color(0xFFF1FFF8)
+        : enabled
+        ? const Color(0xFFD3E5DF)
+        : const Color(0xFF82958F);
+    final background = selected
+        ? const Color(0xFF246448)
+        : enabled
+        ? const Color(0xFF172824)
+        : const Color(0xFF111C1A);
+    final border = selected
+        ? const Color(0xFF5DE0A3)
+        : enabled
+        ? const Color(0xFF45645B)
+        : const Color(0xFF2A3B36);
+    return OutlinedButton(
+      onPressed: enabled && !selected ? onPressed : null,
+      style: ButtonStyle(
+        minimumSize: const WidgetStatePropertyAll(Size(0, 30)),
+        padding: const WidgetStatePropertyAll(
+          EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+        ),
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        visualDensity: VisualDensity.compact,
+        foregroundColor: WidgetStatePropertyAll(foreground),
+        backgroundColor: WidgetStatePropertyAll(background),
+        side: WidgetStatePropertyAll(BorderSide(color: border)),
+        shape: WidgetStatePropertyAll(
+          RoundedRectangleBorder(borderRadius: BorderRadius.circular(7)),
+        ),
+      ),
+      child: Text(
+        label,
+        style: const TextStyle(fontSize: 10.5, fontWeight: FontWeight.w800),
+      ),
+    );
   }
 }
 
@@ -13133,7 +13166,10 @@ String _cleanError(Object error) {
 String _routePolicyFromJson(Map<String, dynamic> json) {
   final selected =
       json['selectedMethod']?.toString().trim().toLowerCase() ?? '';
-  if (selected == 'auto' || selected == 'direct' || selected == 'vpn') {
+  if (selected == 'auto' ||
+      selected == 'direct' ||
+      selected == 'vpn' ||
+      selected == 'zapret') {
     return selected;
   }
   if (json['requiresVpn'] == true) {

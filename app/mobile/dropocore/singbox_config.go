@@ -11,7 +11,7 @@ import (
 
 const (
 	androidKnownDomainRegex = "^.+$"
-	androidConfigSchema     = "android-package-routing-v7"
+	androidConfigSchema     = "android-package-routing-v8"
 )
 
 const androidSingBoxVersion = "1.13.14"
@@ -111,6 +111,7 @@ func buildAndroidSingBoxConfig(subscription, logLevel, routingMode string, hideR
 	}
 
 	outbounds, proxyTags := buildAndroidOutbounds(filtered)
+	effectiveRoutePolicies := androidEffectiveRoutePolicies(routePolicies, len(proxyTags) > 0)
 	ruOutbound := "proxy"
 	ruProxyAddress = strings.TrimSpace(ruProxyAddress)
 	if hideRuTraffic && ruProxyAddress != "" {
@@ -121,7 +122,7 @@ func buildAndroidSingBoxConfig(subscription, logLevel, routingMode string, hideR
 		outbounds, ruOutbound = appendAndroidProxyOutbounds(outbounds, ruProxies, "ru-proxy", "ru-auto-select")
 	}
 	dnsServers := buildAndroidDNSServers(proxyTags)
-	dnsRules := buildAndroidDNSRules(routingMode, hideRuTraffic, routePolicies)
+	dnsRules := buildAndroidDNSRules(routingMode, hideRuTraffic, effectiveRoutePolicies)
 	finalOutbound := androidFinalOutbound(routingMode)
 	finalDNSServer := androidFinalDNSServer(routingMode)
 	config := map[string]interface{}{
@@ -150,7 +151,7 @@ func buildAndroidSingBoxConfig(subscription, logLevel, routingMode string, hideR
 		},
 		"outbounds": outbounds,
 		"route": map[string]interface{}{
-			"rules":                   buildAndroidRouteRules(routingMode, hideRuTraffic, ruOutbound, routePolicies),
+			"rules":                   buildAndroidRouteRules(routingMode, hideRuTraffic, ruOutbound, effectiveRoutePolicies),
 			"final":                   finalOutbound,
 			"auto_detect_interface":   true,
 			"default_domain_resolver": map[string]interface{}{"server": "dns-direct", "strategy": "ipv4_only"},

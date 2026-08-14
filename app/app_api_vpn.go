@@ -177,14 +177,7 @@ func (a *App) Start() map[string]interface{} {
 			"error":   "Конфиг не найден. Проверьте настройки бесплатного доступа или подписки.",
 		}
 	}
-	if err := a.requireRouteSourceWhenFreeMethodsDisabled(configPath); err != nil {
-		a.hasError.Store(true)
-		UpdateTrayIcon("error")
-		return map[string]interface{}{
-			"success": false,
-			"error":   err.Error(),
-		}
-	}
+	a.logFreeMethodOptOutRoute(configPath)
 	networkMode := a.currentNetworkModeStatus()
 	a.writeLog(fmt.Sprintf("[NetworkMode] requested=%s active=%s fallback=%t reason=%s", networkMode.Requested, networkMode.Active, networkMode.Fallback, networkMode.FallbackReason))
 	if networkMode.Fallback && a.ctx != nil {
@@ -445,7 +438,7 @@ func (a *App) Start() map[string]interface{} {
 	deferDiscordMonitor := false
 	if runtime.GOOS == "windows" && a.storage != nil {
 		settings := a.storage.GetAppSettings()
-		deferDiscordMonitor = FreeMethodsAllowed(settings) && FreeAccessServiceMethod(settings, "discord") == FreeAccessMethodAuto
+		deferDiscordMonitor = FreeAccessServiceUsesZapret(settings, "discord")
 	}
 	// Monitor process in goroutine
 	go func(cmd *exec.Cmd, done chan error) {
@@ -1125,32 +1118,33 @@ func configOutboundByTag(outbounds []interface{}, tag string) map[string]interfa
 	return nil
 }
 
-func (a *App) requireRouteSourceWhenFreeMethodsDisabled(configPath string) error {
+func (a *App) logFreeMethodOptOutRoute(configPath string) {
 	if a.storage == nil {
-		return nil
+		return
 	}
 
 	settings := a.storage.GetAppSettings()
-	if FreeMethodsAllowed(settings) {
-		return nil
+	if FreeMethodsAllowed(settings) || AnyFreeAccessServiceUsesZapret(settings) {
+		return
 	}
 
 	config, err := readJSONConfig(configPath)
 	if err != nil {
-		return err
+		a.writeLog(fmt.Sprintf("[FreeAccess] cannot inspect opt-out fallback candidates: %v", err))
+		return
 	}
 	if len(collectVPNProbeCandidateSpecs(config)) > 0 {
 		a.writeLog("[FreeAccess] free methods disabled; VPN/subscription candidate is available")
-		return nil
+		return
 	}
 
 	userSettings, err := a.storage.GetUserSettings()
 	if err == nil && userSettings != nil && len(userSettings.WireGuardConfigs) > 0 {
 		a.writeLog(fmt.Sprintf("[FreeAccess] free methods disabled; WireGuard-only mode allowed with %d config(s)", len(userSettings.WireGuardConfigs)))
-		return nil
+		return
 	}
 
-	return fmt.Errorf("включено 'Не использовать бесплатные методы', но нет VPN/VLESS/другой подписки или WireGuard-сети. Добавьте рабочую подписку, WireGuard для внутренних сетей или выключите этот тумблер")
+	a.writeLog("[FreeAccess] free methods disabled and no VPN subscription is available; automatic blocked services remain direct")
 }
 
 func (a *App) autoUpdateSubscriptionBeforeStart(busyID string) error {

@@ -40,6 +40,9 @@ func TestDiscordRealtimeReusesBoundedVPNFallbackAfterLocalExhaustion(t *testing.
 	if discordRealtimeShouldPreferVPN(FreeAccessMethodAuto, true, true, transparent, true) {
 		t.Fatal("proven local Discord strategy unexpectedly started on VPN")
 	}
+	if discordRealtimeShouldPreferVPN(FreeAccessMethodZapret, false, true, cachedFallback, true) {
+		t.Fatal("strict Discord Zapret policy was overridden by the global free-method opt-out or cached VPN fallback")
+	}
 	if discordRealtimeShouldPreferVPN(FreeAccessMethodVPN, true, false, cachedFallback, false) {
 		t.Fatal("Discord selected VPN without an available VPN source")
 	}
@@ -345,23 +348,6 @@ func TestDiscordRealtimeStartsFromTheWebValidatedAttempt(t *testing.T) {
 	}
 	if controller.localTried["strategy-three"] {
 		t.Fatal("current Discord strategy was marked tried before live media validation")
-	}
-}
-
-func TestDiscordRealtimeNoSubscriptionDeadlineEndsIdleSearch(t *testing.T) {
-	controller := newDiscordRealtimeController()
-	controller.running = true
-	controller.automatic = true
-	controller.searchDeadline = time.Unix(2100, 0)
-	app := &App{discordRealtime: controller}
-
-	if !app.retryDiscordLocalSearchIfDue(controller, controller.searchDeadline) {
-		t.Fatal("expired idle Discord search was not finalized")
-	}
-	controller.mu.Lock()
-	defer controller.mu.Unlock()
-	if controller.automatic || !controller.initialReady {
-		t.Fatalf("expired controller state = automatic:%v ready:%v", controller.automatic, controller.initialReady)
 	}
 }
 

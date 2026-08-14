@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"runtime"
+	"testing"
+)
 
 func TestDefaultStorageSettingsMatchCurrentNetworkPolicy(t *testing.T) {
 	app := newInitializedSettingsScenarioApp(t)
@@ -18,6 +21,11 @@ func TestDefaultStorageSettingsMatchCurrentNetworkPolicy(t *testing.T) {
 	if !settings.FreeAccessEnabled {
 		t.Fatal("free access state should remain enabled for legacy UI/API compatibility")
 	}
+	for _, service := range DefaultFreeAccessServices {
+		if got := FreeAccessServiceMethod(settings, service.Tag); got != FreeAccessMethodAuto {
+			t.Fatalf("default route policy for %s = %q, want auto", service.Tag, got)
+		}
+	}
 	if !settings.Notifications {
 		t.Fatal("notifications should be enabled by default")
 	}
@@ -33,6 +41,30 @@ func TestDefaultStorageSettingsMatchCurrentNetworkPolicy(t *testing.T) {
 	}
 	if profile.Name != DefaultProfileName {
 		t.Fatalf("default profile name = %q, want %q", profile.Name, DefaultProfileName)
+	}
+}
+
+func TestWindowsServiceRouteOptionsExposeExactFourPolicyContract(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows route controls are platform specific")
+	}
+	options := FreeAccessServiceMethodOptions()
+	want := []struct {
+		tag   string
+		label string
+	}{
+		{FreeAccessMethodAuto, "Авто"},
+		{FreeAccessMethodDirect, "Напрямую"},
+		{FreeAccessMethodVPN, "Через VPN"},
+		{FreeAccessMethodZapret, "Обход (Zapret)"},
+	}
+	if len(options) != len(want) {
+		t.Fatalf("route options = %#v, want exactly four choices", options)
+	}
+	for index, expected := range want {
+		if options[index]["tag"] != expected.tag || options[index]["value"] != expected.tag || options[index]["label"] != expected.label {
+			t.Fatalf("route option %d = %#v, want tag/value %q label %q", index, options[index], expected.tag, expected.label)
+		}
 	}
 }
 
@@ -90,6 +122,25 @@ func TestSettingsAPIsPersistFreeAccessPolicy(t *testing.T) {
 
 	result = app.SetDisableFreeAccess(false)
 	requireAPISuccess(t, result)
+	if runtime.GOOS == "windows" {
+		result = app.SetFreeAccessServiceMethod("youtube", FreeAccessMethodZapret)
+		requireAPISuccess(t, result)
+		settings = app.storage.GetAppSettings()
+		if got := FreeAccessServiceMethod(settings, "youtube"); got != FreeAccessMethodZapret {
+			t.Fatalf("YouTube route policy = %q, want strict zapret", got)
+		}
+		plan = buildDeepWindowsRoutePlanForSettings(settings, true, true, true)
+		if !planContainsString(plan.TransparentServices, "youtube") || planContainsString(plan.ProxyServices, "youtube") {
+			t.Fatalf("strict YouTube zapret plan = %+v, want transparent without VPN fallback", plan)
+		}
+		result = app.SetFreeAccessServiceMethod("youtube", FreeAccessMethodAuto)
+		requireAPISuccess(t, result)
+
+		unsupported := app.SetFreeAccessServiceMethod("telegram", FreeAccessMethodZapret)
+		if success, _ := unsupported["success"].(bool); success {
+			t.Fatalf("unsupported strict Telegram zapret unexpectedly succeeded: %+v", unsupported)
+		}
+	}
 	result = app.SetFreeAccessServiceMethod("telegram", "subscription")
 	requireAPISuccess(t, result)
 	settings = app.storage.GetAppSettings()
@@ -117,11 +168,11 @@ func TestSettingsAPIsPersistFreeAccessPolicy(t *testing.T) {
 	result = app.ToggleFreeAccessService("youtube", false)
 	requireAPISuccess(t, result)
 	settings = app.storage.GetAppSettings()
-	if FreeAccessServiceEnabled(settings, "youtube") {
-		t.Fatal("disabled YouTube service still reports free access enabled")
+	if got := FreeAccessServiceMethod(settings, "youtube"); got != FreeAccessMethodDirect {
+		t.Fatalf("legacy disabled YouTube method = %q, want explicit direct", got)
 	}
-	if candidates := FreeAccessServiceCandidateTagsForSettings(DefaultFreeAccessServices[1], settings, true); len(candidates) != 1 || candidates[0] != "auto-select" {
-		t.Fatalf("disabled YouTube candidates = %v, want VPN-only fallback", candidates)
+	if candidates := FreeAccessServiceCandidateTagsForSettings(DefaultFreeAccessServices[1], settings, true); len(candidates) != 1 || candidates[0] != "direct" {
+		t.Fatalf("legacy disabled YouTube candidates = %v, want direct", candidates)
 	}
 }
 

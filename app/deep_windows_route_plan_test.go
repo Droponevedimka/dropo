@@ -158,6 +158,21 @@ func TestDeepWindowsRoutePlanDisableFreeMethodsWithoutSubscriptionGoesDirectForN
 	}
 }
 
+func TestDeepWindowsRoutePlanExplicitZapretOverridesGlobalAutomaticOptOut(t *testing.T) {
+	settings := defaultDeepWindowsPlanSettings()
+	settings.DisableFreeAccess = true
+	settings.FreeAccessMethods["youtube"] = FreeAccessMethodZapret
+
+	plan := buildDeepWindowsRoutePlanForSettings(settings, true, true, true)
+
+	if !planContainsString(plan.TransparentServices, "youtube") {
+		t.Fatalf("transparent services = %v, want explicit YouTube Zapret", plan.TransparentServices)
+	}
+	if planContainsString(plan.ProxyServices, "youtube") {
+		t.Fatalf("explicit YouTube Zapret must not inherit automatic VPN fallback: %+v", plan)
+	}
+}
+
 func TestDeepWindowsRoutePlanManualDirectOverridesSubscriptionFallback(t *testing.T) {
 	settings := defaultDeepWindowsPlanSettings()
 	settings.FreeAccessMethods["telegram"] = FreeAccessMethodDirect

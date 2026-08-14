@@ -88,7 +88,9 @@ type routeInfo struct {
 	Name                 string   `json:"name"`
 	Method               string   `json:"method"`
 	EffectiveMethodLabel string   `json:"effectiveMethodLabel"`
+	SelectedMethod       string   `json:"selectedMethod"`
 	RequiresVPN          bool     `json:"requiresVpn"`
+	ZapretSupported      bool     `json:"zapretSupported"`
 	DelayMS              int      `json:"delayMs"`
 	DomainSuffixes       []string `json:"domainSuffixes"`
 	IPCidrs              []string `json:"ipCidrs"`

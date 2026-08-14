@@ -253,7 +253,7 @@ func (a *App) ensureTransparentBypassForClientQuickCheck() {
 		return
 	}
 	settings := a.storage.GetAppSettings()
-	if !FreeMethodsAllowed(settings) || a.trafficEngine.ActiveTag() != "" {
+	if !AnyFreeAccessServiceUsesZapret(settings) || a.trafficEngine.ActiveTag() != "" {
 		return
 	}
 	if err := a.startComposedTransparentEngine(""); err != nil {

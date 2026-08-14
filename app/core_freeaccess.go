@@ -417,6 +417,11 @@ const (
 	FreeAccessMethodAuto   = "auto"
 	FreeAccessMethodDirect = "direct"
 	FreeAccessMethodVPN    = "vpn"
+	// FreeAccessMethodZapret is a strict per-service policy: use only the
+	// in-process Zapret-compatible strategy ladder and never fall back to a VPN
+	// subscription. The concrete strategy remains an implementation detail and
+	// can advance between sessions.
+	FreeAccessMethodZapret = "zapret"
 
 	ByeDPIProcessName   = "ciadpi.exe"
 	ByeDPIOutboundTag   = "byedpi"
@@ -533,14 +538,20 @@ func FreeMethodsAllowed(settings GlobalAppSettings) bool {
 }
 
 func FreeAccessServiceEnabled(settings GlobalAppSettings, serviceTag string) bool {
+	// An explicit per-service Zapret policy is authoritative even when the
+	// legacy global "disable free access" switch is enabled. The switch only
+	// changes automatic policies; it must not silently rewrite a strict route.
+	if FreeAccessServiceMethod(settings, serviceTag) == FreeAccessMethodZapret {
+		return true
+	}
 	if !FreeMethodsAllowed(settings) {
 		return false
 	}
-	if settings.FreeAccessServices == nil {
-		return true
-	}
-	enabled, exists := settings.FreeAccessServices[serviceTag]
-	return !exists || enabled
+	// The old per-service boolean created a hidden fifth policy ("automatic but
+	// do not try Zapret") which the current UI could neither display nor undo.
+	// The four explicit route methods supersede it; keep the serialized map only
+	// for backwards-compatible decoding.
+	return true
 }
 
 func NormalizeFreeAccessServiceMethod(method string) string {
@@ -552,6 +563,8 @@ func NormalizeFreeAccessServiceMethod(method string) string {
 		return FreeAccessMethodDirect
 	case FreeAccessMethodVPN, "subscription", "auto-select", "proxy":
 		return FreeAccessMethodVPN
+	case FreeAccessMethodZapret, "bypass", "obhod":
+		return FreeAccessMethodZapret
 	}
 	if IsFreeAccessProxyMethod(method) || IsFreeAccessTransparentMethod(method) {
 		return method
@@ -565,9 +578,38 @@ func FreeAccessServiceMethod(settings GlobalAppSettings, serviceTag string) stri
 	}
 	method := NormalizeFreeAccessServiceMethod(settings.FreeAccessMethods[serviceTag])
 	if runtime.GOOS == "windows" && (IsFreeAccessProxyMethod(method) || IsFreeAccessTransparentMethod(method)) {
+		// Old desktop builds persisted a concrete helper/strategy tag. Preserve
+		// the user's strict free-bypass intent, but migrate it to the stable
+		// policy name so future strategy catalog updates do not pin one recipe.
+		if serviceHasFreeBypass(serviceTag) {
+			return FreeAccessMethodZapret
+		}
 		return FreeAccessMethodAuto
 	}
 	return method
+}
+
+// FreeAccessServiceUsesZapret reports whether the service is allowed to take
+// part in native strategy selection. Auto respects the legacy global switch;
+// the explicit Zapret policy is strict and therefore bypasses that switch.
+func FreeAccessServiceUsesZapret(settings GlobalAppSettings, serviceTag string) bool {
+	switch FreeAccessServiceMethod(settings, serviceTag) {
+	case FreeAccessMethodZapret:
+		return true
+	case FreeAccessMethodAuto:
+		return FreeAccessServiceEnabled(settings, serviceTag)
+	default:
+		return false
+	}
+}
+
+func AnyFreeAccessServiceUsesZapret(settings GlobalAppSettings) bool {
+	for _, service := range DefaultFreeAccessServices {
+		if serviceHasFreeBypass(service.Tag) && FreeAccessServiceUsesZapret(settings, service.Tag) {
+			return true
+		}
+	}
+	return false
 }
 
 func IsFreeAccessProxyMethod(tag string) bool {
@@ -590,12 +632,12 @@ func IsFreeAccessTransparentMethod(tag string) bool {
 
 func FreeAccessServiceMethodOptions() []map[string]string {
 	options := []map[string]string{
-		{"value": FreeAccessMethodAuto, "label": "Автоматически"},
-		{"value": FreeAccessMethodDirect, "label": "Direct"},
-		{"value": FreeAccessMethodVPN, "label": "VPN подписка"},
+		{"tag": FreeAccessMethodAuto, "value": FreeAccessMethodAuto, "label": "Авто"},
+		{"tag": FreeAccessMethodDirect, "value": FreeAccessMethodDirect, "label": "Напрямую"},
+		{"tag": FreeAccessMethodVPN, "value": FreeAccessMethodVPN, "label": "Через VPN"},
 	}
 	if runtime.GOOS == "windows" {
-		return options
+		return append(options, map[string]string{"tag": FreeAccessMethodZapret, "value": FreeAccessMethodZapret, "label": "Обход (Zapret)"})
 	}
 	for _, strategy := range DefaultByeDPIStrategies {
 		options = append(options, map[string]string{"value": strategy.Tag, "label": strategy.Label})
@@ -644,14 +686,19 @@ func FreeAccessServiceCandidateTagsForSettings(service FreeAccessService, settin
 	}
 	if runtime.GOOS == "windows" {
 		// Windows has one automatic path: direct traffic passes through the
-		// service-specific profile in the composed winws2 process. VPN is its
-		// only fallback; legacy ByeDPI/global-zapret choices migrate to auto.
+		// service-specific profile in the composed native engine. VPN is the Auto
+		// fallback; legacy concrete strategy choices migrate to strict Zapret.
 		switch method {
 		case FreeAccessMethodDirect:
 			return []string{"direct"}
 		case FreeAccessMethodVPN:
 			if hasVPNProxy {
 				return []string{"auto-select"}
+			}
+			return nil
+		case FreeAccessMethodZapret:
+			if serviceHasFreeBypass(service.Tag) {
+				return []string{"direct"}
 			}
 			return nil
 		}
@@ -679,6 +726,8 @@ func FreeAccessServiceCandidateTagsForSettings(service FreeAccessService, settin
 		if hasVPNProxy {
 			return []string{"auto-select"}
 		}
+		return nil
+	case FreeAccessMethodZapret:
 		return nil
 	case FreeAccessMethodAuto:
 		if !FreeMethodsAllowed(settings) {
@@ -731,6 +780,11 @@ func FreeAccessServiceRouteOutboundForSettings(service FreeAccessService, settin
 			return NoRouteOutboundTag
 		}
 		return ServiceBypassGroupTag(service.Tag)
+	case FreeAccessMethodZapret:
+		if runtime.GOOS == "windows" && serviceHasFreeBypass(service.Tag) {
+			return ServiceBypassGroupTag(service.Tag)
+		}
+		return NoRouteOutboundTag
 	default:
 		if IsFreeAccessProxyMethod(method) || IsFreeAccessTransparentMethod(method) {
 			if !FreeMethodsAllowed(settings) {
@@ -766,6 +820,10 @@ func FreeAccessOutboundLabel(outboundTag string) string {
 		}
 	}
 	switch outboundTag {
+	case FreeAccessMethodAuto:
+		return "Авто"
+	case FreeAccessMethodZapret:
+		return "Обход (Zapret)"
 	case RuProxyOutboundTag:
 		return "RU-proxy"
 	case "auto-select":
@@ -773,7 +831,7 @@ func FreeAccessOutboundLabel(outboundTag string) string {
 	case "proxy":
 		return "VPN"
 	case "direct":
-		return "Direct"
+		return "Напрямую"
 	case NoRouteOutboundTag:
 		return "No route"
 	default:

@@ -48,31 +48,28 @@ const (
 type discordRealtimeController struct {
 	mu sync.Mutex
 
-	cancel           context.CancelFunc
-	running          bool
-	automatic        bool
-	profileIndex     int
-	attempt          int
-	fallbackVPN      bool
-	initialBusy      bool
-	initialReady     bool
-	initialIdle      time.Time
-	localTried       map[string]bool
-	vpnTried         map[string]bool
-	searchStartedAt  time.Time
-	searchDeadline   time.Time
-	retryAt          time.Time
-	searchCycle      int
-	lastSwitch       time.Time
-	lastMediaInbound time.Time
-	routeHealthyAt   time.Time
-	lastAppActivity  time.Time
-	noFlowStarted    time.Time
-	lastDiagnostics  time.Time
-	learnedPorts     map[int]time.Time
-	learnedUDPPorts  map[int]time.Time
-	learnedUDPIPs    map[string]time.Time
-	flows            map[string]*discordRealtimeFlow
+	cancel             context.CancelFunc
+	running            bool
+	automatic          bool
+	vpnFallbackAllowed bool
+	profileIndex       int
+	attempt            int
+	fallbackVPN        bool
+	initialBusy        bool
+	initialReady       bool
+	initialIdle        time.Time
+	localTried         map[string]bool
+	vpnTried           map[string]bool
+	lastSwitch         time.Time
+	lastMediaInbound   time.Time
+	routeHealthyAt     time.Time
+	lastAppActivity    time.Time
+	noFlowStarted      time.Time
+	lastDiagnostics    time.Time
+	learnedPorts       map[int]time.Time
+	learnedUDPPorts    map[int]time.Time
+	learnedUDPIPs      map[string]time.Time
+	flows              map[string]*discordRealtimeFlow
 }
 
 type discordRealtimeFlow struct {
@@ -180,7 +177,6 @@ func newDiscordRealtimeController() *discordRealtimeController {
 	return &discordRealtimeController{
 		profileIndex:    0,
 		attempt:         1,
-		searchCycle:     1,
 		localTried:      make(map[string]bool),
 		learnedPorts:    make(map[int]time.Time),
 		learnedUDPPorts: make(map[int]time.Time),
@@ -198,10 +194,6 @@ func (c *discordRealtimeController) resetLocked() {
 	c.initialIdle = time.Time{}
 	c.localTried = make(map[string]bool)
 	c.vpnTried = make(map[string]bool)
-	c.searchStartedAt = time.Time{}
-	c.searchDeadline = time.Time{}
-	c.retryAt = time.Time{}
-	c.searchCycle = 1
 	c.lastSwitch = time.Time{}
 	c.lastMediaInbound = time.Time{}
 	c.routeHealthyAt = time.Time{}
@@ -299,16 +291,9 @@ func (a *App) startDiscordRealtimeMonitor() {
 	controller.mu.Unlock()
 
 	hasVPN := a.discordHasVPNFallback()
-	controller.mu.Lock()
-	if controller.automatic && !hasVPN {
-		controller.searchStartedAt = time.Now()
-		controller.searchDeadline = controller.searchStartedAt.Add(serviceStrategyExtendedMaxDuration)
-		controller.searchCycle = 1
-	}
-	controller.mu.Unlock()
 	// Automatic mode normally proves the native strategy first. A cached VPN
-	// decision is authoritative for its bounded TTL whether it came from live
-	// media proof or from exhausting every local Discord web/API candidate.
+	// decision is the safe carrier during bootstrap. Connected-session
+	// validation replaces fallback cache entries before this monitor starts.
 	cached := a.loadServiceStrategyCache()["discord"]
 	preferVPN := discordRealtimeShouldPreferVPN(method, FreeMethodsAllowed(settings), automatic, cached, hasVPN)
 	target := "direct"
@@ -339,10 +324,16 @@ func discordRealtimeShouldPreferVPN(method string, freeMethodsAllowed, automatic
 	if !hasVPN {
 		return false
 	}
-	if method == FreeAccessMethodVPN || !freeMethodsAllowed {
+	if method == FreeAccessMethodVPN {
 		return true
 	}
-	return automatic && cached.MethodTag == FreeAccessMethodVPN
+	if method == FreeAccessMethodDirect || method == FreeAccessMethodZapret {
+		return false
+	}
+	if method == FreeAccessMethodAuto && !freeMethodsAllowed {
+		return true
+	}
+	return method == FreeAccessMethodAuto && automatic && cached.MethodTag == FreeAccessMethodVPN
 }
 
 func (a *App) prepareDiscordRealtimeSession() {
@@ -353,7 +344,9 @@ func (a *App) prepareDiscordRealtimeSession() {
 	controller.mu.Lock()
 	controller.resetLocked()
 	settings := a.storage.GetAppSettings()
-	controller.automatic = FreeAccessServiceMethod(settings, "discord") == FreeAccessMethodAuto && FreeMethodsAllowed(settings)
+	method := FreeAccessServiceMethod(settings, "discord")
+	controller.automatic = (method == FreeAccessMethodAuto && FreeMethodsAllowed(settings)) || method == FreeAccessMethodZapret
+	controller.vpnFallbackAllowed = method == FreeAccessMethodAuto
 	controller.mu.Unlock()
 }
 
@@ -386,9 +379,6 @@ func (a *App) runDiscordRealtimeMonitor(ctx context.Context, controller *discord
 			return
 		case <-ticker.C:
 			now := time.Now()
-			if a.retryDiscordLocalSearchIfDue(controller, now) {
-				continue
-			}
 			document, err := a.fetchClashConnections()
 			if err != nil {
 				fetchFailures++
@@ -1252,10 +1242,6 @@ func (a *App) commitDiscordRealtimeHealthyStrategy() {
 	if a == nil || a.discordRealtime == nil {
 		return
 	}
-	a.discordRealtime.mu.Lock()
-	a.discordRealtime.searchDeadline = time.Time{}
-	a.discordRealtime.retryAt = time.Time{}
-	a.discordRealtime.mu.Unlock()
 	if a.discordRealtime.usingVPN() {
 		a.cacheServiceMethod("discord", FreeAccessMethodVPN, "discord-live-media")
 		a.emitDiscordRealtimeService(true, true, false, "Discord voice подтверждён реальным двусторонним медиапотоком")
@@ -1286,7 +1272,11 @@ func (a *App) activateDiscordRealtimeFallback(reason string) {
 	if controller == nil {
 		return
 	}
-	if a.discordHasVPNFallback() {
+	controller.mu.Lock()
+	allowVPNFallback := controller.vpnFallbackAllowed
+	controller.mu.Unlock()
+	nextStrategyIndex := a.nextDiscordStrategyIndex()
+	if allowVPNFallback && a.discordHasVPNFallback() {
 		controller.mu.Lock()
 		controller.fallbackVPN = true
 		controller.vpnTried = make(map[string]bool)
@@ -1300,6 +1290,7 @@ func (a *App) activateDiscordRealtimeFallback(reason string) {
 			controller.initialBusy = false
 			controller.mu.Unlock()
 			a.endBusy(discordRealtimeBusyID)
+			a.cacheServiceMethodWithNextStrategy("discord", FreeAccessMethodVPN, "discord-local-batch-fallback", nextStrategyIndex)
 			if initialBusy {
 				a.writeLog("[DiscordRealtime] local verification window completed; Discord will reconnect through the VPN subscription")
 			}
@@ -1311,90 +1302,32 @@ func (a *App) activateDiscordRealtimeFallback(reason string) {
 	}
 	a.switchServiceRoute("discord", "direct")
 	a.switchOutboundSelector(discordRealtimeGroupTag, "direct")
-	now := time.Now()
 	controller.mu.Lock()
 	controller.fallbackVPN = false
 	controller.initialBusy = false
 	controller.initialReady = false
 	controller.initialIdle = time.Time{}
-	canRetry := controller.automatic && controller.searchCycle < serviceStrategyExtendedCycles &&
-		!controller.searchDeadline.IsZero() && now.Before(controller.searchDeadline)
-	if canRetry {
-		controller.retryAt = now.Add(serviceStrategyExtendedRetryInterval)
-		if controller.retryAt.After(controller.searchDeadline) {
-			controller.retryAt = controller.searchDeadline
-		}
-	} else {
-		controller.automatic = false
-		controller.initialReady = true
-		controller.retryAt = time.Time{}
-	}
-	cycle := controller.searchCycle
-	retryAt := controller.retryAt
+	controller.automatic = false
+	controller.initialReady = true
 	controller.mu.Unlock()
 	a.endBusy(discordRealtimeBusyID)
-	if canRetry {
-		a.removeServiceStrategyCacheEntry("discord")
-		a.emitDiscordRealtimeService(false, false, true, "Все стратегии текущего цикла не сработали; следующий фоновый цикл запланирован")
-		a.writeLog(fmt.Sprintf("[DiscordRealtime] all %d local attempts failed and no usable subscription exists; direct is temporary, cycle %d/%d will retry at %s", discordLocalStrategyCount(), cycle, serviceStrategyExtendedCycles, retryAt.Format(time.RFC3339)))
-		return
-	}
-	a.cacheServiceMethod("discord", FreeAccessMethodDirect, "discord-live-media-fallback")
-	a.emitDiscordRealtimeService(false, true, false, "За час не удалось подтвердить рабочую стратегию Discord voice")
-	a.writeLog(fmt.Sprintf("[DiscordRealtime] all %d local attempts failed and no usable subscription exists; one-hour campaign exhausted, degraded direct fallback selected", discordLocalStrategyCount()))
+	a.cacheServiceMethodWithNextStrategy("discord", FreeAccessMethodDirect, "discord-live-media-fallback", nextStrategyIndex)
+	a.emitDiscordRealtimeService(false, true, false, "В этой сессии проверены 4 стратегии Discord voice; следующий запуск продолжит со следующего набора")
+	a.writeLog(fmt.Sprintf("[DiscordRealtime] all %d local attempts failed; direct fallback selected for this session and the next strategy cursor was saved", discordLocalStrategyCount()))
 }
 
-func (a *App) retryDiscordLocalSearchIfDue(controller *discordRealtimeController, now time.Time) bool {
-	if a == nil || controller == nil {
-		return false
+func (a *App) nextDiscordStrategyIndex() int {
+	if a == nil || a.trafficEngine == nil {
+		return 0
 	}
-	controller.mu.Lock()
-	if !controller.running || !controller.automatic || controller.fallbackVPN {
-		controller.mu.Unlock()
-		return false
+	selectedID := ""
+	for _, selection := range a.trafficEngine.CurrentPlan().Selections {
+		if selection.ServiceID == "discord" {
+			selectedID = selection.StrategyID
+			break
+		}
 	}
-	if !controller.searchDeadline.IsZero() && !now.Before(controller.searchDeadline) {
-		controller.automatic = false
-		controller.initialBusy = false
-		controller.initialReady = true
-		controller.retryAt = time.Time{}
-		controller.mu.Unlock()
-		a.emitDiscordRealtimeService(false, true, false, "За час не удалось подтвердить рабочую стратегию Discord voice")
-		a.writeLog("[DiscordRealtime] one-hour no-subscription search deadline reached")
-		return true
-	}
-	if controller.retryAt.IsZero() {
-		controller.mu.Unlock()
-		return false
-	}
-	if now.Before(controller.retryAt) {
-		controller.mu.Unlock()
-		return false
-	}
-	controller.searchCycle++
-	if controller.searchCycle > serviceStrategyExtendedCycles {
-		controller.automatic = false
-		controller.initialBusy = false
-		controller.initialReady = true
-		controller.retryAt = time.Time{}
-		controller.mu.Unlock()
-		a.emitDiscordRealtimeService(false, true, false, "Исчерпаны фоновые попытки Discord voice")
-		return true
-	}
-	cycle := controller.searchCycle
-	controller.retryAt = time.Time{}
-	controller.localTried = make(map[string]bool)
-	controller.attempt = 1
-	controller.lastSwitch = time.Time{}
-	controller.resetRouteObservationLocked()
-	controller.mu.Unlock()
-
-	a.switchServiceRoute("discord", "direct")
-	a.switchOutboundSelector(discordRealtimeGroupTag, "direct")
-	a.emitDiscordRealtimeCandidate(fmt.Sprintf("Фоновый цикл %d/%d: повторно проверяем Discord voice", cycle, serviceStrategyExtendedCycles))
-	a.writeLog(fmt.Sprintf("[DiscordRealtime] starting no-subscription local retry cycle %d/%d", cycle, serviceStrategyExtendedCycles))
-	a.closeDiscordRealtimeConnections()
-	return true
+	return nextServiceStrategyIndexAfterAttemptWindow("discord", selectedID, 1)
 }
 
 func (a *App) discordRealtimeProgressSnapshot() (methodTag, methodLabel string, attempt, attemptTotal, strategyIndex, strategyTotal, cycle, cycleTotal int) {
@@ -1406,11 +1339,7 @@ func (a *App) discordRealtimeProgressSnapshot() (methodTag, methodLabel string, 
 	if controller := a.discordRealtime; controller != nil {
 		controller.mu.Lock()
 		strategyIndex = controller.attempt
-		cycle = controller.searchCycle
 		usingVPN = controller.fallbackVPN
-		if controller.automatic && !controller.searchDeadline.IsZero() {
-			cycleTotal = serviceStrategyExtendedCycles
-		}
 		controller.mu.Unlock()
 	}
 	if strategyIndex < 1 {

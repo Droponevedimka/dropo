@@ -297,10 +297,23 @@ func (s *Storage) normalizeAppSettings() {
 	}
 	if app.FreeAccessMethods == nil {
 		app.FreeAccessMethods = DefaultFreeAccessServiceMethodState()
-	} else {
-		for _, svc := range DefaultFreeAccessServices {
-			app.FreeAccessMethods[svc.Tag] = NormalizeFreeAccessServiceMethod(app.FreeAccessMethods[svc.Tag])
+	}
+	for _, svc := range DefaultFreeAccessServices {
+		normalized := NormalizeFreeAccessServiceMethod(app.FreeAccessMethods[svc.Tag])
+		if runtime.GOOS == "windows" && (IsFreeAccessProxyMethod(normalized) || IsFreeAccessTransparentMethod(normalized)) {
+			if serviceHasFreeBypass(svc.Tag) {
+				normalized = FreeAccessMethodZapret
+			} else {
+				normalized = FreeAccessMethodAuto
+			}
 		}
+		// Preserve the intent of the removed per-service checkbox: a legacy
+		// disabled Auto service becomes the visible Direct policy once.
+		if enabled, exists := app.FreeAccessServices[svc.Tag]; exists && !enabled && normalized == FreeAccessMethodAuto {
+			normalized = FreeAccessMethodDirect
+		}
+		app.FreeAccessMethods[svc.Tag] = normalized
+		app.FreeAccessServices[svc.Tag] = true
 	}
 	for i := range s.data.Profiles {
 		if s.data.Profiles[i].ID != DefaultProfileID {
@@ -1896,6 +1909,7 @@ func (b *ConfigBuilderForStorage) applyRoutingMode(template map[string]interface
 // and preserves existing user preferences.
 func (b *ConfigBuilderForStorage) addFreeAccessOutbounds(template map[string]interface{}, settings GlobalAppSettings) {
 	outbounds, _ := template["outbounds"].([]interface{})
+	serviceStrategiesAllowed := AnyFreeAccessServiceUsesZapret(settings)
 
 	if FreeMethodsAllowed(settings) && runtime.GOOS != "windows" {
 		for _, strategy := range DefaultByeDPIStrategies {
@@ -1928,7 +1942,7 @@ func (b *ConfigBuilderForStorage) addFreeAccessOutbounds(template map[string]int
 		vpnOrDirect = []string{"auto-select", "direct"}
 	}
 
-	if FreeMethodsAllowed(settings) || hasVPNProxy {
+	if FreeMethodsAllowed(settings) || serviceStrategiesAllowed || hasVPNProxy {
 		if runtime.GOOS == "windows" && FreeMethodsAllowed(settings) {
 			// The broad bundled catalog uses one in-process WinDivert strategy.
 			// "direct" is the carrier for that typed packet transformation; the
@@ -1939,7 +1953,7 @@ func (b *ConfigBuilderForStorage) addFreeAccessOutbounds(template map[string]int
 				commonCandidates = append(commonCandidates, "auto-select")
 			}
 			outbounds = append(outbounds, BuildServiceRouteGroup(SmartBypassGroupTag, commonCandidates))
-		} else {
+		} else if runtime.GOOS != "windows" {
 			// Compatibility platforms still use the local SOCKS methods and must
 			// not let an unrelated neutral direct check win a blocked-site group.
 			smartBypass := []string{"auto-select"}
@@ -1947,9 +1961,11 @@ func (b *ConfigBuilderForStorage) addFreeAccessOutbounds(template map[string]int
 				smartBypass = FreeAccessCandidateTags(hasVPNProxy, true)
 			}
 			outbounds = append(outbounds, BuildResilientGroupWithURL(SmartBypassGroupTag, smartBypass, "https://discord.com"))
+		} else if hasVPNProxy {
+			outbounds = append(outbounds, BuildServiceRouteGroup(SmartBypassGroupTag, []string{"auto-select"}))
 		}
 
-		if FreeMethodsAllowed(settings) || hasVPNProxy {
+		if FreeMethodsAllowed(settings) || serviceStrategiesAllowed || hasVPNProxy {
 			needsNoRouteOutbound := false
 			for _, svc := range DefaultFreeAccessServices {
 				serviceCandidates := FreeAccessServiceCandidateTagsForSettings(svc, settings, hasVPNProxy)
@@ -1994,7 +2010,7 @@ func (b *ConfigBuilderForStorage) addFreeAccessOutbounds(template map[string]int
 	}
 	realtimeDefault := "direct"
 	discordMethod := FreeAccessServiceMethod(settings, "discord")
-	if discordMethod == FreeAccessMethodVPN || !FreeMethodsAllowed(settings) {
+	if discordMethod == FreeAccessMethodVPN || (discordMethod == FreeAccessMethodAuto && !FreeMethodsAllowed(settings)) {
 		if hasVPNProxy {
 			realtimeDefault = discordVPNGroupTag
 		}
@@ -2065,7 +2081,7 @@ func outboundGroupCandidates(outbounds []interface{}, tag string) []string {
 
 func buildFreeAccessProcessRules(settings GlobalAppSettings) []interface{} {
 	processNames := []string{XrayExeName}
-	if FreeMethodsAllowed(settings) {
+	if FreeMethodsAllowed(settings) || AnyFreeAccessServiceUsesZapret(settings) {
 		processNames = append(processNames, freeAccessProcessNames()...)
 	}
 	// Telegram MTProto sidecar egress: route DIRECT (its WS obfuscation works on

@@ -9,6 +9,7 @@ import (
 )
 
 const (
+	androidRoutePolicyAuto   = "auto"
 	androidRoutePolicyDirect = "direct"
 	androidRoutePolicyVPN    = "vpn"
 )
@@ -21,7 +22,6 @@ type androidService struct {
 	IPCIDRs        []string
 	HealthURL      string
 	ProbeURLs      []string
-	DefaultPolicy  string
 }
 
 func androidServiceCatalog() []androidService {
@@ -36,10 +36,9 @@ func androidServiceCatalog() []androidService {
 				"discord.com", "discord.gg", "discordapp.com", "discordapp.net", "discord.media", "discord.gift",
 				"discordcdn.com", "discordstatus.com",
 			},
-			IPCIDRs:       []string{"66.22.192.0/18"},
-			HealthURL:     "https://discord.com/api/v10/gateway",
-			ProbeURLs:     []string{"https://discord.com", "https://cdn.discordapp.com", "https://media.discordapp.net"},
-			DefaultPolicy: androidRoutePolicyVPN,
+			IPCIDRs:   []string{"66.22.192.0/18"},
+			HealthURL: "https://discord.com/api/v10/gateway",
+			ProbeURLs: []string{"https://discord.com", "https://cdn.discordapp.com", "https://media.discordapp.net"},
 		},
 		{
 			Tag:  "youtube",
@@ -59,7 +58,6 @@ func androidServiceCatalog() []androidService {
 				"https://i.ytimg.com/generate_204",
 				"https://yt3.ggpht.com",
 			},
-			DefaultPolicy: androidRoutePolicyVPN,
 		},
 		{
 			Tag:  "meta",
@@ -72,9 +70,8 @@ func androidServiceCatalog() []androidService {
 				"31.13.64.0/18", "66.220.144.0/20", "69.63.176.0/20", "69.171.224.0/19",
 				"129.134.0.0/16", "157.240.0.0/16", "173.252.64.0/18", "185.60.216.0/22",
 			},
-			HealthURL:     "https://www.instagram.com",
-			ProbeURLs:     []string{"https://www.facebook.com", "https://connect.facebook.net"},
-			DefaultPolicy: androidRoutePolicyVPN,
+			HealthURL: "https://www.instagram.com",
+			ProbeURLs: []string{"https://www.facebook.com", "https://connect.facebook.net"},
 		},
 		{
 			Tag:            "twitter",
@@ -82,7 +79,6 @@ func androidServiceCatalog() []androidService {
 			DomainSuffixes: []string{"twitter.com", "x.com", "twimg.com", "t.co", "ads-twitter.com"},
 			HealthURL:      "https://x.com",
 			ProbeURLs:      []string{"https://abs.twimg.com"},
-			DefaultPolicy:  androidRoutePolicyVPN,
 		},
 		{
 			Tag:            "linkedin",
@@ -90,7 +86,6 @@ func androidServiceCatalog() []androidService {
 			DomainSuffixes: []string{"linkedin.com", "licdn.com", "lnkd.in", "linkedin.cn"},
 			HealthURL:      "https://www.linkedin.com",
 			ProbeURLs:      []string{"https://static.licdn.com"},
-			DefaultPolicy:  androidRoutePolicyVPN,
 		},
 		{
 			Tag:            "signal",
@@ -98,7 +93,6 @@ func androidServiceCatalog() []androidService {
 			DomainSuffixes: []string{"signal.org", "signal.me", "whispersystems.org", "signal.art"},
 			HealthURL:      "https://signal.org",
 			ProbeURLs:      []string{"https://updates.signal.org"},
-			DefaultPolicy:  androidRoutePolicyVPN,
 		},
 		{
 			Tag:  "telegram",
@@ -116,9 +110,8 @@ func androidServiceCatalog() []androidService {
 				"185.76.151.0/24", "2001:b28:f23d::/48", "2001:b28:f23f::/48",
 				"2001:67c:4e8::/48", "2001:b28:f23c::/48", "2a0a:f280::/32",
 			},
-			HealthURL:     "https://telegram.org",
-			ProbeURLs:     []string{"https://web.telegram.org", "https://t.me"},
-			DefaultPolicy: androidRoutePolicyVPN,
+			HealthURL: "https://telegram.org",
+			ProbeURLs: []string{"https://web.telegram.org", "https://t.me"},
 		},
 		{
 			Tag:  "whatsapp",
@@ -134,7 +127,6 @@ func androidServiceCatalog() []androidService {
 				"https://static.whatsapp.net",
 				"https://graph.whatsapp.com",
 			},
-			DefaultPolicy: androidRoutePolicyVPN,
 		},
 		{
 			Tag:  "facetime",
@@ -143,9 +135,8 @@ func androidServiceCatalog() []androidService {
 				"facetime.apple.com", "ess.apple.com", "identity.apple.com",
 				"push.apple.com", "init.itunes.apple.com",
 			},
-			HealthURL:     "https://facetime.apple.com",
-			ProbeURLs:     []string{"https://identity.apple.com", "https://init.itunes.apple.com"},
-			DefaultPolicy: androidRoutePolicyVPN,
+			HealthURL: "https://facetime.apple.com",
+			ProbeURLs: []string{"https://identity.apple.com", "https://init.itunes.apple.com"},
 		},
 		{
 			Tag:            "viber",
@@ -153,7 +144,6 @@ func androidServiceCatalog() []androidService {
 			DomainSuffixes: []string{"viber.com", "vb.me", "viberdns.com", "viber.co", "viberapp.com"},
 			HealthURL:      "https://www.viber.com",
 			ProbeURLs:      []string{"https://account.viber.com"},
-			DefaultPolicy:  androidRoutePolicyVPN,
 		},
 		{
 			Tag:  "snapchat",
@@ -163,9 +153,8 @@ func androidServiceCatalog() []androidService {
 				"sc-prod.net", "sc-jpl.com", "sc-corp.net", "snapads.com", "snap.com",
 				"addlive.io", "feelinsonice.com", "snapmap.com", "snapmap.org", "snapmaps.com",
 			},
-			HealthURL:     "https://www.snapchat.com",
-			ProbeURLs:     []string{"https://accounts.snapchat.com", "https://app.snapchat.com"},
-			DefaultPolicy: androidRoutePolicyVPN,
+			HealthURL: "https://www.snapchat.com",
+			ProbeURLs: []string{"https://accounts.snapchat.com", "https://app.snapchat.com"},
 		},
 		{
 			Tag:            "twitch",
@@ -173,7 +162,6 @@ func androidServiceCatalog() []androidService {
 			DomainSuffixes: []string{"twitch.tv", "ttvnw.net", "jtvnw.net", "twitchcdn.net", "ext-twitch.tv"},
 			HealthURL:      "https://www.twitch.tv",
 			ProbeURLs:      []string{"https://static.twitchcdn.net", "https://usher.ttvnw.net"},
-			DefaultPolicy:  androidRoutePolicyVPN,
 		},
 		{
 			Tag:            "spotify",
@@ -181,7 +169,6 @@ func androidServiceCatalog() []androidService {
 			DomainSuffixes: []string{"spotify.com", "scdn.co", "spotifycdn.com", "spoti.fi"},
 			HealthURL:      "https://open.spotify.com",
 			ProbeURLs:      []string{"https://api.spotify.com", "https://i.scdn.co"},
-			DefaultPolicy:  androidRoutePolicyVPN,
 		},
 		{
 			Tag:  "tiktok",
@@ -196,14 +183,12 @@ func androidServiceCatalog() []androidService {
 				"https://www.tiktok.com/api/recommend/item_list/",
 				"https://lf16-tiktok-web.ttwstatic.com",
 			},
-			DefaultPolicy: androidRoutePolicyVPN,
 		},
 		{
 			Tag:            "canva",
 			Name:           "Canva",
 			DomainSuffixes: []string{"canva.com", "canva.site", "canva.design", "canva.me", "canva-apps.com"},
 			HealthURL:      "https://www.canva.com",
-			DefaultPolicy:  androidRoutePolicyVPN,
 		},
 		{
 			Tag:  "notion",
@@ -212,9 +197,8 @@ func androidServiceCatalog() []androidService {
 				"notion.com", "notion.so", "notion.site", "notion-static.com", "notionusercontent.com",
 				"app.notion.com", "api.notion.com", "img.notionusercontent.com", "secure.notion-static.com",
 			},
-			IPCIDRs:       []string{"131.149.232.0/21", "208.103.161.0/24", "2602:F79A::/36"},
-			HealthURL:     "https://www.notion.com",
-			DefaultPolicy: androidRoutePolicyVPN,
+			IPCIDRs:   []string{"131.149.232.0/21", "208.103.161.0/24", "2602:F79A::/36"},
+			HealthURL: "https://www.notion.com",
 		},
 		{
 			Tag:  "slack",
@@ -223,8 +207,7 @@ func androidServiceCatalog() []androidService {
 				"slack.com", "slackb.com", "slack-edge.com", "slack-files.com", "slack-imgs.com",
 				"slack-msgs.com", "slack-core.com", "slack-redir.net",
 			},
-			HealthURL:     "https://slack.com",
-			DefaultPolicy: androidRoutePolicyVPN,
+			HealthURL: "https://slack.com",
 		},
 		{
 			Tag:  "miro",
@@ -233,8 +216,7 @@ func androidServiceCatalog() []androidService {
 				"miro.com", "miro-apps.com", "mirostatic.com", "realtimeboard.com",
 				"onlinewhiteboard.com", "webwhiteboard.com",
 			},
-			HealthURL:     "https://miro.com",
-			DefaultPolicy: androidRoutePolicyVPN,
+			HealthURL: "https://miro.com",
 		},
 		{
 			Tag:  "wix",
@@ -243,15 +225,13 @@ func androidServiceCatalog() []androidService {
 				"wix.com", "wixsite.com", "wixstatic.com", "wixmp.com", "wixapps.net",
 				"editorx.com", "parastorage.com",
 			},
-			HealthURL:     "https://www.wix.com",
-			DefaultPolicy: androidRoutePolicyVPN,
+			HealthURL: "https://www.wix.com",
 		},
 		{
 			Tag:            "coda",
 			Name:           "Coda",
 			DomainSuffixes: []string{"coda.io", "codahosted.io", "codacontent.io"},
 			HealthURL:      "https://coda.io",
-			DefaultPolicy:  androidRoutePolicyVPN,
 		},
 		{
 			Tag:  "grammarly",
@@ -259,8 +239,7 @@ func androidServiceCatalog() []androidService {
 			DomainSuffixes: []string{
 				"grammarly.com", "grammarly.io", "grammarly.net", "grammarlyaws.com",
 			},
-			HealthURL:     "https://www.grammarly.com",
-			DefaultPolicy: androidRoutePolicyVPN,
+			HealthURL: "https://www.grammarly.com",
 		},
 		{
 			Tag:  "docker",
@@ -272,9 +251,8 @@ func androidServiceCatalog() []androidService {
 				"docker-pinata-support.s3.amazonaws.com", "api.docker.com", "api.dso.docker.com",
 				"dhi.io", "registry.scout.docker.com",
 			},
-			HealthURL:     "https://hub.docker.com",
-			ProbeURLs:     []string{"https://registry-1.docker.io", "https://auth.docker.io"},
-			DefaultPolicy: androidRoutePolicyVPN,
+			HealthURL: "https://hub.docker.com",
+			ProbeURLs: []string{"https://registry-1.docker.io", "https://auth.docker.io"},
 		},
 		{
 			Tag:  "clickup",
@@ -283,9 +261,8 @@ func androidServiceCatalog() []androidService {
 				"clickup.com", "clickup-au.com", "clickup-attachments.com", "clickup-prod.com",
 				"clickup-eu.com", "clickup-sg.com", "clickup.ada.support", "codox.io",
 			},
-			HealthURL:     "https://app.clickup.com",
-			ProbeURLs:     []string{"https://api.clickup.com", "https://attachments.clickup.com"},
-			DefaultPolicy: androidRoutePolicyVPN,
+			HealthURL: "https://app.clickup.com",
+			ProbeURLs: []string{"https://api.clickup.com", "https://attachments.clickup.com"},
 		},
 		{
 			Tag:            "manychat",
@@ -293,14 +270,12 @@ func androidServiceCatalog() []androidService {
 			DomainSuffixes: []string{"manychat.com"},
 			HealthURL:      "https://app.manychat.com",
 			ProbeURLs:      []string{"https://api.manychat.com"},
-			DefaultPolicy:  androidRoutePolicyVPN,
 		},
 		{
 			Tag:            "helpscout",
 			Name:           "Help Scout",
 			DomainSuffixes: []string{"helpscout.com", "helpscout.net", "helpscoutdocs.com"},
 			HealthURL:      "https://secure.helpscout.net",
-			DefaultPolicy:  androidRoutePolicyVPN,
 		},
 		{
 			Tag:  "atlassian",
@@ -311,9 +286,8 @@ func androidServiceCatalog() []androidService {
 				"trellocdn.com", "bitbucket.org", "bitbucket.io", "bitbucketusercontent.com",
 				"statuspage.io", "opsgenie.com",
 			},
-			HealthURL:     "https://trello.com",
-			ProbeURLs:     []string{"https://id.atlassian.com", "https://bitbucket.org"},
-			DefaultPolicy: androidRoutePolicyVPN,
+			HealthURL: "https://trello.com",
+			ProbeURLs: []string{"https://id.atlassian.com", "https://bitbucket.org"},
 		},
 		{
 			Tag:  "openai",
@@ -330,9 +304,8 @@ func androidServiceCatalog() []androidService {
 				"notebooklm.google.com", "grok.com", "x.ai", "api.x.ai", "console.x.ai",
 				"meta.ai", "ai.meta.com", "llama.com",
 			},
-			HealthURL:     "https://chatgpt.com",
-			ProbeURLs:     []string{"https://api.openai.com"},
-			DefaultPolicy: androidRoutePolicyVPN,
+			HealthURL: "https://chatgpt.com",
+			ProbeURLs: []string{"https://api.openai.com"},
 		},
 	}
 }
@@ -353,14 +326,13 @@ func androidServicePolicy(service androidService, policies map[string]string) st
 			return policy
 		}
 	}
-	if policy := normalizeAndroidRoutePolicy(service.DefaultPolicy); policy != "" {
-		return policy
-	}
-	return androidRoutePolicyVPN
+	return androidRoutePolicyAuto
 }
 
 func normalizeAndroidRoutePolicy(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
+	case androidRoutePolicyAuto:
+		return androidRoutePolicyAuto
 	case androidRoutePolicyDirect, "local":
 		return androidRoutePolicyDirect
 	case androidRoutePolicyVPN, "proxy", "subscription", "auto-select":
@@ -371,10 +343,34 @@ func normalizeAndroidRoutePolicy(value string) string {
 }
 
 func androidRoutePolicyLabel(policy string) string {
-	if normalizeAndroidRoutePolicy(policy) == androidRoutePolicyDirect {
+	switch normalizeAndroidRoutePolicy(policy) {
+	case androidRoutePolicyAuto:
+		return "Авто"
+	case androidRoutePolicyDirect:
 		return "Напрямую"
+	default:
+		return "Через VPN"
 	}
-	return "Через VPN"
+}
+
+func androidEffectiveRoutePolicy(policy string, hasVPN bool) string {
+	policy = normalizeAndroidRoutePolicy(policy)
+	if policy == androidRoutePolicyAuto {
+		if hasVPN {
+			return androidRoutePolicyVPN
+		}
+		return androidRoutePolicyDirect
+	}
+	return policy
+}
+
+func androidEffectiveRoutePolicies(policies map[string]string, hasVPN bool) map[string]string {
+	result := make(map[string]string, len(androidServiceCatalog()))
+	for _, service := range androidServiceCatalog() {
+		selected := androidServicePolicy(service, policies)
+		result[service.Tag] = androidEffectiveRoutePolicy(selected, hasVPN)
+	}
+	return result
 }
 
 func androidRoutePoliciesLocked() map[string]string {
@@ -396,17 +392,20 @@ func androidServiceRoutesLocked(live bool) []routeInfo {
 		delay = 20
 	}
 	policies := androidRoutePoliciesLocked()
+	hasVPN := strings.TrimSpace(current.Subscription) != ""
 	catalog := androidServiceCatalog()
 	routes := make([]routeInfo, 0, len(catalog))
 	for index, service := range catalog {
-		policy := androidServicePolicy(service, policies)
-		methodLabel := androidRoutePolicyLabel(policy)
+		selectedPolicy := androidServicePolicy(service, policies)
+		effectivePolicy := androidEffectiveRoutePolicy(selectedPolicy, hasVPN)
+		methodLabel := androidRoutePolicyLabel(effectivePolicy)
 		routes = append(routes, routeInfo{
 			Tag:                  service.Tag,
 			Name:                 service.Name,
 			Method:               methodLabel,
 			EffectiveMethodLabel: methodLabel,
-			RequiresVPN:          policy == androidRoutePolicyVPN,
+			SelectedMethod:       selectedPolicy,
+			RequiresVPN:          effectivePolicy == androidRoutePolicyVPN,
 			DelayMS:              delay + 8 + index%9,
 			DomainSuffixes:       append([]string(nil), service.DomainSuffixes...),
 			IPCidrs:              append([]string(nil), service.IPCIDRs...),
@@ -417,6 +416,7 @@ func androidServiceRoutesLocked(live bool) []routeInfo {
 
 func androidRouteMethodOptions() []map[string]string {
 	return []map[string]string{
+		{"tag": androidRoutePolicyAuto, "label": androidRoutePolicyLabel(androidRoutePolicyAuto)},
 		{"tag": androidRoutePolicyDirect, "label": androidRoutePolicyLabel(androidRoutePolicyDirect)},
 		{"tag": androidRoutePolicyVPN, "label": androidRoutePolicyLabel(androidRoutePolicyVPN)},
 	}
@@ -425,11 +425,7 @@ func androidRouteMethodOptions() []map[string]string {
 func androidRouteMethodCache(services []routeInfo) map[string]string {
 	result := make(map[string]string, len(services))
 	for _, service := range services {
-		if service.RequiresVPN {
-			result[service.Tag] = androidRoutePolicyVPN
-			continue
-		}
-		result[service.Tag] = androidRoutePolicyDirect
+		result[service.Tag] = service.SelectedMethod
 	}
 	return result
 }
@@ -440,14 +436,14 @@ func setAndroidRoutePolicyLocked(args []interface{}) map[string]interface{} {
 	}
 	tag := stringArg(args, 0, "")
 	policy := normalizeAndroidRoutePolicy(stringArg(args, 1, ""))
-	service, ok := androidServiceByTag(tag)
+	_, ok := androidServiceByTag(tag)
 	if !ok {
 		return map[string]interface{}{"success": false, "error": "Unknown Android route service: " + tag}
 	}
 	if policy == "" {
 		return map[string]interface{}{"success": false, "error": "Unknown Android route policy"}
 	}
-	defaultPolicy := androidServicePolicy(service, nil)
+	defaultPolicy := androidRoutePolicyAuto
 	if current.RoutePolicies == nil {
 		current.RoutePolicies = map[string]string{}
 	}
@@ -459,13 +455,14 @@ func setAndroidRoutePolicyLocked(args []interface{}) map[string]interface{} {
 	clearCachedConfigLocked()
 	appendLogLocked(fmt.Sprintf("android route policy %s: %s", tag, policy))
 	_ = saveLocked()
+	effectivePolicy := androidEffectiveRoutePolicy(policy, strings.TrimSpace(current.Subscription) != "")
 	return map[string]interface{}{
 		"success":              true,
 		"tag":                  tag,
 		"method":               policy,
 		"methodLabel":          androidRoutePolicyLabel(policy),
-		"effectiveMethodLabel": androidRoutePolicyLabel(policy),
-		"requiresVpn":          policy == androidRoutePolicyVPN,
+		"effectiveMethodLabel": androidRoutePolicyLabel(effectivePolicy),
+		"requiresVpn":          effectivePolicy == androidRoutePolicyVPN,
 	}
 }
 

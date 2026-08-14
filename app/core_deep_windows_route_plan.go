@@ -121,6 +121,12 @@ func deepWindowsServiceAction(settings GlobalAppSettings, svc FreeAccessService,
 		}
 		return DeepWindowsTrafficBlock, ""
 	}
+	if method == FreeAccessMethodZapret {
+		if serviceHasFreeBypass(svc.Tag) && hasTransparent {
+			return DeepWindowsTrafficTransparent, ""
+		}
+		return DeepWindowsTrafficBlock, ""
+	}
 	if method != FreeAccessMethodAuto {
 		if !FreeMethodsAllowed(settings) {
 			return DeepWindowsTrafficBlock, ""

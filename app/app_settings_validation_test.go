@@ -66,3 +66,22 @@ func TestStorageNormalizesUnsupportedVisibleSettings(t *testing.T) {
 		t.Fatalf("normalized settings = %+v", settings)
 	}
 }
+
+func TestStorageMigratesLegacyDisabledServiceToVisibleDirectPolicy(t *testing.T) {
+	storage := NewStorage(t.TempDir())
+	if err := storage.Init(); err != nil {
+		t.Fatal(err)
+	}
+	storage.data.App.FreeAccessServices["youtube"] = false
+	storage.data.App.FreeAccessMethods["youtube"] = FreeAccessMethodAuto
+
+	storage.normalizeAppSettings()
+
+	settings := storage.data.App
+	if got := settings.FreeAccessMethods["youtube"]; got != FreeAccessMethodDirect {
+		t.Fatalf("migrated YouTube policy = %q, want direct", got)
+	}
+	if !settings.FreeAccessServices["youtube"] {
+		t.Fatal("legacy hidden service flag was not normalized after migration")
+	}
+}

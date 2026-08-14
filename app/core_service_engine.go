@@ -25,29 +25,22 @@ func isFreeAccessFallbackTag(tag string) bool {
 
 const (
 	serviceStrategyCacheFileName   = "service_strategy_cache.json"
-	serviceStrategyCacheVersion    = 2
+	serviceStrategyCacheVersion    = 3
 	serviceHostlistDirName         = "service-hostlists"
-	serviceStrategyFallbackTTL     = 30 * time.Minute
 	serviceStrategyProbeRetryDelay = 300 * time.Millisecond
-	maxAutomaticServiceStrategies  = 3
-	maxNoSubscriptionStrategies    = 5
-	// A subscription gives automatic services a fast, bounded local attempt
-	// before the working VPN fallback. Without a subscription there is no such
-	// fallback, so retry the complete native ladder over a bounded one-hour
-	// campaign. Repeated cycles are useful because DPI behaviour can vary with
-	// the current CDN address and network load; the session token still cancels
-	// the campaign immediately when VPN stops.
-	serviceStrategyExtendedCycles        = 12
-	serviceStrategyExtendedRetryInterval = 4*time.Minute + 30*time.Second
-	serviceStrategyExtendedMaxDuration   = time.Hour
+	// Four candidates are a deliberate middle point in the requested 3-5 range:
+	// enough strategy diversity without turning initial background validation
+	// into a long campaign. A failed batch advances a persistent per-service
+	// cursor, so the next VPN session tests the next four recipes.
+	maxAutomaticServiceStrategies = 4
+	maxNoSubscriptionStrategies   = maxAutomaticServiceStrategies
 )
 
 const backgroundServiceStrategySource = "background-service-strategy"
 
-type serviceStrategySearchCampaign struct {
-	Cycle      int
-	CycleTotal int
-	HasVPN     bool
+type serviceStrategyValidationBatch struct {
+	HasVPN       bool
+	StartIndexes map[string]int
 }
 
 type serviceStrategyCacheFile struct {
@@ -62,8 +55,8 @@ type serviceStrategyCacheEntry struct {
 	State              string    `json:"state"`
 	Source             string    `json:"source"`
 	UpdatedAt          time.Time `json:"updatedAt"`
-	RetryAfter         time.Time `json:"retryAfter,omitempty"`
 	NetworkFingerprint string    `json:"networkFingerprint,omitempty"`
+	NextStrategyIndex  int       `json:"nextStrategyIndex,omitempty"`
 }
 
 const (
@@ -178,7 +171,6 @@ func (a *App) loadServiceStrategyCache() map[string]serviceStrategyCacheEntry {
 		return out
 	}
 	fingerprint := currentNetworkFingerprint()
-	now := time.Now()
 	for tag, entry := range file.Services {
 		if entry.MethodTag == "" {
 			continue
@@ -186,16 +178,10 @@ func (a *App) loadServiceStrategyCache() map[string]serviceStrategyCacheEntry {
 		if entry.NetworkFingerprint != "" && fingerprint != "" && entry.NetworkFingerprint != fingerprint {
 			continue
 		}
-		// Negative results are short-lived. A temporary outage must not pin a
-		// service to VPN/direct until the next strategy database release.
+		// A fallback is safe for bootstrap, but every new connected session removes
+		// it from the validation view and tries the next strategy batch. Keep the
+		// entry so its persistent cursor is not lost between starts.
 		if isFreeAccessFallbackTag(entry.MethodTag) {
-			retryAfter := entry.RetryAfter
-			if retryAfter.IsZero() {
-				retryAfter = entry.UpdatedAt.Add(serviceStrategyFallbackTTL)
-			}
-			if !now.Before(retryAfter) {
-				continue
-			}
 			out[tag] = entry
 			continue
 		}
@@ -212,72 +198,11 @@ func (a *App) loadServiceStrategyCache() map[string]serviceStrategyCacheEntry {
 	return out
 }
 
-func (a *App) serviceStrategiesDueForRetry(now time.Time, fingerprint string) []string {
-	path := a.serviceStrategyCachePath()
-	if path == "" {
-		return nil
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil
-	}
-	var file serviceStrategyCacheFile
-	if json.Unmarshal(data, &file) != nil || file.Version != serviceStrategyCacheVersion || file.StrategiesVersion != serviceStrategiesVersion() {
-		return nil
-	}
-	due := make([]string, 0)
-	for tag, entry := range file.Services {
-		if entry.MethodTag == "" {
-			continue
-		}
-		if entry.NetworkFingerprint != "" && fingerprint != "" && entry.NetworkFingerprint != fingerprint {
-			due = append(due, tag)
-			continue
-		}
-		if !isFreeAccessFallbackTag(entry.MethodTag) {
-			continue
-		}
-		retryAfter := entry.RetryAfter
-		if retryAfter.IsZero() {
-			retryAfter = entry.UpdatedAt.Add(serviceStrategyFallbackTTL)
-		}
-		if !now.Before(retryAfter) {
-			due = append(due, tag)
-		}
-	}
-	sort.Strings(due)
-	return due
-}
-
-func (a *App) retryDueServiceStrategies() {
-	if a == nil || !a.routeStrategyWorkAllowed() {
-		return
-	}
-	a.mu.Lock()
-	running := a.isRunning && !a.stoppedManually
-	a.mu.Unlock()
-	if !running {
-		return
-	}
-	due := a.serviceStrategiesDueForRetry(time.Now(), currentNetworkFingerprint())
-	if len(due) == 0 {
-		return
-	}
-	a.writeLog(fmt.Sprintf("[FreeAccess] retrying service strategies after fallback TTL/network change: %s", strings.Join(due, ",")))
-	hasVPN := false
-	if a.storage != nil {
-		hasVPN, _ = configHasVPNProbeCandidates(a.storage.ActiveConfigFilePath())
-	}
-	_, err := a.validateWindowsUnifiedServiceStrategies(
-		"fallback TTL or network change", false, a.currentRouteStrategySession(), due,
-		serviceStrategySearchCampaign{Cycle: 1, CycleTotal: 1, HasVPN: hasVPN},
-	)
-	if err != nil {
-		a.writeLog(fmt.Sprintf("[FreeAccess] scheduled service strategy retry failed: %v", err))
-	}
-}
-
 func (a *App) cacheServiceMethod(serviceTag, methodTag, source string) {
+	a.cacheServiceMethodWithNextStrategy(serviceTag, methodTag, source, -1)
+}
+
+func (a *App) cacheServiceMethodWithNextStrategy(serviceTag, methodTag, source string, nextStrategyIndex int) {
 	path := a.serviceStrategyCachePath()
 	if path == "" || serviceTag == "" || methodTag == "" {
 		return
@@ -294,6 +219,7 @@ func (a *App) cacheServiceMethod(serviceTag, methodTag, source string) {
 	}
 	file.StrategiesVersion = serviceStrategiesVersion()
 	now := time.Now()
+	previous := file.Services[serviceTag]
 	entry := serviceStrategyCacheEntry{
 		MethodTag:          methodTag,
 		State:              serviceStrategyStateWorking,
@@ -303,7 +229,11 @@ func (a *App) cacheServiceMethod(serviceTag, methodTag, source string) {
 	}
 	if isFreeAccessFallbackTag(methodTag) {
 		entry.State = serviceStrategyStateFallback
-		entry.RetryAfter = now.Add(serviceStrategyFallbackTTL)
+		if nextStrategyIndex >= 0 {
+			entry.NextStrategyIndex = normalizeServiceStrategyIndex(serviceTag, nextStrategyIndex)
+		} else if previous.NetworkFingerprint == "" || entry.NetworkFingerprint == "" || previous.NetworkFingerprint == entry.NetworkFingerprint {
+			entry.NextStrategyIndex = normalizeServiceStrategyIndex(serviceTag, previous.NextStrategyIndex)
+		}
 	}
 	file.Services[serviceTag] = entry
 	file.UpdatedAt = now
@@ -350,6 +280,79 @@ func (a *App) removeServiceStrategyCacheEntry(serviceTag string) {
 	encoded, err := json.MarshalIndent(file, "", "  ")
 	if err == nil {
 		_ = atomicWriteFile(path, encoded, 0644)
+	}
+}
+
+func normalizeServiceStrategyIndex(serviceTag string, index int) int {
+	count := len(rankedMethodsForService(serviceTag))
+	if count == 0 {
+		return 0
+	}
+	index %= count
+	if index < 0 {
+		index += count
+	}
+	return index
+}
+
+func serviceStrategyIndex(serviceTag, methodTag string) int {
+	for index, method := range rankedMethodsForService(serviceTag) {
+		if method.Tag == methodTag || method.NativeStrategyID == methodTag {
+			return index
+		}
+	}
+	return -1
+}
+
+func nextServiceStrategyIndexAfterLadder(serviceTag string, ladder []ServiceBypassMethod) int {
+	if len(ladder) == 0 {
+		return 0
+	}
+	index := serviceStrategyIndex(serviceTag, ladder[len(ladder)-1].Tag)
+	if index < 0 {
+		return 0
+	}
+	return normalizeServiceStrategyIndex(serviceTag, index+1)
+}
+
+func nextServiceStrategyIndexAfterAttemptWindow(serviceTag, currentTag string, attempts int) int {
+	index := serviceStrategyIndex(serviceTag, currentTag)
+	if index < 0 {
+		index = 0
+	}
+	if attempts < 1 {
+		attempts = 1
+	}
+	return normalizeServiceStrategyIndex(serviceTag, index+attempts)
+}
+
+func serviceStrategyBatchStartIndexes(cache map[string]serviceStrategyCacheEntry, onlyTags []string) map[string]int {
+	allowed := make(map[string]bool, len(onlyTags))
+	for _, tag := range onlyTags {
+		allowed[tag] = true
+	}
+	result := map[string]int{}
+	for tag, entry := range cache {
+		if !isFreeAccessFallbackTag(entry.MethodTag) || (onlyTags != nil && !allowed[tag]) || !serviceHasFreeBypass(tag) {
+			continue
+		}
+		result[tag] = normalizeServiceStrategyIndex(tag, entry.NextStrategyIndex)
+	}
+	return result
+}
+
+func applyServiceStrategyStartIndexes(selections map[string]serviceWinwsSelection, indexes map[string]int) {
+	for tag, index := range indexes {
+		selection, ok := selections[tag]
+		if !ok {
+			continue
+		}
+		ranked := rankedMethodsForService(tag)
+		if len(ranked) == 0 {
+			continue
+		}
+		selection.Method = ranked[normalizeServiceStrategyIndex(tag, index)]
+		selections[tag] = selection
 	}
 }
 
@@ -408,7 +411,8 @@ func (a *App) resolveServiceSelections(dir string, cache map[string]serviceStrat
 			continue
 		}
 		// A service already resolved to VPN/direct keeps that decision and is
-		// not desynced or re-searched.
+		// not desynced during bootstrap. Connected-session validation removes
+		// the fallback entry, applies its saved cursor, and starts the next batch.
 		if entry, ok := cache[svc.Tag]; ok && isFreeAccessFallbackTag(entry.MethodTag) {
 			continue
 		}
@@ -548,9 +552,8 @@ func (a *App) startWindowsUnifiedServiceEngine(_ string) error {
 	if a == nil || a.trafficEngine == nil || a.storage == nil {
 		return nil
 	}
-	settings := a.storage.GetAppSettings()
-	freeMethodsAllowed := FreeMethodsAllowed(settings)
-	if !freeMethodsAllowed {
+	serviceStrategiesAllowed := len(a.backgroundServiceStrategyTags()) > 0
+	if !serviceStrategiesAllowed {
 		a.writeLog("[FreeAccess] per-service methods disabled; evaluating WireGuard camouflage only")
 		return a.composeAndStartServiceEngine(map[string]serviceWinwsSelection{})
 	}
@@ -612,12 +615,12 @@ func (a *App) validateWindowsUnifiedServiceStrategies(
 	retryFallbacks bool,
 	session uint64,
 	onlyTags []string,
-	campaign serviceStrategySearchCampaign,
+	batch serviceStrategyValidationBatch,
 ) ([]string, error) {
 	if a == nil || a.trafficEngine == nil || a.storage == nil {
 		return nil, nil
 	}
-	if !FreeMethodsAllowed(a.storage.GetAppSettings()) {
+	if len(a.backgroundServiceStrategyTags()) == 0 {
 		return nil, nil
 	}
 	if !a.routeStrategySessionActive(session) {
@@ -630,6 +633,9 @@ func (a *App) validateWindowsUnifiedServiceStrategies(
 
 	dir := a.serviceHostlistDir()
 	cache := a.loadServiceStrategyCache()
+	if batch.StartIndexes == nil {
+		batch.StartIndexes = serviceStrategyBatchStartIndexes(cache, onlyTags)
+	}
 	if retryFallbacks {
 		retryDiscord := onlyTags == nil || containsStringValue(onlyTags, "discord")
 		if entry, ok := cache["discord"]; retryDiscord && ok && isFreeAccessFallbackTag(entry.MethodTag) {
@@ -642,6 +648,7 @@ func (a *App) validateWindowsUnifiedServiceStrategies(
 		cache = serviceStrategyCacheForConnectedValidationTags(cache, onlyTags)
 	}
 	selections, needSearch := a.resolveServiceSelections(dir, cache)
+	applyServiceStrategyStartIndexes(selections, batch.StartIndexes)
 	commonFallback, commonErr := a.addCommonBlockedSelection(selections, cache)
 	if commonErr != nil {
 		a.writeLog(fmt.Sprintf("[FreeAccess] bundled blocked catalog unavailable during background validation; using VPN/direct fallback: %v", commonErr))
@@ -673,7 +680,7 @@ func (a *App) validateWindowsUnifiedServiceStrategies(
 	}
 	a.writeLog(fmt.Sprintf("[FreeAccess] background service validation started (%s): %d service(s), %d uncached",
 		firstNonEmpty(reason, "connected session"), len(validationTags), len(needSearch)))
-	failed, err := a.firstRunServiceSearch("", selections, validationTags, session, campaign)
+	failed, err := a.firstRunServiceSearch("", selections, validationTags, session, batch)
 	if err != nil {
 		return failed, fmt.Errorf("background service strategy validation: %w", err)
 	}
@@ -696,9 +703,9 @@ func (a *App) validateWindowsUnifiedServiceStrategies(
 }
 
 // startWindowsUnifiedServiceValidationAsync keeps first connect responsive.
-// Discord automatic realtime monitoring starts after the first fast cycle.
-// Later no-subscription cycles use the discovery lock and preserve the current
-// Discord selection, so realtime media recovery and generic probes cannot race.
+// Discord automatic realtime monitoring starts after the fast four-candidate
+// batch. Failed services keep their VPN/direct fallback for this session; the
+// next connection advances to the next persisted batch.
 func (a *App) startWindowsUnifiedServiceValidationAsync(startDiscordMonitorAfter bool) {
 	session := a.currentRouteStrategySession()
 	go func() {
@@ -707,20 +714,14 @@ func (a *App) startWindowsUnifiedServiceValidationAsync(startDiscordMonitorAfter
 		if a.storage != nil {
 			hasVPN, _ = configHasVPNProbeCandidates(a.storage.ActiveConfigFilePath())
 		}
-		cycleTotal := 1
-		if !hasVPN {
-			cycleTotal = serviceStrategyExtendedCycles
-		}
 		serviceTags := a.backgroundServiceStrategyTags()
 		a.emitRouteProbe("route-probe-start", map[string]interface{}{
-			"source":             backgroundServiceStrategySource,
-			"reason":             "post-connect",
-			"serviceCount":       len(serviceTags),
-			"services":           backgroundServiceStrategySummaries(serviceTags),
-			"hasSubscription":    hasVPN,
-			"extended":           !hasVPN,
-			"maxDurationMinutes": int(serviceStrategyExtendedMaxDuration / time.Minute),
-			"cycleTotal":         cycleTotal,
+			"source":          backgroundServiceStrategySource,
+			"reason":          "post-connect",
+			"serviceCount":    len(serviceTags),
+			"services":        backgroundServiceStrategySummaries(serviceTags),
+			"hasSubscription": hasVPN,
+			"cycleTotal":      1,
 		})
 
 		var validationErr error
@@ -730,7 +731,7 @@ func (a *App) startWindowsUnifiedServiceValidationAsync(startDiscordMonitorAfter
 		} else {
 			failed, validationErr = a.validateWindowsUnifiedServiceStrategies(
 				"post-connect", true, session, nil,
-				serviceStrategySearchCampaign{Cycle: 1, CycleTotal: cycleTotal, HasVPN: hasVPN},
+				serviceStrategyValidationBatch{HasVPN: hasVPN},
 			)
 		}
 		if startDiscordMonitorAfter && a.routeStrategySessionActive(session) {
@@ -738,41 +739,8 @@ func (a *App) startWindowsUnifiedServiceValidationAsync(startDiscordMonitorAfter
 		}
 
 		// Discord uses real bidirectional media evidence after the web/API
-		// precheck. Its monitor owns further local attempts, so the generic
-		// campaign retries only the remaining failed services.
-		failed = removeServiceTag(failed, "discord")
-		deadline := startedAt.Add(serviceStrategyExtendedMaxDuration)
-		lastCycle := 1
-		for cycle := 2; validationErr == nil && !hasVPN && len(failed) > 0 && cycle <= cycleTotal; cycle++ {
-			if !a.waitForServiceStrategyRetry(session, serviceStrategyExtendedRetryInterval, deadline) {
-				break
-			}
-			if !a.waitForRouteProbeDiscoverySession(session, 30*time.Second) {
-				validationErr = fmt.Errorf("another strategy discovery did not finish before retry %d/%d", cycle, cycleTotal)
-			} else {
-				failed, validationErr = a.validateWindowsUnifiedServiceStrategies(
-					fmt.Sprintf("post-connect retry %d/%d", cycle, cycleTotal), true, session, failed,
-					serviceStrategySearchCampaign{Cycle: cycle, CycleTotal: cycleTotal, HasVPN: false},
-				)
-			}
-			lastCycle = cycle
-			failed = removeServiceTag(failed, "discord")
-		}
-		if validationErr == nil && !hasVPN && len(failed) > 0 && lastCycle < cycleTotal && a.routeStrategySessionActive(session) {
-			for _, tag := range failed {
-				a.emitRouteProbe("route-probe-service", map[string]interface{}{
-					"source":     backgroundServiceStrategySource,
-					"tag":        tag,
-					"name":       serviceDisplayNameForTag(tag),
-					"success":    false,
-					"final":      true,
-					"status":     "failed",
-					"error":      "Часовой фоновый подбор завершён без рабочей стратегии",
-					"cycle":      lastCycle,
-					"cycleTotal": cycleTotal,
-				})
-			}
-		}
+		// precheck. Its monitor owns the remainder of the same four candidates.
+		_ = failed
 		if validationErr != nil {
 			a.mu.Lock()
 			running := a.isRunning && !a.stoppedManually
@@ -799,14 +767,12 @@ func (a *App) backgroundServiceStrategyTags() []string {
 		return nil
 	}
 	settings := a.storage.GetAppSettings()
-	if !FreeMethodsAllowed(settings) {
-		return nil
-	}
 	tags := make([]string, 0, len(DefaultFreeAccessServices))
 	for _, service := range DefaultFreeAccessServices {
+		method := FreeAccessServiceMethod(settings, service.Tag)
 		if service.RequiresVPN || !serviceHasFreeBypass(service.Tag) ||
-			!FreeAccessServiceEnabled(settings, service.Tag) ||
-			FreeAccessServiceMethod(settings, service.Tag) != FreeAccessMethodAuto {
+			!FreeAccessServiceUsesZapret(settings, service.Tag) ||
+			(method != FreeAccessMethodAuto && method != FreeAccessMethodZapret) {
 			continue
 		}
 		tags = append(tags, service.Tag)
@@ -821,16 +787,6 @@ func backgroundServiceStrategySummaries(tags []string) []map[string]interface{} 
 			"tag":  tag,
 			"name": serviceDisplayNameForTag(tag),
 		})
-	}
-	return result
-}
-
-func removeServiceTag(tags []string, excluded string) []string {
-	result := make([]string, 0, len(tags))
-	for _, tag := range tags {
-		if tag != excluded {
-			result = append(result, tag)
-		}
 	}
 	return result
 }
@@ -859,30 +815,6 @@ func (a *App) preserveCurrentDiscordSelection(selections map[string]serviceWinws
 	}
 }
 
-func (a *App) waitForServiceStrategyRetry(session uint64, delay time.Duration, deadline time.Time) bool {
-	remaining := time.Until(deadline)
-	if remaining <= 0 {
-		return false
-	}
-	if delay > remaining {
-		delay = remaining
-	}
-	timer := time.NewTimer(delay)
-	ticker := time.NewTicker(time.Second)
-	defer timer.Stop()
-	defer ticker.Stop()
-	for {
-		select {
-		case <-timer.C:
-			return a.routeStrategySessionActive(session) && time.Now().Before(deadline)
-		case <-ticker.C:
-			if !a.routeStrategySessionActive(session) {
-				return false
-			}
-		}
-	}
-}
-
 func (a *App) waitForRouteProbeDiscoverySession(session uint64, timeout time.Duration) bool {
 	deadline := time.Now().Add(timeout)
 	for a.isRouteProbeDiscoveryRunning() {
@@ -897,8 +829,7 @@ func (a *App) waitForRouteProbeDiscoverySession(session uint64, timeout time.Dur
 // serviceStrategyCacheForConnectedValidation retains proven transparent
 // methods but removes temporary VPN/direct fallback decisions. The fallback is
 // still used for the safe bootstrap; once connected, each new session gets a
-// bounded background chance to recover a free route immediately instead of
-// waiting up to the fallback TTL.
+// bounded background chance to recover a free route from its saved cursor.
 func serviceStrategyCacheForConnectedValidation(cache map[string]serviceStrategyCacheEntry) map[string]serviceStrategyCacheEntry {
 	return serviceStrategyCacheForConnectedValidationTags(cache, nil)
 }
@@ -990,6 +921,8 @@ func windowsUnifiedBootstrapServiceRoute(settings GlobalAppSettings, service Fre
 			return "auto-select"
 		}
 		return ""
+	case FreeAccessMethodZapret:
+		return "direct"
 	}
 	if !FreeAccessServiceEnabled(settings, service.Tag) || service.RequiresVPN || !serviceHasFreeBypass(service.Tag) || !FreeMethodsAllowed(settings) {
 		if hasVPN {
@@ -1018,7 +951,7 @@ func windowsUnifiedBootstrapServiceRoute(settings GlobalAppSettings, service Fre
 
 func windowsUnifiedBootstrapDiscordRealtimeRoute(settings GlobalAppSettings, cached serviceStrategyCacheEntry, hasVPN bool) string {
 	method := FreeAccessServiceMethod(settings, "discord")
-	if method == FreeAccessMethodDirect || !hasVPN {
+	if method == FreeAccessMethodDirect || method == FreeAccessMethodZapret || !hasVPN {
 		return "direct"
 	}
 	if method == FreeAccessMethodVPN || !FreeMethodsAllowed(settings) || !FreeAccessServiceEnabled(settings, "discord") {
@@ -1247,13 +1180,13 @@ func (a *App) startComposedTransparentEngine(busyID string) error {
 	if a == nil || a.storage == nil {
 		return fmt.Errorf("Windows Unified storage is not initialized")
 	}
-	freeMethodsAllowed := FreeMethodsAllowed(a.storage.GetAppSettings())
+	serviceStrategiesRequested := len(a.backgroundServiceStrategyTags()) > 0
 	wireGuardRequested := a.wireGuardCamouflageRequested()
-	if !freeMethodsAllowed && !wireGuardRequested {
+	if !serviceStrategiesRequested && !wireGuardRequested {
 		return nil
 	}
 	if a.trafficEngine == nil || !a.trafficEngine.IsInstalled() {
-		if wireGuardRequested && !freeMethodsAllowed {
+		if wireGuardRequested && !serviceStrategiesRequested {
 			a.writeLog("[WireGuard] handshake transformation unavailable because the WinDivert runtime is not installed; continuing with native WireGuard")
 			return nil
 		}
@@ -1340,22 +1273,16 @@ func (a *App) firstRunServiceSearch(
 	selections map[string]serviceWinwsSelection,
 	needSearch []string,
 	session uint64,
-	campaign serviceStrategySearchCampaign,
+	batch serviceStrategyValidationBatch,
 ) ([]string, error) {
-	if campaign.Cycle < 1 {
-		campaign.Cycle = 1
-	}
-	if campaign.CycleTotal < campaign.Cycle {
-		campaign.CycleTotal = campaign.Cycle
-	}
 	ladders := make(map[string][]ServiceBypassMethod, len(needSearch))
 	maxRounds := 0
 	for _, tag := range needSearch {
-		limit := maxAutomaticServiceStrategies
-		if !campaign.HasVPN {
-			limit = maxNoSubscriptionStrategies
+		startIndex := -1
+		if index, ok := batch.StartIndexes[tag]; ok {
+			startIndex = index
 		}
-		ladder := startupServiceSearchLadder(tag, selections[tag].Method, limit)
+		ladder := startupServiceSearchLadder(tag, selections[tag].Method, maxAutomaticServiceStrategies, startIndex)
 		ladders[tag] = ladder
 		if n := len(ladder); n > maxRounds {
 			maxRounds = n
@@ -1388,7 +1315,7 @@ func (a *App) firstRunServiceSearch(
 				continue
 			}
 			method := ladder[round]
-			a.emitBackgroundStrategyCandidate(tag, method, round, len(ladder), campaign)
+			a.emitBackgroundStrategyCandidate(tag, method, round, len(ladder))
 		}
 
 		failing := a.probeServicesThroughEngine(pending)
@@ -1407,10 +1334,10 @@ func (a *App) firstRunServiceSearch(
 				}
 				if tag == "discord" {
 					a.writeLog(fmt.Sprintf("[FreeAccess] discord: provisional method = %s; live voice proof is still required", selections[tag].Method.Label))
-					a.emitBackgroundStrategyService(tag, selections[tag].Method, false, false, false, "voice-check", "Ожидаем подтверждение Discord voice по реальному медиапотоку", round, len(ladders[tag]), campaign)
+					a.emitBackgroundStrategyService(tag, selections[tag].Method, false, false, false, "voice-check", "Ожидаем подтверждение Discord voice по реальному медиапотоку", round, len(ladders[tag]))
 				} else {
 					a.writeLog(fmt.Sprintf("[FreeAccess] %s: working method = %s", tag, selections[tag].Method.Label))
-					a.emitBackgroundStrategyService(tag, selections[tag].Method, true, true, false, "done", "", round, len(ladders[tag]), campaign)
+					a.emitBackgroundStrategyService(tag, selections[tag].Method, true, true, false, "done", "", round, len(ladders[tag]))
 				}
 				continue
 			}
@@ -1418,28 +1345,31 @@ func (a *App) firstRunServiceSearch(
 				a.removeServiceStrategyCacheEntry(tag)
 			}
 			if round+1 < len(ladders[tag]) {
-				a.emitBackgroundStrategyService(tag, selections[tag].Method, false, false, true, "retrying", "Стратегия не прошла полную проверку; пробуем следующую", round, len(ladders[tag]), campaign)
+				a.emitBackgroundStrategyService(tag, selections[tag].Method, false, false, true, "retrying", "Стратегия не прошла полную проверку; пробуем следующую", round, len(ladders[tag]))
 				next = append(next, tag)
 			} else {
 				if tag == "discord" {
 					a.seedDiscordRealtimeStrategyAttempts(ladders[tag], round)
 				}
-				if tag == "discord" && !campaign.HasVPN {
+				if tag == "discord" && !batch.HasVPN {
 					// HTTP/API failure is not authoritative for Discord voice.
 					// Keep the last complete Discord policy active so the realtime
-					// monitor can test actual UDP media and own the extended retries.
-					a.emitBackgroundStrategyService(tag, selections[tag].Method, false, false, true, "voice-check", "Web/API-проверка не прошла; продолжаем по реальному Discord voice", round, len(ladders[tag]), campaign)
+					// monitor can test actual UDP media within the same four-strategy batch.
+					a.emitBackgroundStrategyService(tag, selections[tag].Method, false, false, true, "voice-check", "Web/API-проверка не прошла; продолжаем по реальному Discord voice", round, len(ladders[tag]))
 					next = append(next, tag)
 					continue
 				}
-				a.writeLog(fmt.Sprintf("[FreeAccess] %s: no transparent method worked; using VPN/direct fallback", tag))
-				a.applyServiceFreeFallback(tag)
+				a.writeLog(fmt.Sprintf("[FreeAccess] %s: no transparent method worked in this session batch; using policy fallback", tag))
+				a.applyServiceFreeFallback(tag, nextServiceStrategyIndexAfterLadder(tag, ladders[tag]))
 				delete(selections, tag)
-				final := campaign.HasVPN || campaign.Cycle >= campaign.CycleTotal
-				if campaign.HasVPN {
-					a.emitBackgroundStrategyFallback(tag, FreeAccessMethodVPN, true, campaign)
+				if batch.HasVPN {
+					method := FreeAccessMethodVPN
+					if a.storage != nil && FreeAccessServiceMethod(a.storage.GetAppSettings(), tag) == FreeAccessMethodZapret {
+						method = FreeAccessMethodDirect
+					}
+					a.emitBackgroundStrategyFallback(tag, method, true)
 				} else {
-					a.emitBackgroundStrategyService(tag, ServiceBypassMethod{}, false, final, !final, map[bool]string{true: "failed", false: "retrying"}[final], "Рабочая стратегия пока не найдена", round, len(ladders[tag]), campaign)
+					a.emitBackgroundStrategyService(tag, ServiceBypassMethod{}, false, true, false, "failed", "В текущей сессии рабочая стратегия не найдена; следующий запуск продолжит со следующего набора", round, len(ladders[tag]))
 				}
 				next = append(next, tag)
 			}
@@ -1459,23 +1389,15 @@ func (a *App) firstRunServiceSearch(
 	return pending, nil
 }
 
-func backgroundStrategyAttempt(round, ladderSize int, campaign serviceStrategySearchCampaign) (int, int) {
+func backgroundStrategyAttempt(round, ladderSize int) (int, int) {
 	if ladderSize < 1 {
 		ladderSize = 1
 	}
-	cycle := campaign.Cycle
-	if cycle < 1 {
-		cycle = 1
-	}
-	cycleTotal := campaign.CycleTotal
-	if cycleTotal < cycle {
-		cycleTotal = cycle
-	}
-	return (cycle-1)*ladderSize + round + 1, cycleTotal * ladderSize
+	return round + 1, ladderSize
 }
 
-func (a *App) emitBackgroundStrategyCandidate(tag string, method ServiceBypassMethod, round, ladderSize int, campaign serviceStrategySearchCampaign) {
-	attempt, attemptTotal := backgroundStrategyAttempt(round, ladderSize, campaign)
+func (a *App) emitBackgroundStrategyCandidate(tag string, method ServiceBypassMethod, round, ladderSize int) {
+	attempt, attemptTotal := backgroundStrategyAttempt(round, ladderSize)
 	a.emitRouteProbe("route-probe-candidate", map[string]interface{}{
 		"source":        backgroundServiceStrategySource,
 		"serviceTag":    tag,
@@ -1488,8 +1410,8 @@ func (a *App) emitBackgroundStrategyCandidate(tag string, method ServiceBypassMe
 		"attemptTotal":  attemptTotal,
 		"strategyIndex": round + 1,
 		"strategyTotal": ladderSize,
-		"cycle":         campaign.Cycle,
-		"cycleTotal":    campaign.CycleTotal,
+		"cycle":         1,
+		"cycleTotal":    1,
 	})
 }
 
@@ -1499,9 +1421,8 @@ func (a *App) emitBackgroundStrategyService(
 	success, final, retrying bool,
 	status, detail string,
 	round, ladderSize int,
-	campaign serviceStrategySearchCampaign,
 ) {
-	attempt, attemptTotal := backgroundStrategyAttempt(round, ladderSize, campaign)
+	attempt, attemptTotal := backgroundStrategyAttempt(round, ladderSize)
 	a.emitRouteProbe("route-probe-service", map[string]interface{}{
 		"source":        backgroundServiceStrategySource,
 		"tag":           tag,
@@ -1517,12 +1438,12 @@ func (a *App) emitBackgroundStrategyService(
 		"attemptTotal":  attemptTotal,
 		"strategyIndex": round + 1,
 		"strategyTotal": ladderSize,
-		"cycle":         campaign.Cycle,
-		"cycleTotal":    campaign.CycleTotal,
+		"cycle":         1,
+		"cycleTotal":    1,
 	})
 }
 
-func (a *App) emitBackgroundStrategyFallback(tag, method string, success bool, campaign serviceStrategySearchCampaign) {
+func (a *App) emitBackgroundStrategyFallback(tag, method string, success bool) {
 	label := FreeAccessOutboundLabel(method)
 	a.emitRouteProbe("route-probe-service", map[string]interface{}{
 		"source":      backgroundServiceStrategySource,
@@ -1534,32 +1455,34 @@ func (a *App) emitBackgroundStrategyFallback(tag, method string, success bool, c
 		"final":       true,
 		"fallback":    true,
 		"status":      map[bool]string{true: "done", false: "failed"}[success],
-		"cycle":       campaign.Cycle,
-		"cycleTotal":  campaign.CycleTotal,
+		"cycle":       1,
+		"cycleTotal":  1,
 	})
 }
 
-// startupServiceSearchLadder keeps the current (usually cached) strategy first.
-// If it still works the startup gate never changes it; only a confirmed failure
-// advances through the remaining ranked methods.
+// startupServiceSearchLadder returns one bounded, circular window. A valid
+// persisted start index is used after a failed session; otherwise the current
+// (usually cached working) strategy remains first and its successors are tried.
 func startupServiceSearchLadder(serviceTag string, current ServiceBypassMethod, requestedLimit ...int) []ServiceBypassMethod {
 	ranked := rankedMethodsForService(serviceTag)
+	if len(ranked) == 0 {
+		return nil
+	}
 	limit := maxAutomaticServiceStrategies
 	if len(requestedLimit) > 0 && requestedLimit[0] > 0 {
-		limit = min(requestedLimit[0], maxNoSubscriptionStrategies)
+		limit = min(requestedLimit[0], maxAutomaticServiceStrategies)
 	}
-	ladder := make([]ServiceBypassMethod, 0, min(len(ranked), limit))
-	if strings.TrimSpace(current.Tag) != "" {
-		ladder = append(ladder, current)
+	limit = min(limit, len(ranked))
+	startIndex := serviceStrategyIndex(serviceTag, current.Tag)
+	if len(requestedLimit) > 1 && requestedLimit[1] >= 0 {
+		startIndex = normalizeServiceStrategyIndex(serviceTag, requestedLimit[1])
 	}
-	for _, method := range ranked {
-		if method.Tag == current.Tag {
-			continue
-		}
-		ladder = append(ladder, method)
-		if len(ladder) == limit {
-			break
-		}
+	if startIndex < 0 {
+		startIndex = 0
+	}
+	ladder := make([]ServiceBypassMethod, 0, limit)
+	for offset := 0; offset < limit; offset++ {
+		ladder = append(ladder, ranked[(startIndex+offset)%len(ranked)])
 	}
 	return ladder
 }
@@ -1572,15 +1495,17 @@ func recoveryServiceSearchLadder(serviceTag, currentTag string) []ServiceBypassM
 		// so it consumes one of the bounded automatic attempts.
 		limit--
 	}
-	ladder := make([]ServiceBypassMethod, 0, min(len(ranked), limit))
-	for _, method := range ranked {
-		if method.Tag == currentTag {
-			continue
-		}
-		ladder = append(ladder, method)
-		if len(ladder) == limit {
-			break
-		}
+	limit = min(limit, max(0, len(ranked)-1))
+	if limit == 0 {
+		return nil
+	}
+	startIndex := serviceStrategyIndex(serviceTag, currentTag)
+	if startIndex < 0 {
+		startIndex = len(ranked) - 1
+	}
+	ladder := make([]ServiceBypassMethod, 0, limit)
+	for offset := 1; offset <= limit; offset++ {
+		ladder = append(ladder, ranked[(startIndex+offset)%len(ranked)])
 	}
 	return ladder
 }
@@ -1697,9 +1622,9 @@ func (a *App) probeServicesThroughEngine(serviceTags []string) map[string]bool {
 
 // applyServiceFreeFallback routes a service that no transparent method can fix to
 // the VPN subscription when one exists, otherwise leaves it direct. In pure
-// Windows Unified without a subscription this means the service stays blocked
-// (the honest state) between attempts in the bounded one-hour campaign.
-func (a *App) applyServiceFreeFallback(serviceTag string) {
+// Windows Unified without a subscription this means the service stays direct
+// for the rest of this session; the next session continues at the saved cursor.
+func (a *App) applyServiceFreeFallback(serviceTag string, nextStrategyIndex ...int) {
 	configPath := ""
 	if a.storage != nil {
 		configPath = a.storage.ActiveConfigFilePath()
@@ -1708,7 +1633,15 @@ func (a *App) applyServiceFreeFallback(serviceTag string) {
 		return
 	}
 	blockType := serviceBlockType(serviceTag)
-	if hasVPN, err := configHasVPNProbeCandidates(configPath); err == nil && hasVPN {
+	nextIndex := -1
+	if len(nextStrategyIndex) > 0 {
+		nextIndex = nextStrategyIndex[0]
+	}
+	allowVPNFallback := true
+	if a.storage != nil && FreeAccessServiceMethod(a.storage.GetAppSettings(), serviceTag) == FreeAccessMethodZapret {
+		allowVPNFallback = false
+	}
+	if hasVPN, err := configHasVPNProbeCandidates(configPath); err == nil && hasVPN && allowVPNFallback {
 		changed := a.applyServiceFallbackSelectionToConfig(configPath, routeProbeServiceResult{
 			Tag:         serviceTag,
 			Name:        serviceTag,
@@ -1718,7 +1651,7 @@ func (a *App) applyServiceFreeFallback(serviceTag string) {
 			Success:     true,
 		})
 		switched := a.switchServiceToVPNFallback(serviceTag)
-		a.cacheServiceMethod(serviceTag, FreeAccessMethodVPN, "fallback-vpn")
+		a.cacheServiceMethodWithNextStrategy(serviceTag, FreeAccessMethodVPN, "fallback-vpn", nextIndex)
 		switch {
 		case switched:
 			a.writeLog(fmt.Sprintf("[FreeAccess] %s (%s-blocked) routed to VPN subscription fallback", serviceTag, blockType))
@@ -1729,8 +1662,12 @@ func (a *App) applyServiceFreeFallback(serviceTag string) {
 		}
 		return
 	}
-	a.cacheServiceMethod(serviceTag, FreeAccessMethodDirect, "fallback-direct")
-	a.writeLog(fmt.Sprintf("[FreeAccess] %s (%s-blocked) left direct: no working desync and no VPN subscription", serviceTag, blockType))
+	a.cacheServiceMethodWithNextStrategy(serviceTag, FreeAccessMethodDirect, "fallback-direct", nextIndex)
+	if allowVPNFallback {
+		a.writeLog(fmt.Sprintf("[FreeAccess] %s (%s-blocked) left direct: no working desync and no VPN subscription", serviceTag, blockType))
+	} else {
+		a.writeLog(fmt.Sprintf("[FreeAccess] %s (%s-blocked) left direct after the Zapret-only batch; VPN fallback is disabled by explicit policy", serviceTag, blockType))
+	}
 }
 
 func (a *App) applyServiceFallbackSelectionToConfig(configPath string, result routeProbeServiceResult) bool {
@@ -1786,7 +1723,7 @@ func (a *App) retunePerServiceStrategy(serviceTag, reason string) error {
 			return fmt.Errorf("service %q has no transparent strategy to retune", serviceTag)
 		}
 		settings := a.storage.GetAppSettings()
-		if !FreeMethodsAllowed(settings) {
+		if !FreeAccessServiceUsesZapret(settings, serviceTag) {
 			return fmt.Errorf("transparent strategies are disabled for service %q", serviceTag)
 		}
 		if method := FreeAccessServiceMethod(settings, serviceTag); method == FreeAccessMethodVPN || method == FreeAccessMethodDirect {
@@ -1841,7 +1778,8 @@ func (a *App) retunePerServiceStrategy(serviceTag, reason string) error {
 			a.writeLog(fmt.Sprintf("[FreeAccess] %s retuned to %s", serviceTag, method.Label))
 		}
 	} else {
-		a.applyServiceFreeFallback(serviceTag)
+		nextIndex := nextServiceStrategyIndexAfterAttemptWindow(serviceTag, selection.Method.Tag, maxAutomaticServiceStrategies)
+		a.applyServiceFreeFallback(serviceTag, nextIndex)
 		delete(selections, serviceTag)
 	}
 	if !a.routeStrategyWorkAllowed() {

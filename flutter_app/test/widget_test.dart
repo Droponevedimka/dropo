@@ -122,10 +122,29 @@ void main() {
         const ValueKey<String>('service-route-discord-auto'),
       );
       expect(routeField, findsOneWidget);
-      final dropdown = tester.widget<DropdownButtonFormField<String>>(
-        routeField,
+      expect(
+        tester
+            .widget<OutlinedButton>(
+              find.descendant(
+                of: routeField,
+                matching: find.byType(OutlinedButton),
+              ),
+            )
+            .onPressed,
+        isNull,
       );
-      expect(dropdown.onChanged, isNotNull);
+      expect(
+        find.byKey(const ValueKey<String>('service-route-discord-direct')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey<String>('service-route-discord-vpn')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey<String>('service-route-discord-zapret')),
+        findsOneWidget,
+      );
       expect(
         tester.widget<Text>(find.text('Сервисы и маршруты')).style?.color,
         const Color(0xFFE8F3EF),
@@ -135,11 +154,42 @@ void main() {
         const Color(0xFFE8F3EF),
       );
 
-      await tester.ensureVisible(routeField);
+      final zapretButton = find.byKey(
+        const ValueKey<String>('service-route-discord-zapret'),
+      );
+      expect(
+        tester
+            .widget<OutlinedButton>(
+              find.descendant(
+                of: zapretButton,
+                matching: find.byType(OutlinedButton),
+              ),
+            )
+            .onPressed,
+        isNotNull,
+      );
+      await tester.ensureVisible(zapretButton);
+      await tester.tap(zapretButton);
+      await tester.pump(const Duration(milliseconds: 800));
+      expect(bridge.lastMethod, 'zapret');
+      expect(
+        tester
+            .widget<OutlinedButton>(
+              find.descendant(
+                of: zapretButton,
+                matching: find.byType(OutlinedButton),
+              ),
+            )
+            .onPressed,
+        isNull,
+      );
+
+      final vpnButton = find.byKey(
+        const ValueKey<String>('service-route-discord-vpn'),
+      );
+      await tester.ensureVisible(vpnButton);
       await tester.pump(const Duration(milliseconds: 300));
-      await tester.tap(routeField);
-      await tester.pump(const Duration(milliseconds: 300));
-      await tester.tap(find.text('Через VPN').last);
+      await tester.tap(vpnButton);
       await tester.pump(const Duration(milliseconds: 800));
 
       expect(bridge.lastTag, 'discord');
@@ -182,8 +232,18 @@ void main() {
         const ValueKey<String>('service-route-discord-auto'),
       );
       expect(routeField, findsOneWidget);
+      final activeVpnButton = find.byKey(
+        const ValueKey<String>('service-route-discord-vpn'),
+      );
       expect(
-        tester.widget<DropdownButtonFormField<String>>(routeField).onChanged,
+        tester
+            .widget<OutlinedButton>(
+              find.descendant(
+                of: activeVpnButton,
+                matching: find.byType(OutlinedButton),
+              ),
+            )
+            .onPressed,
         isNotNull,
       );
       expect(
@@ -191,11 +251,12 @@ void main() {
         findsOneWidget,
       );
 
-      await tester.ensureVisible(routeField);
+      final vpnButton = find.byKey(
+        const ValueKey<String>('service-route-discord-vpn'),
+      );
+      await tester.ensureVisible(vpnButton);
       await tester.pump(const Duration(milliseconds: 300));
-      await tester.tap(routeField);
-      await tester.pump(const Duration(milliseconds: 300));
-      await tester.tap(find.text('Через VPN').last);
+      await tester.tap(vpnButton);
       await tester.pump(const Duration(milliseconds: 800));
 
       expect(bridge.lastMethod, 'vpn');
@@ -240,8 +301,24 @@ void main() {
       await tester.pump(const Duration(milliseconds: 600));
 
       expect(find.text('Сервисы и маршруты'), findsOneWidget);
+      expect(find.text('Авто'), findsWidgets);
       expect(find.text('Через VPN'), findsWidgets);
       expect(find.text('Напрямую'), findsWidgets);
+      final androidZapret = find.byKey(
+        const ValueKey<String>('service-route-discord-zapret'),
+      );
+      expect(androidZapret, findsOneWidget);
+      expect(
+        tester
+            .widget<OutlinedButton>(
+              find.descendant(
+                of: androidZapret,
+                matching: find.byType(OutlinedButton),
+              ),
+            )
+            .onPressed,
+        isNull,
+      );
 
       await tester.tap(
         find
@@ -362,7 +439,7 @@ void main() {
   );
 
   testWidgets(
-    'background strategy progress is sorted first and warns without a subscription',
+    'bounded background strategy progress is sorted first and reports retries',
     (tester) async {
       tester.view.physicalSize = const Size(1280, 860);
       tester.view.devicePixelRatio = 1;
@@ -380,8 +457,6 @@ void main() {
         'source': 'background-service-strategy',
         'serviceCount': 2,
         'hasSubscription': false,
-        'extended': true,
-        'maxDurationMinutes': 60,
         'services': [
           {'tag': 'youtube', 'name': 'YouTube'},
           {'tag': 'discord', 'name': 'Discord'},
@@ -394,22 +469,17 @@ void main() {
         'methodTag': 'discord-native-2',
         'methodLabel': 'Discord strategy 2',
         'status': 'voice-check',
-        'attempt': 4,
-        'attemptTotal': 36,
+        'attempt': 1,
+        'attemptTotal': 4,
         'strategyIndex': 1,
-        'strategyTotal': 3,
-        'cycle': 2,
-        'cycleTotal': 12,
+        'strategyTotal': 4,
+        'cycle': 1,
+        'cycleTotal': 1,
       });
       await tester.pump(const Duration(milliseconds: 300));
 
-      expect(
-        find.textContaining(
-          'VPN-подписки нет. Стратегии обхода подбираются в фоне',
-        ),
-        findsOneWidget,
-      );
-      expect(find.text('Подбирается · попытка 4/36'), findsOneWidget);
+      expect(find.textContaining('может занять до часа'), findsNothing);
+      expect(find.text('Подбирается · попытка 1/4'), findsOneWidget);
       final discordTop = tester.getTopLeft(find.text('Discord').first).dy;
       final youtubeTop = tester.getTopLeft(find.text('YouTube').first).dy;
       expect(discordTop, lessThan(youtubeTop));
@@ -424,8 +494,8 @@ void main() {
         'final': false,
         'retrying': true,
         'status': 'retrying',
-        'attempt': 4,
-        'attemptTotal': 36,
+        'attempt': 1,
+        'attemptTotal': 4,
       });
       bridge.emit('route-probe-candidate', const {
         'source': 'background-service-strategy',
@@ -433,8 +503,8 @@ void main() {
         'serviceName': 'Discord',
         'methodLabel': 'Discord strategy 3',
         'status': 'voice-check',
-        'attempt': 5,
-        'attemptTotal': 36,
+        'attempt': 2,
+        'attemptTotal': 4,
       });
       await tester.pump(const Duration(milliseconds: 300));
 
@@ -442,8 +512,8 @@ void main() {
         find.textContaining('Discord strategy 2 не сработала'),
         findsOneWidget,
       );
-      expect(find.textContaining('попытка 4/36'), findsWidgets);
-      expect(find.text('Подбирается · попытка 5/36'), findsOneWidget);
+      expect(find.textContaining('попытка 1/4'), findsWidgets);
+      expect(find.text('Подбирается · попытка 2/4'), findsOneWidget);
 
       await tester.pumpWidget(const SizedBox.shrink());
       await tester.pump();
@@ -761,6 +831,7 @@ class _RoutePolicyRecordingBridge extends MockCoreBridge {
         name: 'Discord',
         method: 'Discord active decoys x3',
         selectedMethod: currentMethod,
+        zapretSupported: true,
         requiresVpn: false,
         delayMs: 0,
         domainSuffixes: ['discord.com', 'discord.gg'],

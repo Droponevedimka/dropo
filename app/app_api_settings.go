@@ -479,15 +479,15 @@ func (a *App) GetFreeAccessConfig() map[string]interface{} {
 			}
 			effectiveMethodLabel = FreeAccessOutboundLabel(effectiveMethod)
 			effectiveSource = "service-disabled"
-		} else if selectedMethod == FreeAccessMethodAuto {
+		} else if selectedMethod == FreeAccessMethodAuto || selectedMethod == FreeAccessMethodZapret {
 			effective := a.selectFreeAccessStrategyForService(settings, svc, storedStrategies, serviceFallbackCache, map[string]bool{}, transparentTags, hasVPNProxy)
 			effectiveMethod = effective.MethodTag
 			effectiveMethodLabel = effective.MethodLabel
 			effectiveSource = effective.Source
 			if effectiveMethod == "" {
-				effectiveMethod = FreeAccessMethodAuto
-				effectiveMethodLabel = FreeAccessOutboundLabel(FreeAccessMethodAuto)
-				effectiveSource = "auto"
+				effectiveMethod = selectedMethod
+				effectiveMethodLabel = FreeAccessOutboundLabel(selectedMethod)
+				effectiveSource = selectedMethod
 			}
 		}
 		services = append(services, map[string]interface{}{
@@ -497,6 +497,7 @@ func (a *App) GetFreeAccessConfig() map[string]interface{} {
 			"ipCidrs":              append([]string(nil), svc.IPCIDRs...),
 			"enabled":              enabled,
 			"requiresVpn":          svc.RequiresVPN,
+			"zapretSupported":      runtime.GOOS == "windows" && serviceHasFreeBypass(svc.Tag),
 			"selectedMethod":       selectedMethod,
 			"methodLabel":          FreeAccessOutboundLabel(selectedMethod),
 			"effectiveMethod":      effectiveMethod,
@@ -532,8 +533,8 @@ func (a *App) SetFreeAccessEnabled(enabled bool) map[string]interface{} {
 }
 
 // SetDisableFreeAccess toggles the opt-out from automatic free DPI-bypass
-// methods. Free methods are the default strategy; this switch requires an
-// explicit VPN/subscription or WireGuard-only setup at connection time.
+// methods. Auto services use the VPN subscription when present and stay direct
+// when it is absent; an explicit per-service Zapret policy remains authoritative.
 func (a *App) SetDisableFreeAccess(disabled bool) map[string]interface{} {
 	a.waitForInit()
 
@@ -594,7 +595,8 @@ func (a *App) SetFreeAccessReverse(reverse bool) map[string]interface{} {
 	}
 }
 
-// ToggleFreeAccessService enables/disables a single service in the "Free access" list.
+// ToggleFreeAccessService is the legacy boolean API. The four-policy model maps
+// enabled to Auto and disabled to Direct so it cannot create a hidden route.
 func (a *App) ToggleFreeAccessService(tag string, enabled bool) map[string]interface{} {
 	a.waitForInit()
 	a.settingsPolicyMu.Lock()
@@ -636,7 +638,15 @@ func (a *App) ToggleFreeAccessService(tag string, enabled bool) map[string]inter
 	if settings.FreeAccessServices == nil {
 		settings.FreeAccessServices = DefaultFreeAccessServiceState()
 	}
-	settings.FreeAccessServices[tag] = enabled
+	settings.FreeAccessServices[tag] = true
+	if settings.FreeAccessMethods == nil {
+		settings.FreeAccessMethods = DefaultFreeAccessServiceMethodState()
+	}
+	method := FreeAccessMethodDirect
+	if enabled {
+		method = FreeAccessMethodAuto
+	}
+	settings.FreeAccessMethods[tag] = method
 
 	if err := a.storage.UpdateAppSettings(settings); err != nil {
 		return map[string]interface{}{
@@ -653,18 +663,19 @@ func (a *App) ToggleFreeAccessService(tag string, enabled bool) map[string]inter
 		}
 	}
 
-	a.writeLog(fmt.Sprintf("Free access service %s: %v", tag, enabled))
+	a.writeLog(fmt.Sprintf("Legacy free access service toggle %s mapped to route method %s", tag, method))
 
 	return map[string]interface{}{
 		"success": true,
 		"tag":     tag,
 		"enabled": enabled,
+		"method":  method,
 	}
 }
 
-// SetFreeAccessServiceMethod forces a route method for a blocked service.
-// "auto" keeps the latency-based picker; other values pin the service to
-// direct, VPN subscription, or one of the bundled free methods.
+// SetFreeAccessServiceMethod selects one of the four stable service policies:
+// Auto, Direct, VPN, or the Windows-only strict Zapret ladder. Concrete legacy
+// strategy tags are migrated and never exposed as extra UI policies.
 func (a *App) SetFreeAccessServiceMethod(tag string, method string) map[string]interface{} {
 	a.waitForInit()
 	a.settingsPolicyMu.Lock()
@@ -677,9 +688,11 @@ func (a *App) SetFreeAccessServiceMethod(tag string, method string) map[string]i
 		}
 	}
 
+	var service FreeAccessService
 	found := false
 	for _, svc := range DefaultFreeAccessServices {
 		if svc.Tag == tag {
+			service = svc
 			found = true
 			break
 		}
@@ -696,6 +709,24 @@ func (a *App) SetFreeAccessServiceMethod(tag string, method string) map[string]i
 		return map[string]interface{}{
 			"success": false,
 			"error":   fmt.Sprintf("Неизвестный метод маршрута: %s", strings.TrimSpace(method)),
+		}
+	}
+	requestedMethod := strings.TrimSpace(strings.ToLower(method))
+	if normalized == FreeAccessMethodZapret && !serviceHasFreeBypass(service.Tag) && isKnownLegacyFreeAccessMethod(requestedMethod) {
+		normalized = FreeAccessMethodAuto
+	}
+	if normalized == FreeAccessMethodZapret {
+		if runtime.GOOS != "windows" {
+			return map[string]interface{}{
+				"success": false,
+				"error":   "Обход Zapret доступен только в версии для Windows.",
+			}
+		}
+		if !serviceHasFreeBypass(service.Tag) {
+			return map[string]interface{}{
+				"success": false,
+				"error":   fmt.Sprintf("Для сервиса %s нет безопасной Zapret-стратегии; выберите Авто, Напрямую или Через VPN.", service.DisplayName),
+			}
 		}
 	}
 
@@ -722,7 +753,11 @@ func (a *App) SetFreeAccessServiceMethod(tag string, method string) map[string]i
 	if settings.FreeAccessMethods != nil {
 		existing = NormalizeFreeAccessServiceMethod(settings.FreeAccessMethods[tag])
 		if runtime.GOOS == "windows" && (IsFreeAccessProxyMethod(existing) || IsFreeAccessTransparentMethod(existing)) {
-			existing = FreeAccessMethodAuto
+			if serviceHasFreeBypass(tag) {
+				existing = FreeAccessMethodZapret
+			} else {
+				existing = FreeAccessMethodAuto
+			}
 		}
 	}
 	if existing == normalized {
@@ -738,6 +773,12 @@ func (a *App) SetFreeAccessServiceMethod(tag string, method string) map[string]i
 		settings.FreeAccessMethods = DefaultFreeAccessServiceMethodState()
 	}
 	settings.FreeAccessMethods[tag] = normalized
+	if settings.FreeAccessServices == nil {
+		settings.FreeAccessServices = DefaultFreeAccessServiceState()
+	}
+	// Route modes replace the legacy hidden enabled flag. A visible selection
+	// must always be authoritative and immediately undo an old disabled value.
+	settings.FreeAccessServices[tag] = true
 
 	if isRunning {
 		stopResult := a.Stop()
@@ -791,12 +832,12 @@ func (a *App) SetFreeAccessServiceMethod(tag string, method string) map[string]i
 func normalizeRequestedFreeAccessServiceMethod(method string) (string, bool) {
 	requested := strings.TrimSpace(strings.ToLower(method))
 	switch requested {
-	case "", FreeAccessMethodAuto, FreeAccessMethodDirect, FreeAccessMethodVPN, "subscription", "auto-select", "proxy":
+	case "", FreeAccessMethodAuto, FreeAccessMethodDirect, FreeAccessMethodVPN, FreeAccessMethodZapret, "subscription", "auto-select", "proxy", "bypass", "obhod":
 		return NormalizeFreeAccessServiceMethod(requested), true
 	}
 	if IsFreeAccessProxyMethod(requested) || IsFreeAccessTransparentMethod(requested) || isKnownLegacyFreeAccessMethod(requested) {
 		if runtime.GOOS == "windows" {
-			return FreeAccessMethodAuto, true
+			return FreeAccessMethodZapret, true
 		}
 		return requested, true
 	}

@@ -673,7 +673,7 @@ func TestAndroidDiagnosticsIncludesCacheAndState(t *testing.T) {
 	}
 }
 
-func TestAndroidRoutesExposeDirectOrVPNMethods(t *testing.T) {
+func TestAndroidRoutesExposeAutoDirectAndVPNMethods(t *testing.T) {
 	mu.Lock()
 	current = defaultState()
 	current.BasePath = t.TempDir()
@@ -684,8 +684,15 @@ func TestAndroidRoutesExposeDirectOrVPNMethods(t *testing.T) {
 		t.Fatal(err)
 	}
 	options, ok := config["methodOptions"].([]interface{})
-	if !ok || len(options) != 2 {
-		t.Fatalf("methodOptions = %#v, want direct/vpn options", config["methodOptions"])
+	if !ok || len(options) != 3 {
+		t.Fatalf("methodOptions = %#v, want auto/direct/vpn options", config["methodOptions"])
+	}
+	wantOptions := []string{androidRoutePolicyAuto, androidRoutePolicyDirect, androidRoutePolicyVPN}
+	for index, want := range wantOptions {
+		option := options[index].(map[string]interface{})
+		if option["tag"] != want || option["label"] != androidRoutePolicyLabel(want) {
+			t.Fatalf("method option %d = %#v, want %q/%q", index, option, want, androidRoutePolicyLabel(want))
+		}
 	}
 
 	services, ok := config["services"].([]interface{})
@@ -697,8 +704,14 @@ func TestAndroidRoutesExposeDirectOrVPNMethods(t *testing.T) {
 	}
 	for _, raw := range services {
 		service := raw.(map[string]interface{})
-		if service["effectiveMethodLabel"] != androidRoutePolicyLabel(androidRoutePolicyVPN) {
-			t.Fatalf("default method label for %v = %v, want VPN", service["tag"], service["effectiveMethodLabel"])
+		if service["selectedMethod"] != androidRoutePolicyAuto {
+			t.Fatalf("default selected method for %v = %v, want auto", service["tag"], service["selectedMethod"])
+		}
+		if service["effectiveMethodLabel"] != androidRoutePolicyLabel(androidRoutePolicyDirect) {
+			t.Fatalf("default method label without subscription for %v = %v, want direct", service["tag"], service["effectiveMethodLabel"])
+		}
+		if service["zapretSupported"] != false {
+			t.Fatalf("Android service %v unexpectedly advertises Zapret support", service["tag"])
 		}
 	}
 
@@ -712,8 +725,16 @@ func TestAndroidRoutesExposeDirectOrVPNMethods(t *testing.T) {
 	if cache["meta"] != androidRoutePolicyDirect {
 		t.Fatalf("meta method cache = %v, want direct", cache["meta"])
 	}
-	if cache["youtube"] != androidRoutePolicyVPN {
-		t.Fatalf("youtube method cache = %v, want vpn", cache["youtube"])
+	if cache["youtube"] != androidRoutePolicyAuto {
+		t.Fatalf("youtube method cache = %v, want auto", cache["youtube"])
+	}
+
+	var rejected map[string]interface{}
+	if err := json.Unmarshal([]byte(Call("SetFreeAccessServiceMethod", `["discord","zapret"]`)), &rejected); err != nil {
+		t.Fatal(err)
+	}
+	if rejected["success"] != false {
+		t.Fatalf("Android strict Zapret policy unexpectedly succeeded: %#v", rejected)
 	}
 }
 

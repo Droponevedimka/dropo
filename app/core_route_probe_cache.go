@@ -11,10 +11,9 @@ import (
 )
 
 const (
-	routeProbeCacheFileName          = "route_probe_cache.json"
-	routeProbeCacheVersion           = 1
-	routeProbeCacheTTL               = 24 * time.Hour
-	serviceStrategyRetryPollInterval = time.Minute
+	routeProbeCacheFileName = "route_probe_cache.json"
+	routeProbeCacheVersion  = 1
+	routeProbeCacheTTL      = 24 * time.Hour
 )
 
 type routeProbeCacheFile struct {
@@ -31,7 +30,6 @@ func (a *App) startRouteStrategyMaintenanceListener() {
 	if !a.routeStrategyLoop.CompareAndSwap(false, true) {
 		return
 	}
-	go a.runServiceStrategyRetryTimer()
 	go func() {
 		a.writeLog("[FreeAccess] strategy maintenance listener started")
 		for reason := range a.routeStrategyJobs {
@@ -66,7 +64,7 @@ func (a *App) startRouteStrategyMaintenanceListener() {
 						a.sleepRouteStrategyMaintenancePause()
 						continue
 					}
-					a.writeLog(fmt.Sprintf("[FreeAccess] per-service retune deferred (%s): native traffic plan is not active; temporary fallback will be retried after TTL or a network change", serviceReason))
+					a.writeLog(fmt.Sprintf("[FreeAccess] per-service retune deferred (%s): native traffic plan is not active; the next VPN session will continue from the saved strategy cursor", serviceReason))
 					// Unhurried: pace consecutive searches so the single
 					// transparent engine is never thrashed by a burst of jobs.
 					a.sleepRouteStrategyMaintenancePause()
@@ -88,26 +86,6 @@ func (a *App) startRouteStrategyMaintenanceListener() {
 			}
 		}
 	}()
-}
-
-func (a *App) runServiceStrategyRetryTimer() {
-	ticker := time.NewTicker(serviceStrategyRetryPollInterval)
-	defer ticker.Stop()
-	var done <-chan struct{}
-	if a.ctx != nil {
-		done = a.ctx.Done()
-	}
-	for {
-		select {
-		case <-done:
-			return
-		case <-ticker.C:
-			if a.isShuttingDown() {
-				return
-			}
-			a.retryDueServiceStrategies()
-		}
-	}
 }
 
 func (a *App) requestRouteStrategyMaintenance(reason string) {

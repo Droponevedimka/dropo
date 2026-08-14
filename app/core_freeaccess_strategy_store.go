@@ -181,6 +181,27 @@ func (a *App) applyStoredFreeAccessStrategiesToConfig(configPath string, activeF
 
 func (a *App) selectFreeAccessStrategyForService(settings GlobalAppSettings, svc FreeAccessService, stored map[string]freeAccessStrategySelection, serviceFallbackCache map[string]serviceStrategyCacheEntry, activeProxyTags map[string]bool, transparentTags map[string]bool, hasVPNProxy bool) freeAccessStrategySelection {
 	manual := FreeAccessServiceMethod(settings, svc.Tag)
+	if manual == FreeAccessMethodZapret {
+		if runtime.GOOS != "windows" || !serviceHasFreeBypass(svc.Tag) {
+			return freeAccessStrategySelection{}
+		}
+		if cached, ok := serviceFallbackCache[svc.Tag]; ok && !isFreeAccessFallbackTag(cached.MethodTag) {
+			if method, exists := findServiceBypassMethod(svc.Tag, cached.MethodTag); exists {
+				return freeAccessStrategySelection{
+					Tag: svc.Tag, Name: svc.DisplayName, MethodTag: method.Tag,
+					MethodLabel: method.Label, MethodKind: "transparent", Source: "manual-zapret-cache",
+				}
+			}
+		}
+		methods := rankedMethodsForService(svc.Tag)
+		if len(methods) == 0 {
+			return freeAccessStrategySelection{}
+		}
+		return freeAccessStrategySelection{
+			Tag: svc.Tag, Name: svc.DisplayName, MethodTag: methods[0].Tag,
+			MethodLabel: methods[0].Label, MethodKind: "transparent", Source: "manual-zapret-pending",
+		}
+	}
 	if manual != FreeAccessMethodAuto {
 		if strategyMethodAvailable(manual, activeProxyTags, transparentTags, hasVPNProxy) {
 			return makeFreeAccessStrategySelection(svc, manual, "manual", 0)
@@ -345,6 +366,8 @@ func freeAccessMethodKind(method string) string {
 		return "direct"
 	case FreeAccessMethodVPN:
 		return "vpn"
+	case FreeAccessMethodZapret:
+		return "transparent"
 	}
 	if IsFreeAccessTransparentMethod(method) {
 		return "transparent"

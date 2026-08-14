@@ -72,6 +72,11 @@ func (a *App) buildNativeTrafficPlan(selections map[string]serviceWinwsSelection
 		if !containsStringValue(candidateIDs, strategyID) {
 			return traffic.TrafficPlan{}, fmt.Errorf("service %s selected non-candidate native strategy %q", service.Tag, strategyID)
 		}
+		// Keep the selected recipe first and preserve circular catalog order after
+		// it. Discord realtime uses this same bounded order, so a persisted session
+		// cursor cannot accidentally fall back to the first four catalog entries.
+		candidateIDs = rotateStringValues(candidateIDs, strategyID)
+		rule.CandidateStrategyIDs = append([]string(nil), candidateIDs...)
 		plan.Services = append(plan.Services, rule)
 		plan.Selections = append(plan.Selections, traffic.ServiceSelection{ServiceID: service.Tag, StrategyID: strategyID})
 	}
@@ -106,6 +111,23 @@ func (a *App) buildNativeTrafficPlan(selections map[string]serviceWinwsSelection
 		return traffic.TrafficPlan{}, err
 	}
 	return plan, nil
+}
+
+func rotateStringValues(values []string, first string) []string {
+	index := -1
+	for i, value := range values {
+		if value == first {
+			index = i
+			break
+		}
+	}
+	if index <= 0 {
+		return append([]string(nil), values...)
+	}
+	result := make([]string, 0, len(values))
+	result = append(result, values[index:]...)
+	result = append(result, values[:index]...)
+	return result
 }
 
 func nativeServiceRule(service FreeAccessService, strategyIDs []string) traffic.ServiceRule {

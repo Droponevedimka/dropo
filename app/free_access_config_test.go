@@ -1299,7 +1299,7 @@ func TestApplyServiceFreeFallbackUsesVPNWhenSubscriptionAvailable(t *testing.T) 
 		},
 	})
 
-	app.applyServiceFreeFallback("youtube")
+	app.applyServiceFreeFallback("youtube", 3)
 
 	updated, err := readJSONConfig(configPath)
 	if err != nil {
@@ -1314,8 +1314,45 @@ func TestApplyServiceFreeFallbackUsesVPNWhenSubscriptionAvailable(t *testing.T) 
 		t.Fatalf("%s default = %v, want auto-select", ServiceBypassGroupTag("youtube"), youtubeGroup["default"])
 	}
 	cache := app.loadServiceStrategyCache()
-	if cache["youtube"].MethodTag != FreeAccessMethodVPN {
-		t.Fatalf("youtube cached method = %+v, want VPN fallback", cache["youtube"])
+	if cache["youtube"].MethodTag != FreeAccessMethodVPN || cache["youtube"].NextStrategyIndex != 3 {
+		t.Fatalf("youtube cached method = %+v, want VPN fallback with next cursor 3", cache["youtube"])
+	}
+}
+
+func TestApplyServiceFreeFallbackKeepsExplicitZapretOffVPN(t *testing.T) {
+	app, configPath := newDeepWindowsTestApp(t, map[string]interface{}{
+		"outbounds": []interface{}{
+			map[string]interface{}{"type": "direct", "tag": "direct"},
+			map[string]interface{}{"type": "vless", "tag": "vless-fast", "server": "vpn.example", "server_port": 443, "uuid": "00000000-0000-0000-0000-000000000000"},
+			map[string]interface{}{
+				"type": "selector", "tag": "auto-select",
+				"outbounds": []interface{}{"vless-fast"}, "default": "vless-fast",
+			},
+			map[string]interface{}{
+				"type": "selector", "tag": ServiceBypassGroupTag("youtube"),
+				"outbounds": []interface{}{"direct", "auto-select"}, "default": "direct",
+			},
+		},
+	})
+	settings := app.storage.GetAppSettings()
+	settings.FreeAccessMethods["youtube"] = FreeAccessMethodZapret
+	if err := app.storage.UpdateAppSettings(settings); err != nil {
+		t.Fatal(err)
+	}
+
+	app.applyServiceFreeFallback("youtube", 3)
+
+	updated, err := readJSONConfig(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	youtubeGroup := getOutbound(updated, ServiceBypassGroupTag("youtube"))
+	if youtubeGroup["default"] != "direct" {
+		t.Fatalf("strict Zapret fallback default = %v, want direct", youtubeGroup["default"])
+	}
+	cache := app.loadServiceStrategyCache()["youtube"]
+	if cache.MethodTag != FreeAccessMethodDirect || cache.NextStrategyIndex != 3 {
+		t.Fatalf("strict Zapret fallback cache = %+v, want direct with next cursor 3", cache)
 	}
 }
 
