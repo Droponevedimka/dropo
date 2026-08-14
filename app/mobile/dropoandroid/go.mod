@@ -1,6 +1,6 @@
 module dropoandroid
 
-go 1.25.12
+go 1.25.13
 
 tool golang.org/x/mobile/cmd/gobind
 

@@ -19,7 +19,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: "1.25.12"
+          go-version: "1.25.13"
       - name: Scan full Git history for secrets
         run: go run github.com/zricethezav/gitleaks/v8@v8.30.1 git --no-banner --redact=100 .
       - name: Reject generated contributor metadata
@@ -44,7 +44,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: "1.25.12"
+          go-version: "1.25.13"
           cache-dependency-path: |
             app/go.sum
             launcher/go.sum
@@ -113,7 +113,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: "1.25.12"
+          go-version: "1.25.13"
           cache-dependency-path: app/go.sum
       - name: Install Linux tray build dependencies
         run: sudo apt-get update && sudo apt-get install -y libayatana-appindicator3-dev
@@ -137,7 +137,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: "1.25.12"
+          go-version: "1.25.13"
           cache-dependency-path: app/go.sum
       - name: Compile tests for ${{ matrix.goos }}/${{ matrix.goarch }}
         working-directory: app
